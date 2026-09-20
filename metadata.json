@@ -1,0 +1,6 @@
+{
+  "name": "ZOYO - Voice Chat & Games",
+  "description": "Social voice chat rooms and real-time interactive games like Ludo, Dice Duel, and Lucky Wheel.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

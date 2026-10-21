@@ -4,9 +4,12 @@ import { GIFTS, AUDIO_TRACKS, PRESET_AVATARS } from '../data';
 import { 
   ChevronLeft, Users, Mic, MicOff, Send, 
   Trophy, Sparkles, X, Gift as GiftIcon, Flame, Play, Pause,
-  CornerDownRight, RefreshCw, Smile, Zap, MessageSquare, Award, UserPlus, Trash, VolumeX, MessageSquareDashed
+  CornerDownRight, RefreshCw, Smile, Zap, MessageSquare, Award, UserPlus, Trash, VolumeX, MessageSquareDashed,
+  Share2, Copy, Eye
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { toast } from './Toast';
+import UserProfileModal from './UserProfileModal';
 
 interface VoiceRoomProps {
   room: Room;
@@ -17,6 +20,19 @@ interface VoiceRoomProps {
 }
 
 export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, onSendMessage }: VoiceRoomProps) {
+  // Debug logging
+  console.log('🔍 VoiceRoom received:', {
+    hasRoom: !!room,
+    roomId: (room as any)?._id || room?.id,
+    hasHost: !!room?.host,
+    hostName: room?.host?.name,
+    hasSeats: !!room?.seats,
+    seatsLength: room?.seats?.length,
+    roomTitle: room?.title,
+    roomTheme: room?.theme,
+    roomCategory: room?.category
+  });
+
   // Defensive checks to prevent crashes
   if (!room) {
     console.error('VoiceRoom received undefined room');
@@ -29,8 +45,17 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     );
   }
 
-  if (!room.host) {
-    console.error('VoiceRoom room missing host:', room);
+  // Ensure room has all required properties with defaults
+  const safeRoom = {
+    ...room,
+    title: room.title || 'Unknown Room',
+    theme: room.theme || 'neon',
+    category: room.category || 'chat',
+    host: room.host || { id: 'host', name: 'Host', avatar: PRESET_AVATARS[0], level: 1, coins: 0, frameId: 'none', bubbleId: 'none', badge: '🎙️ Host' }
+  };
+
+  if (!safeRoom.host) {
+    console.error('VoiceRoom room missing host:', safeRoom);
     return (
       <div className="flex-1 flex items-center justify-center bg-white">
         <div className="text-center">
@@ -42,17 +67,29 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
   // Initialize seats from room data if available, otherwise create default with host at index 0
   const getInitialSeats = (): Seat[] => {
-    if (room.seats && Array.isArray(room.seats) && room.seats.length >= 9) {
-      return room.seats.map(s => ({
-        index: s.index,
-        user: s.user ? { ...s.user, avatar: s.user.avatar || PRESET_AVATARS[0], name: s.user.name || 'Unknown', level: s.user.level || 1 } : null,
-        isMuted: !!s.isMuted,
-        isTalking: !!s.isTalking
-      })) as Seat[];
+    const seatsData = safeRoom.seats;
+    if (seatsData && Array.isArray(seatsData) && seatsData.length >= 9) {
+      return seatsData.map(s => {
+        if (s.index === 0) {
+          const hostUser = s.user || safeRoom.host;
+          return {
+            index: 0,
+            user: hostUser ? { ...hostUser, avatar: hostUser.avatar || PRESET_AVATARS[0], name: hostUser.name || safeRoom.host?.name || 'Host', level: hostUser.level || 1, coins: hostUser.coins || 0, frameId: hostUser.frameId || 'none', bubbleId: hostUser.bubbleId || 'none', badge: hostUser.badge || '👑 Host' } : safeRoom.host,
+            isMuted: !!s.isMuted,
+            isTalking: !!s.isTalking
+          };
+        }
+        return {
+          index: s.index,
+          user: s.user ? { ...s.user, avatar: s.user.avatar || PRESET_AVATARS[0], name: s.user.name || 'Unknown', level: s.user.level || 1, coins: s.user.coins || 0, frameId: s.user.frameId || 'none', bubbleId: s.user.bubbleId || 'none', badge: s.user.badge || '🎤 Talker' } : null,
+          isMuted: !!s.isMuted,
+          isTalking: !!s.isTalking
+        };
+      }) as Seat[];
     }
     // Fallback: host at seat 0, empty guest seats 1-8
     return [
-      { index: 0, user: room.host ? { ...room.host, avatar: room.host.avatar || PRESET_AVATARS[0] } : null, isMuted: false, isTalking: false },
+      { index: 0, user: safeRoom.host ? { ...safeRoom.host, avatar: safeRoom.host.avatar || PRESET_AVATARS[0], coins: safeRoom.host.coins || 0, frameId: safeRoom.host.frameId || 'none', bubbleId: safeRoom.host.bubbleId || 'none', badge: safeRoom.host.badge || '🎙️ Host' } : null, isMuted: false, isTalking: false },
       { index: 1, user: null, isMuted: false, isTalking: false },
       { index: 2, user: null, isMuted: false, isTalking: false },
       { index: 3, user: null, isMuted: false, isTalking: false },
@@ -64,39 +101,83 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     ];
   };
 
-  const [seats, setSeats] = useState<Seat[]>(getInitialSeats);
+  const initialSeats = getInitialSeats();
+  const [seats, setSeats] = useState<Seat[]>(initialSeats);
+  const currentUserId = String(currentUser._id || currentUser.id);
 
-  const [mySeatIndex, setMySeatIndex] = useState<number | null>(null);
+  // Determine initial seat index for current user
+  const findInitialSeat = (): number | null => {
+    const found = initialSeats.find(s => s.user && String(s.user._id || s.user.id) === currentUserId);
+    if (found) return found.index;
+    const hostId = String((safeRoom.host as any)?._id || safeRoom.host?.id);
+    if (hostId === currentUserId) return 0;
+    return null;
+  };
 
-  // Cleanup and leave seat when component unmounts or user leaves room
-  React.useEffect(() => {
-    return () => {
-      // Leave seat when unmounting
-      if (mySeatIndex !== null && room) {
-        const roomId = (room as any)._id || room.id;
-        fetch(`/api/rooms/${roomId}/seat/${mySeatIndex}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'leave' })
-        }).catch(err => console.warn('Failed to leave seat:', err));
-      }
-      disableMicrophone();
-    };
-  }, [mySeatIndex, room]);
+  const [mySeatIndex, setMySeatIndex] = useState<number | null>(findInitialSeat);
+  const roomId = String((safeRoom as any)._id || safeRoom.id);
+
+  // Online Room Users (Audience + Speakers)
+  const [onlineUsers, setOnlineUsers] = useState<User[]>([currentUser]);
+  const [showAudienceModal, setShowAudienceModal] = useState(false);
+  const [audioAutoplayBlocked, setAudioAutoplayBlocked] = useState(false);
+  const [remoteStreams, setRemoteStreams] = useState<{ [peerId: string]: MediaStream }>({});
+  const [isTypingInChat, setIsTypingInChat] = useState(false);
+
+  // Strictly deduplicated participants list for clean UI
+  const uniqueParticipants = Array.from(
+    new Map(
+      onlineUsers.map((u) => {
+        const key = (u.name || String((u as any).userId || (u as any)._id || u.id || '')).toLowerCase().trim();
+        return [key, u];
+      })
+    ).values()
+  ) as User[];
+
+  // WebSocket reference
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // WebRTC Peer Connections & Audio Elements
+  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const remoteAudiosRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const isSpeakingRef = useRef<boolean>(false);
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    { id: '1', userId: 'system', userName: 'System', userLevel: 99, message: `Welcome to ${room.host.name}'s voice room! Click empty mic seats to sit or add custom guests. You are in full control! 🎙️✨`, type: 'system' }
+    { id: '1', userId: 'system', userName: 'System', userLevel: 99, message: `Welcome to ${safeRoom.host.name}'s voice room! Grab a mic seat to talk live or chat with everyone! 🎙️✨`, type: 'system' }
   ]);
   const [textInput, setTextInput] = useState('');
   const [activeGame, setActiveGame] = useState<'none' | 'ludo' | 'dice' | 'wheel'>('none');
   const [showGiftDrawer, setShowGiftDrawer] = useState(false);
   const [selectedGiftRecipient, setSelectedGiftRecipient] = useState<number | 'all'>(0);
   const [activeGiftEffect, setActiveGiftEffect] = useState<Gift | null>(null);
+  const [dynamicGifts, setDynamicGifts] = useState<Gift[]>(GIFTS);
+  const [inspectedUser, setInspectedUser] = useState<User | null>(null);
+  const [showUserProfileModal, setShowUserProfileModal] = useState(false);
   const [activeTrack, setActiveTrack] = useState<typeof AUDIO_TRACKS[0] | null>(null);
   const [isTrackPlaying, setIsTrackPlaying] = useState(false);
   const [isMyMicMuted, setIsMyMicMuted] = useState(false);
 
-  // Seat Configuration Action Drawer Dialog State
+  // Fetch dynamic catalog gifts published by Admin or Managers
+  useEffect(() => {
+    fetch('/api/catalog/gifts')
+      .then(r => r.json())
+      .then(d => {
+        if (d.success && Array.isArray(d.gifts) && d.gifts.length > 0) {
+          setDynamicGifts(d.gifts);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Invite friends state (host-only)
+  const isCurrentUserHost = currentUserId === String((safeRoom.host as any)?._id || safeRoom.host?.id) || currentUser.name === safeRoom.host?.name;
+  const [showInvitePanel, setShowInvitePanel] = useState(false);
+  const [friendsList, setFriendsList] = useState<User[]>([]);
+  const [invitedSet, setInvitedSet] = useState<Set<string>>(new Set());
+  const [inviteLoading, setInviteLoading] = useState(false);
+
+
   const [showSeatModal, setShowSeatModal] = useState(false);
   const [selectedSeatIndex, setSelectedSeatIndex] = useState<number | null>(null);
   const [customGuestName, setCustomGuestName] = useState('');
@@ -126,7 +207,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
   // Dice Duel State
   const [diceDuel, setDiceDuel] = useState<DiceDuelState>({
-    player1: { name: room.host.name, avatar: room.host.avatar, score: 0, isRolling: false },
+    player1: { name: safeRoom.host.name, avatar: safeRoom.host.avatar, score: 0, isRolling: false },
     player2: { name: currentUser.name, avatar: currentUser.avatar, score: 0, isRolling: false },
     status: 'idle',
     winner: null,
@@ -179,13 +260,22 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         osc.start();
         osc.stop(ctx.currentTime + 0.7);
       } else if (type === 'gift') {
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(300, ctx.currentTime);
-        osc.frequency.linearRampToValueAtTime(800, ctx.currentTime + 0.5);
-        gain.gain.setValueAtTime(0.2, ctx.currentTime);
-        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.5);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.5);
+        // Magical celestial chime fanfare (C6, E6, G6, C7 shimmer with harmonic sparkle)
+        const notes = [1046.50, 1318.51, 1567.98, 2093.00];
+        notes.forEach((freq, idx) => {
+          const noteOsc = ctx.createOscillator();
+          const noteGain = ctx.createGain();
+          noteOsc.type = 'sine';
+          noteOsc.frequency.setValueAtTime(freq, ctx.currentTime + idx * 0.08);
+          noteGain.gain.setValueAtTime(0, ctx.currentTime + idx * 0.08);
+          noteGain.gain.linearRampToValueAtTime(0.2, ctx.currentTime + idx * 0.08 + 0.03);
+          noteGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + idx * 0.08 + 0.45);
+          noteOsc.connect(noteGain);
+          noteGain.connect(ctx.destination);
+          noteOsc.start(ctx.currentTime + idx * 0.08);
+          noteOsc.stop(ctx.currentTime + idx * 0.08 + 0.45);
+        });
+        return;
       } else {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(800, ctx.currentTime);
@@ -199,11 +289,188 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     }
   };
 
-  // Microphone capture & wave animations
+  // Helper to send messages over WebSocket
+  const sendWs = (type: string, payload?: any) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(JSON.stringify({
+          type,
+          roomId,
+          userId: currentUserId,
+          userName: currentUser.name,
+          payload
+        }));
+      } catch (err) {
+        console.warn('Failed to send WS message:', err);
+      }
+    }
+  };
+
+  // --- WEBRTC REAL VOICE AUDIO SYSTEM ---
+
+  const closePeerConnection = (peerId: string) => {
+    const pc = peerConnectionsRef.current.get(peerId);
+    if (pc) {
+      pc.close();
+      peerConnectionsRef.current.delete(peerId);
+    }
+    const audio = remoteAudiosRef.current.get(peerId);
+    if (audio) {
+      audio.pause();
+      audio.srcObject = null;
+      remoteAudiosRef.current.delete(peerId);
+    }
+    setRemoteStreams(prev => {
+      const next = { ...prev };
+      delete next[peerId];
+      return next;
+    });
+  };
+
+  const playRemoteAudio = (peerId: string, stream: MediaStream) => {
+    console.log(`🔊 [Voice] Connecting remote audio stream from peer ${peerId}`);
+    let audio = remoteAudiosRef.current.get(peerId);
+    if (!audio) {
+      audio = new Audio();
+      audio.autoplay = true;
+      (audio as any).playsInline = true;
+      remoteAudiosRef.current.set(peerId, audio);
+    }
+    audio.srcObject = stream;
+    audio.play().catch(e => {
+      console.warn(`Autoplay restriction for peer ${peerId}, user interaction will resume:`, e);
+      setAudioAutoplayBlocked(true);
+    });
+  };
+
+  const createPeerConnection = (peerId: string, isInitiator: boolean): RTCPeerConnection => {
+    if (peerConnectionsRef.current.has(peerId)) {
+      return peerConnectionsRef.current.get(peerId)!;
+    }
+
+    console.log(`🔗 [WebRTC] Creating peer connection with ${peerId} (initiator: ${isInitiator})`);
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+    });
+
+    peerConnectionsRef.current.set(peerId, pc);
+
+    // If local microphone stream is active, attach its audio tracks
+    if (localStreamRef.current) {
+      localStreamRef.current.getAudioTracks().forEach(track => {
+        try {
+          pc.addTrack(track, localStreamRef.current!);
+        } catch (e) {
+          console.warn('Track addition notice:', e);
+        }
+      });
+    }
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        sendWs('webrtc_signal', {
+          targetUserId: peerId,
+          signal: { candidate: event.candidate },
+          seatIndex: mySeatIndex
+        });
+      }
+    };
+
+    pc.ontrack = (event) => {
+      console.log(`🎧 [WebRTC] Remote audio track received from ${peerId}`);
+      if (event.streams && event.streams[0]) {
+        playRemoteAudio(peerId, event.streams[0]);
+        setRemoteStreams(prev => ({ ...prev, [peerId]: event.streams[0] }));
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log(`📶 [WebRTC] Peer ${peerId} connection state: ${pc.connectionState}`);
+      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        closePeerConnection(peerId);
+      }
+    };
+
+    if (isInitiator) {
+      pc.createOffer({ offerToReceiveAudio: true })
+        .then(offer => pc.setLocalDescription(offer))
+        .then(() => {
+          sendWs('webrtc_signal', {
+            targetUserId: peerId,
+            signal: { sdp: pc.localDescription },
+            seatIndex: mySeatIndex
+          });
+        })
+        .catch(err => console.error('Error creating WebRTC offer:', err));
+    }
+
+    return pc;
+  };
+
+  const handleWebRTCSignal = async (senderId: string, signal: any) => {
+    if (!signal) return;
+    try {
+      if (signal.sdp) {
+        const pc = createPeerConnection(senderId, false);
+        await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+        if (signal.sdp.type === 'offer') {
+          if (localStreamRef.current) {
+            localStreamRef.current.getAudioTracks().forEach(track => {
+              try {
+                pc.addTrack(track, localStreamRef.current!);
+              } catch (e) {}
+            });
+          }
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          sendWs('webrtc_signal', {
+            targetUserId: senderId,
+            signal: { sdp: pc.localDescription },
+            seatIndex: mySeatIndex
+          });
+        }
+      } else if (signal.candidate) {
+        const pc = peerConnectionsRef.current.get(senderId);
+        if (pc) {
+          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        }
+      }
+    } catch (err) {
+      console.error('Error handling WebRTC signal:', err);
+    }
+  };
+
+  // Microphone capture, WebRTC streaming & real-time speaking detection
   const enableMicrophone = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log('🎤 Requesting microphone access...');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       micStreamRef.current = stream;
+      localStreamRef.current = stream;
+
+      // Broadcast audio track to all active peer connections
+      peerConnectionsRef.current.forEach((pc) => {
+        stream.getAudioTracks().forEach(track => {
+          const senders = pc.getSenders();
+          const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
+          if (audioSender) {
+            audioSender.replaceTrack(track);
+          } else {
+            try { pc.addTrack(track, stream); } catch (e) {}
+          }
+        });
+      });
+
+      // Initiate WebRTC connection with all online room peers
+      onlineUsers.forEach(u => {
+        const uid = String(u._id || u.id);
+        if (uid !== currentUserId && !peerConnectionsRef.current.has(uid)) {
+          createPeerConnection(uid, true);
+        }
+      });
 
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       const ctx = new AudioCtx();
@@ -226,16 +493,28 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           sum += dataArray[i];
         }
         const average = sum / bufferLength;
-        setMyVoiceLevel(Math.min(100, Math.floor(average * 1.5)));
+        const level = Math.min(100, Math.floor(average * 1.5));
+        setMyVoiceLevel(level);
+
+        // Instant voice activity detection & live ring broadcast
+        if (mySeatIndex !== null && !isMyMicMuted) {
+          if (level > 12 && !isSpeakingRef.current) {
+            isSpeakingRef.current = true;
+            setSeats(prev => prev.map(s => s.index === mySeatIndex ? { ...s, isTalking: true } : s));
+            sendWs('seat_status', { seatIndex: mySeatIndex, isTalking: true, isMuted: false });
+          } else if (level <= 12 && isSpeakingRef.current) {
+            isSpeakingRef.current = false;
+            setSeats(prev => prev.map(s => s.index === mySeatIndex ? { ...s, isTalking: false } : s));
+            sendWs('seat_status', { seatIndex: mySeatIndex, isTalking: false, isMuted: false });
+          }
+        }
+
         micRafIdRef.current = requestAnimationFrame(updateAmplitude);
       };
       updateAmplitude();
-
-      if (mySeatIndex !== null) {
-        setSeats(prev => prev.map(s => s.index === mySeatIndex ? { ...s, isTalking: true } : s));
-      }
+      console.log('✅ Microphone activated & streaming live!');
     } catch (err) {
-      console.warn("Microphone access unavailable or denied.");
+      console.warn("Microphone access unavailable or denied:", err);
     }
   };
 
@@ -245,171 +524,330 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       micStreamRef.current.getTracks().forEach(track => track.stop());
     }
     micStreamRef.current = null;
+    localStreamRef.current = null;
     micAnalyserRef.current = null;
+    isSpeakingRef.current = false;
     setMyVoiceLevel(0);
     if (mySeatIndex !== null) {
       setSeats(prev => prev.map(s => s.index === mySeatIndex ? { ...s, isTalking: false } : s));
+      sendWs('seat_status', { seatIndex: mySeatIndex, isTalking: false });
     }
   };
+
+  // --- REAL-TIME WEBSOCKET ROOM SYNC ---
+  useEffect(() => {
+    if (!roomId) return;
+
+    let isMounted = true;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    console.log(`🔌 [WS] Connecting to ${wsUrl} for room ${roomId}`);
+
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log(`✅ [WS] Connected to room ${roomId}`);
+      ws.send(JSON.stringify({
+        type: 'join_room',
+        roomId,
+        userId: currentUserId,
+        userName: currentUser.name,
+        payload: {
+          avatar: currentUser.avatar,
+          level: currentUser.level
+        }
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      if (!isMounted) return;
+      try {
+        const data = JSON.parse(event.data);
+        console.log(`📥 [WS Event]`, data.type);
+
+        if (data.type === 'room_init') {
+          if (data.seats && Array.isArray(data.seats)) {
+            const sanitizedSeats = data.seats.map((s: any) => {
+              if (s.index === 0 && !s.user) {
+                return { ...s, user: safeRoom.host };
+              }
+              return s;
+            });
+            setSeats(sanitizedSeats);
+            const found = sanitizedSeats.find((s: any) => s.user && String(s.user._id || s.user.id) === currentUserId);
+            if (found) setMySeatIndex(found.index);
+          }
+          if (data.onlineUsers && Array.isArray(data.onlineUsers)) {
+            setOnlineUsers(data.onlineUsers);
+          }
+          if (data.chatMessages && Array.isArray(data.chatMessages)) {
+            setChatMessages(data.chatMessages);
+          }
+          if (data.activeGame) {
+            setActiveGame(data.activeGame);
+          }
+        } else if (data.type === 'user_joined') {
+          if (data.onlineUsers) setOnlineUsers(data.onlineUsers);
+          if (data.user) {
+            const joinText = `${data.user.name} joined the room! 👋`;
+            setChatMessages(prev => {
+              // Deduplicate if the same user has joined announcement within the last 3 messages
+              const hasRecent = prev.slice(-3).some(m => m.type === 'system' && m.message === joinText);
+              if (hasRecent) return prev;
+              return [...prev, {
+                id: `join_${data.user._id || data.user.id || data.user.name}_${Date.now()}`,
+                userId: 'system',
+                userName: 'System',
+                userLevel: 0,
+                message: joinText,
+                type: 'system'
+              }];
+            });
+            // If we are currently seated and streaming audio, initiate WebRTC with new peer
+            if (localStreamRef.current && mySeatIndex !== null) {
+              const peerId = String(data.user._id || data.user.id);
+              if (peerId !== currentUserId) {
+                createPeerConnection(peerId, true);
+              }
+            }
+          }
+        } else if (data.type === 'user_left') {
+          if (data.onlineUsers) setOnlineUsers(data.onlineUsers);
+          if (data.seats) setSeats(data.seats);
+          if (data.userId) closePeerConnection(data.userId);
+        } else if (data.type === 'seats_updated') {
+          if (data.seats && Array.isArray(data.seats)) {
+            setSeats(data.seats);
+            const found = data.seats.find((s: any) => s.user && String(s.user._id || s.user.id) === currentUserId);
+            setMySeatIndex(found ? found.index : null);
+
+            // Connect to any seated speaker in the room so we receive their live voice audio
+            data.seats.forEach((s: any) => {
+              if (s.user) {
+                const otherId = String(s.user._id || s.user.id);
+                if (otherId !== currentUserId && !peerConnectionsRef.current.has(otherId)) {
+                  console.log(`📡 Connecting to receive voice from seated speaker: ${s.user.name}`);
+                  createPeerConnection(otherId, true);
+                }
+              }
+            });
+          }
+        } else if (data.type === 'speaker_ready') {
+          const speakerId = String(data.userId);
+          if (speakerId !== currentUserId && !peerConnectionsRef.current.has(speakerId)) {
+            console.log(`🎙️ Speaker ${data.userName} ready on seat ${data.seatIndex}, connecting WebRTC audio...`);
+            createPeerConnection(speakerId, true);
+          }
+        } else if (data.type === 'seat_status_updated') {
+          const { seatIndex, isTalking, isMuted } = data;
+          setSeats(prev => prev.map(s => {
+            if (s.index === seatIndex) {
+              return {
+                ...s,
+                ...(isTalking !== undefined ? { isTalking } : {}),
+                ...(isMuted !== undefined ? { isMuted } : {})
+              };
+            }
+            return s;
+          }));
+        } else if (data.type === 'chat_message') {
+          if (data.message) {
+            setChatMessages(prev => {
+              if (prev.some(m => String(m.id) === String(data.message.id))) return prev;
+              return [...prev, data.message];
+            });
+            if (data.message.userId !== currentUserId) {
+              playSynthSound('tap');
+            }
+          }
+        } else if (data.type === 'gift_event') {
+          if (data.gift) {
+            setActiveGiftEffect(data.gift);
+            playSynthSound('gift');
+            setTimeout(() => setActiveGiftEffect(null), 4000);
+          }
+          if (data.message) {
+            setChatMessages(prev => {
+              if (prev.some(m => m.id === data.message.id)) return prev;
+              return [...prev, data.message];
+            });
+          }
+        } else if (data.type === 'game_event') {
+          if (data.activeGame) setActiveGame(data.activeGame);
+          if (data.gameData) {
+            if (data.gameData.ludo) setLudo(data.gameData.ludo);
+            if (data.gameData.diceDuel) setDiceDuel(data.gameData.diceDuel);
+            if (data.gameData.wheel) {
+              setWheelDegree(data.gameData.wheel.degree);
+              setWheelResult(data.gameData.wheel.result);
+            }
+          }
+        } else if (data.type === 'reaction') {
+          if (data.emoji !== undefined && data.seatIndex !== undefined) {
+            const id = Math.random().toString();
+            setReactions(prev => [...prev, { id, emoji: data.emoji, seatIndex: data.seatIndex }]);
+            setTimeout(() => {
+              setReactions(prev => prev.filter(r => r.id !== id));
+            }, 2000);
+          }
+        } else if (data.type === 'webrtc_signal') {
+          handleWebRTCSignal(data.senderId, data.signal);
+        }
+      } catch (err) {
+        console.error('Failed to parse WS message:', err);
+      }
+    };
+
+    ws.onclose = () => {
+      console.log(`🔌 [WS] Disconnected from room ${roomId}`);
+    };
+
+    // Polling fallback only if WebSocket is disconnected or recovering
+    const pollInterval = setInterval(async () => {
+      if (ws.readyState === WebSocket.OPEN) return;
+      try {
+        const res = await fetch(`/api/rooms/${roomId}/seats`);
+        if (res.ok) {
+          const d = await res.json();
+          if (d.success && d.room) {
+            if (d.room.seats && Array.isArray(d.room.seats)) {
+              const sanitizedSeats = d.room.seats.map((s: any) => {
+                if (s.index === 0 && !s.user) {
+                  return { ...s, user: safeRoom.host };
+                }
+                return s;
+              });
+              setSeats(sanitizedSeats);
+            }
+            if (d.room.onlineUsers) setOnlineUsers(d.room.onlineUsers);
+          }
+        }
+      } catch (err) {}
+    }, 4000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+
+      // Notify WebSocket and close
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({
+            type: 'leave_room',
+            roomId,
+            userId: currentUserId,
+            userName: currentUser.name
+          }));
+        } catch (e) {}
+        ws.close();
+      }
+
+      // Close all WebRTC peer connections and audio
+      peerConnectionsRef.current.forEach(pc => pc.close());
+      peerConnectionsRef.current.clear();
+      remoteAudiosRef.current.forEach(audio => {
+        audio.pause();
+        audio.srcObject = null;
+      });
+      remoteAudiosRef.current.clear();
+      disableMicrophone();
+
+      // Backup HTTP leave call
+      fetch(`/api/rooms/${roomId}/leave`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUserId })
+      }).catch(e => console.warn('HTTP leave fallback error:', e));
+    };
+  }, [roomId, currentUserId]);
 
   // Click handler for Seat triggers Action Menu
   const handleSeatClick = (index: number) => {
     playSynthSound('tap');
+    if (index === 0) {
+      const isHost = String(currentUserId) === String((safeRoom.host as any)?._id || safeRoom.host?.id) || currentUser.name === safeRoom.host?.name;
+      if (!isHost) {
+        toast(`Host Seat belongs exclusively to ${safeRoom.host?.name || 'Host'} 👑`, 'info');
+        return;
+      }
+    }
     setSelectedSeatIndex(index);
     setCustomGuestName(`Guest Seat ${index}`);
     setCustomGuestLevel(Math.floor(Math.random() * 20) + 5);
     setShowSeatModal(true);
   };
 
-  // Fetch room seats from backend (for syncing with other users)
-  React.useEffect(() => {
-    if (!room) return;
-
-    let isMounted = true;
-
-    const fetchSeats = async () => {
-      try {
-        const roomId = (room as any)._id || room.id;
-        if (!roomId) return;
-
-        const res = await fetch(`/api/rooms/${roomId}/seats`);
-        if (!res.ok) {
-          console.error('❌ Failed to fetch seats:', res.status);
-          return;
-        }
-
-        const data = await res.json();
-        if (!isMounted) return;
-
-        if (data.success && data.room && Array.isArray(data.room.seats)) {
-          // Ensure seats have valid structure with all required fields
-          const validatedSeats = data.room.seats.map((s: any, idx: number) => ({
-            index: s.index ?? idx,
-            user: s.user ? {
-              id: s.user.id,
-              name: s.user.name || 'Unknown',
-              avatar: s.user.avatar || PRESET_AVATARS[0],
-              level: s.user.level || 1,
-              coins: s.user.coins || 0,
-              frameId: s.user.frameId || 'none',
-              bubbleId: s.user.bubbleId || 'none',
-              badge: s.user.badge || '🎤 Talker'
-            } : null,
-            isMuted: !!s.isMuted,
-            isTalking: !!s.isTalking
-          }));
-          setSeats(validatedSeats);
-        }
-      } catch (err) {
-        if (isMounted) {
-          console.warn('Failed to fetch seats:', err);
-        }
-      }
-    };
-
-    // Initial fetch
-    fetchSeats();
-
-    // Poll every 1 second for real-time sync
-    const interval = setInterval(fetchSeats, 1000);
-
-    return () => {
-      isMounted = false;
-      clearInterval(interval);
-    };
-  }, [room]);
-
-  // Seat Action implementation handlers
+  // Seat Action implementation handlers - Instantaneous with Optimistic UI
   const handleSitSelf = async () => {
+    if (selectedSeatIndex === null) return;
+    const index = selectedSeatIndex;
+    setShowSeatModal(false);
+
+    // Save previous snapshot for rollback if needed
+    const prevSeats = [...seats];
+    const prevMySeat = mySeatIndex;
+
+    // Optimistically sit immediately (0ms visual latency)
+    const optimisticUser = {
+      ...currentUser,
+      id: String(currentUser.id || (currentUser as any)._id),
+      _id: String(currentUser.id || (currentUser as any)._id)
+    };
+
+    setSeats(prev => prev.map(s => {
+      if (s.index === index) {
+        return { ...s, user: optimisticUser, isTalking: false, isMuted: false };
+      }
+      if (prevMySeat !== null && s.index === prevMySeat) {
+        return { ...s, user: null, isTalking: false, isMuted: false };
+      }
+      return s;
+    }));
+    setMySeatIndex(index);
+    setIsMyMicMuted(false);
+
+    // Start microphone in parallel so audio doesn't block UI
+    enableMicrophone().catch(err => console.warn('Mic enable warn:', err));
+
+    // Send WebSocket notification immediately
+    sendWs('seat_status', { seatIndex: index, isTalking: false, isMuted: false });
+
     try {
-      if (selectedSeatIndex === null) return;
-      const index = selectedSeatIndex;
+      // Backend automatically vacates user's previous seat in room, no need to send redundant /leave request first!
+      const res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: optimisticUser, action: 'sit' })
+      });
 
-      try {
-        // First, leave previous seat if any
-        if (mySeatIndex !== null) {
-          const roomId = (room as any)._id || room.id;
-          if (roomId) {
-            console.log(`👋 Leaving previous seat ${mySeatIndex}`);
-            await fetch(`/api/rooms/${roomId}/seat/${mySeatIndex}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'leave' })
-            }).catch(e => console.warn('Couldnt leave previous seat:', e));
-          }
-        }
-
-        // Now sit in new seat
-        const roomId = (room as any)._id || room.id;
-        if (!roomId) {
-          console.error('❌ No room ID found! Room:', room);
-          alert('Error: Unable to identify room. Please try again.');
-          return;
-        }
-
-        console.log(`🪑 Attempting to sit in seat ${index} in room ${roomId}`);
-        const res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user: currentUser, action: 'sit' })
-        });
-
-        console.log(`📍 Server response status: ${res.status}`);
-
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          console.error('❌ Server error:', res.status, errData);
-          alert(`Failed: ${errData.error || 'Could not sit in seat'}`);
-          setShowSeatModal(false);
-          return;
-        }
-
-        const data = await res.json();
-        console.log('📡 Full response:', data);
-
-        if (data.success && data.room) {
-          console.log('✅ Successfully sat in seat:', index);
-          console.log('📊 New seats:', data.room.seats);
-
-          if (data.room.seats && Array.isArray(data.room.seats)) {
-            setSeats(data.room.seats);
-          }
-          setMySeatIndex(index);
-
-          setChatMessages(prev => [...prev, {
-            id: String(Date.now()),
-            userId: 'system',
-            userName: 'System',
-            userLevel: 0,
-            message: `${currentUser.name} sat on Mic Seat ${index}! 🎙️`,
-            type: 'system'
-          }]);
-
-          if (!isMyMicMuted) {
-            enableMicrophone();
-          }
-        } else {
-          console.error('❌ Invalid response:', data);
-          alert('Invalid server response');
-        }
-      } catch (err) {
-        console.error('❌ Error sitting in seat:', err);
-        alert(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        toast(`Failed: ${errData.error || 'Could not sit in seat'}`, 'error');
+        // Rollback state on error
+        setSeats(prevSeats);
+        setMySeatIndex(prevMySeat);
+        return;
       }
 
-      setShowSeatModal(false);
-    } catch (outerErr) {
-      console.error('❌ Critical error in handleSitSelf:', outerErr);
-      alert('Critical error occurred');
-      setShowSeatModal(false);
+      const data = await res.json();
+      if (data.success && data.room?.seats) {
+        setSeats(data.room.seats);
+      }
+    } catch (err) {
+      console.error('Error sitting in seat:', err);
+      // Rollback state on error
+      setSeats(prevSeats);
+      setMySeatIndex(prevMySeat);
+      toast('Failed to sit in seat. Please try again.', 'error');
     }
   };
 
-  const handleSpawnPresetGuest = () => {
+  const handleSpawnPresetGuest = async () => {
     if (selectedSeatIndex === null) return;
     const index = selectedSeatIndex;
 
-    const names = ["Olivia", "William", "Lucas", "Sophia", "Sophia", "Mia", "Amelia", "Jack", "Maya", "Daniel"];
+    const names = ["Olivia", "William", "Lucas", "Sophia", "Mia", "Amelia", "Jack", "Maya", "Daniel"];
     const nameSelected = names[Math.floor(Math.random() * names.length)] + " ⚡";
     const levelSelected = Math.floor(Math.random() * 40) + 10;
     const avatarSelected = PRESET_AVATARS[Math.floor(Math.random() * PRESET_AVATARS.length)];
@@ -425,8 +863,24 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       badge: '🎤 Talker'
     };
 
-    setSeats(prev => prev.map(s => s.index === index ? { ...s, user: newGuest, isTalking: false, isMuted: false } : s));
     setShowSeatModal(false);
+    setSeats(prev => prev.map(s => s.index === index ? { ...s, user: newGuest, isTalking: false, isMuted: false } : s));
+
+    try {
+      const res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: newGuest, action: 'sit' })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.room?.seats) {
+          setSeats(data.room.seats);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to persist simulated guest seat:', err);
+    }
 
     setChatMessages(prev => [...prev, {
       id: String(Date.now()),
@@ -438,9 +892,10 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     }]);
   };
 
-  const handleCreateCustomGuest = (e: React.FormEvent) => {
+  const handleCreateCustomGuest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (selectedSeatIndex === null || !customGuestName.trim()) return;
+    const index = selectedSeatIndex;
 
     const newGuest: User = {
       id: `custom_${Date.now()}`,
@@ -453,34 +908,104 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       badge: '🎖️ Member'
     };
 
-    setSeats(prev => prev.map(s => s.index === selectedSeatIndex ? { ...s, user: newGuest, isTalking: false, isMuted: false } : s));
     setShowSeatModal(false);
+    setSeats(prev => prev.map(s => s.index === index ? { ...s, user: newGuest, isTalking: false, isMuted: false } : s));
+
+    try {
+      const res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: newGuest, action: 'sit' })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.room?.seats) {
+          setSeats(data.room.seats);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to persist custom guest seat:', err);
+    }
 
     setChatMessages(prev => [...prev, {
       id: String(Date.now()),
       userId: 'system',
       userName: 'System',
       userLevel: 0,
-      message: `${newGuest.name} was seated on Mic Seat ${selectedSeatIndex} by you!`,
+      message: `${newGuest.name} was seated on Mic Seat ${index} by you!`,
       type: 'system'
     }]);
   };
 
-  const handleLeaveSeat = () => {
-    if (selectedSeatIndex === null) return;
-    const index = selectedSeatIndex;
+  const handleLeaveSeat = async () => {
+    // If selectedSeatIndex is set, use it; otherwise fallback to user's currently occupied seat
+    const index = selectedSeatIndex !== null ? selectedSeatIndex : mySeatIndex;
+    if (index === null || index === undefined) return;
 
-    const leavingUser = seats[index].user;
-    if (!leavingUser) return;
-
-    setSeats(prev => prev.map(s => s.index === index ? { ...s, user: null, isTalking: false } : s));
-    
-    if (leavingUser.id === currentUser.id) {
-      setMySeatIndex(null);
-      disableMicrophone();
+    const leavingUser = seats[index]?.user || currentUser;
+    if (!leavingUser) {
+      setShowSeatModal(false);
+      setShowUserProfileModal(false);
+      return;
     }
 
+    const leavingUserId = String(leavingUser._id || leavingUser.id || (leavingUser as any).userId);
+    const currentUid = String(currentUser._id || currentUser.id || currentUserId);
+    const isMe = leavingUserId === currentUid || leavingUser.name === currentUser.name;
+
     setShowSeatModal(false);
+    setShowUserProfileModal(false);
+
+    // Save previous snapshot for rollback if needed
+    const prevSeats = [...seats];
+    const prevMySeat = mySeatIndex;
+
+    // Optimistically update local seats state immediately (<1ms)
+    setSeats(prev => prev.map(s => s.index === index ? { 
+      ...s, 
+      user: index === 0 ? safeRoom.host : null, 
+      isTalking: false, 
+      isMuted: false 
+    } : s));
+    
+    if (isMe) {
+      setMySeatIndex(null);
+      disableMicrophone();
+      setIsMyMicMuted(true);
+    }
+
+    // Call server to persist the vacancy and broadcast seats_updated to all clients
+    try {
+      const res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'leave', user: leavingUser })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.room?.seats) {
+          const sanitized = data.room.seats.map((s: any) => {
+            if (s.index === 0 && !s.user) return { ...s, user: safeRoom.host };
+            return s;
+          });
+          setSeats(sanitized);
+        }
+      } else {
+        // Rollback state on error
+        setSeats(prevSeats);
+        if (isMe) setMySeatIndex(prevMySeat);
+      }
+    } catch (err) {
+      console.warn('Failed to persist leaving seat to server:', err);
+      // Rollback state on error
+      setSeats(prevSeats);
+      if (isMe) setMySeatIndex(prevMySeat);
+    }
+
+    // Broadcast seat status update via WebSocket
+    sendWs('seat_status', { seatIndex: index, isTalking: false, isMuted: false });
+
+    toast(`${leavingUser.name} left Mic Seat ${index}`, 'info');
 
     setChatMessages(prev => [...prev, {
       id: String(Date.now()),
@@ -548,77 +1073,109 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     const newMuted = !isMyMicMuted;
     setIsMyMicMuted(newMuted);
 
+    if (localStreamRef.current) {
+      localStreamRef.current.getAudioTracks().forEach(track => {
+        track.enabled = !newMuted;
+      });
+    }
+
     if (mySeatIndex !== null) {
-      setSeats(prev => prev.map(s => s.index === mySeatIndex ? { ...s, isMuted: newMuted } : s));
+      setSeats(prev => prev.map(s => s.index === mySeatIndex ? { ...s, isMuted: newMuted, isTalking: false } : s));
+      sendWs('seat_status', { seatIndex: mySeatIndex, isMuted: newMuted, isTalking: false });
     }
 
     if (newMuted) {
-      disableMicrophone();
-    } else {
-      enableMicrophone();
+      isSpeakingRef.current = false;
     }
   };
 
-  // Simulated reactions trigger helper
+  // Reactions trigger & broadcast
   const triggerFlyReaction = (emoji: string, seatIndex: number) => {
     const id = Math.random().toString();
     setReactions(prev => [...prev, { id, emoji, seatIndex }]);
     setTimeout(() => {
       setReactions(prev => prev.filter(r => r.id !== id));
     }, 2000);
+
+    sendWs('reaction', { emoji, seatIndex });
   };
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!textInput.trim()) return;
 
+    const content = textInput.trim();
+    setTextInput('');
+    playSynthSound('tap');
+
     const newMsg: ChatMessage = {
       id: String(Date.now()),
-      userId: currentUser.id,
+      userId: currentUserId,
       userName: currentUser.name,
       userLevel: currentUser.level,
-      message: textInput.trim(),
+      message: content,
       type: 'text'
     };
 
     setChatMessages(prev => [...prev, newMsg]);
-    setTextInput('');
-    playSynthSound('tap');
+
+    // Broadcast instantly to all devices via WebSocket
+    sendWs('chat_message', newMsg);
+
+    // Save to server
+    try {
+      await fetch(`/api/rooms/${roomId}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: newMsg })
+      });
+    } catch (err) {
+      console.warn('Failed to persist chat message:', err);
+    }
   };
 
-  // Gift Sending Action Handler
-  const handleSendGift = (gift: Gift) => {
-    if (currentUser.coins < gift.coins) {
-      alert("Insufficient Gold Coins! Please recharge in the Privilege Store. 🪙");
+  // Gift Sending Action Handler (Synchronized across all devices)
+  const handleSendGift = async (gift: Gift) => {
+    if (currentUser.role !== 'admin' && currentUser.coins < gift.coins) {
+      toast("Insufficient Gold Coins! Please recharge in the Privilege Store. 🪙", "warning");
       return;
     }
 
-    const newCoins = currentUser.coins - gift.coins;
-    onUpdateCoins(newCoins);
-
-    let recipientName = "the Host";
-    if (selectedGiftRecipient !== 'all') {
-      recipientName = seats[selectedGiftRecipient]?.user?.name || "the Host";
-    }
-
-    const newMsg: ChatMessage = {
-      id: String(Date.now()),
-      userId: currentUser.id,
-      userName: currentUser.name,
-      userLevel: currentUser.level,
-      message: `sent ${gift.icon} ${gift.name} to ${recipientName}! 🎉`,
-      type: 'gift',
-      giftName: gift.name,
-      giftIcon: gift.icon,
-      giftCount: 1
-    };
-
-    setChatMessages(prev => [...prev, newMsg]);
     setShowGiftDrawer(false);
     playSynthSound('gift');
-
     setActiveGiftEffect(gift);
     setTimeout(() => setActiveGiftEffect(null), 4000);
+
+    if (currentUser.role !== 'admin') {
+      onUpdateCoins(currentUser.coins - gift.coins);
+    }
+
+    let recipientName = "the Host";
+    if (selectedGiftRecipient !== 'all' && typeof selectedGiftRecipient === 'number') {
+      recipientName = seats[selectedGiftRecipient]?.user?.name || "the Host";
+    } else if (selectedGiftRecipient === 'all') {
+      recipientName = "Everyone in room";
+    }
+
+    try {
+      const res = await fetch(`/api/rooms/${roomId}/gift`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          senderId: currentUserId,
+          recipientSeat: selectedGiftRecipient,
+          gift
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.newCoins !== undefined && currentUser.role !== 'admin') {
+          onUpdateCoins(data.newCoins);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to send gift to server:', err);
+    }
   };
 
   const toggleBackingTrack = (track: typeof AUDIO_TRACKS[0]) => {
@@ -648,7 +1205,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     });
 
     if (seatedUsers.length === 0) {
-      alert("At least one speaker must be seated on mic seats to play Ludo!");
+      toast("At least one speaker must be seated on mic seats to play Ludo!", "info");
       return;
     }
 
@@ -794,7 +1351,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   const spinLuckyWheel = () => {
     if (isWheelSpinning) return;
     if (currentUser.coins < 20) {
-      alert("Need at least 20 Gold Coins to spin! 🪙");
+      toast("Need at least 20 Gold Coins to spin! 🪙", "warning");
       return;
     }
 
@@ -850,80 +1407,239 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       
       {/* Background Themed Atmosphere */}
       <div className={`absolute inset-0 z-0 opacity-20 transition-all pointer-events-none ${
-        room.theme === 'neon' ? 'bg-gradient-to-tr from-violet-100 via-slate-50 to-indigo-100' :
-        room.theme === 'pink' ? 'bg-gradient-to-tr from-pink-100 via-slate-50 to-rose-100' :
-        room.theme === 'royal' ? 'bg-gradient-to-tr from-amber-100 via-slate-50 to-blue-100' :
+        safeRoom.theme === 'neon' ? 'bg-gradient-to-tr from-violet-100 via-slate-50 to-indigo-100' :
+        safeRoom.theme === 'pink' ? 'bg-gradient-to-tr from-pink-100 via-slate-50 to-rose-100' :
+        safeRoom.theme === 'royal' ? 'bg-gradient-to-tr from-amber-100 via-slate-50 to-blue-100' :
         'bg-gradient-to-tr from-purple-100 via-slate-50 to-emerald-100'
       }`}></div>
 
-      {/* Fullscreen Gift Animation Overlay */}
+      {/* ===== FULLSCREEN GIFT ANIMATION OVERLAY ===== */}
       <AnimatePresence>
         {activeGiftEffect && (
-          <div className="absolute inset-0 z-50 pointer-events-none flex flex-col items-center justify-center bg-white/40 backdrop-blur-[1px]">
-            {activeGiftEffect.effect === 'rose' && (
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.5 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0 }}
-                className="flex flex-col items-center justify-center text-center"
-              >
-                <div className="text-8xl animate-[bounce_1s_infinite]">🌹</div>
-                <h3 className="text-xl font-black text-rose-600 drop-shadow-[0_4px_10px_rgba(244,63,94,0.3)] mt-4">
-                  ROSE SHOWER SPARKLE!
-                </h3>
-              </motion.div>
-            )}
+          <motion.div
+            key={activeGiftEffect.id}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+            className="absolute inset-0 z-50 pointer-events-none overflow-hidden"
+          >
+            {/* Radial glow background */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.6 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.5 }}
+              className={`absolute inset-0 ${
+                activeGiftEffect.effect === 'rose' ? 'bg-[radial-gradient(ellipse_at_center,rgba(244,63,94,0.35)_0%,transparent_70%)]' :
+                activeGiftEffect.effect === 'crown' ? 'bg-[radial-gradient(ellipse_at_center,rgba(234,179,8,0.4)_0%,transparent_70%)]' :
+                activeGiftEffect.effect === 'rocket' ? 'bg-[radial-gradient(ellipse_at_center,rgba(99,102,241,0.4)_0%,transparent_70%)]' :
+                activeGiftEffect.effect === 'car' ? 'bg-[radial-gradient(ellipse_at_center,rgba(239,68,68,0.35)_0%,transparent_70%)]' :
+                'bg-[radial-gradient(ellipse_at_center,rgba(244,63,94,0.3)_0%,transparent_70%)]'
+              }`}
+            />
 
-            {activeGiftEffect.effect === 'crown' && (
-              <motion.div 
-                initial={{ y: -100, opacity: 0, scale: 0.8 }}
-                animate={{ y: 0, opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 1.2 }}
-                transition={{ type: 'spring', damping: 10 }}
-                className="flex flex-col items-center"
-              >
-                <div className="text-8xl drop-shadow-[0_8px_15px_rgba(234,179,8,0.4)]">👑</div>
-                <h3 className="text-xl font-black text-amber-500 uppercase tracking-widest mt-4">
-                  CROWN OF ROYAL MAJESTY
-                </h3>
-              </motion.div>
-            )}
+            {/* Floating particle emojis (background layer) */}
+            {Array.from({ length: 12 }).map((_, i) => {
+              const icons = activeGiftEffect.effect === 'rose' ? ['🌹','✨','💕','🌸','💝'] :
+                            activeGiftEffect.effect === 'crown' ? ['👑','⭐','✨','💫','🌟'] :
+                            activeGiftEffect.effect === 'rocket' ? ['🚀','⭐','💫','🌠','✨'] :
+                            activeGiftEffect.effect === 'car' ? ['🏎️','💨','⚡','🔥','✨'] :
+                            [activeGiftEffect.icon || '🎁', '✨','💫','⭐','🎊'];
+              const icon = icons[i % icons.length];
+              return (
+                <motion.div
+                  key={i}
+                  initial={{
+                    opacity: 0,
+                    x: `${Math.random() * 100}vw`,
+                    y: '110vh',
+                    scale: 0.4 + Math.random() * 0.8,
+                    rotate: Math.random() * 360
+                  }}
+                  animate={{
+                    opacity: [0, 0.9, 0.9, 0],
+                    y: `-${20 + Math.random() * 40}vh`,
+                    rotate: Math.random() * 720 - 360,
+                  }}
+                  transition={{
+                    duration: 2.5 + Math.random() * 1.5,
+                    delay: Math.random() * 0.8,
+                    ease: 'easeOut'
+                  }}
+                  style={{ position: 'absolute', fontSize: `${1.2 + Math.random() * 1.4}rem` }}
+                >
+                  {icon}
+                </motion.div>
+              );
+            })}
 
-            {activeGiftEffect.effect === 'car' && (
-              <motion.div 
-                initial={{ x: -300, y: 100, opacity: 0, scale: 0.8 }}
-                animate={{ x: 0, y: 0, opacity: 1, scale: 1.1 }}
-                exit={{ x: 300, y: -100, opacity: 0 }}
-                transition={{ duration: 1.5, ease: "easeInOut" }}
-                className="flex flex-col items-center"
-              >
-                <div className="text-9xl filter hue-rotate-15">🏎️💨</div>
-                <h3 className="text-lg font-black text-rose-600 drop-shadow-[0_2px_8px_rgba(0,0,0,0.1)] mt-3">
-                  GOLDEN HYPERCAR RACING BY!
-                </h3>
-              </motion.div>
-            )}
+            {/* Center showcase */}
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
 
-            {activeGiftEffect.effect === 'rocket' && (
-              <motion.div 
-                initial={{ y: 400, opacity: 0, scale: 0.5 }}
-                animate={{ y: -150, opacity: 1, scale: 1.2 }}
-                exit={{ y: -600, opacity: 0 }}
-                transition={{ duration: 2.2, ease: "easeOut" }}
-                className="flex flex-col items-center"
+              {/* Rose special */}
+              {activeGiftEffect.effect === 'rose' && (
+                <motion.div
+                  initial={{ scale: 0.3, opacity: 0, rotate: -20 }}
+                  animate={{ scale: [0.3, 1.3, 1.0], opacity: 1, rotate: [-20, 10, 0] }}
+                  exit={{ scale: 1.4, opacity: 0 }}
+                  transition={{ duration: 0.8, ease: 'backOut' }}
+                  className="flex flex-col items-center gap-3"
+                >
+                  <div className="relative">
+                    <div className="absolute inset-0 blur-2xl scale-150 opacity-60 text-8xl text-center">🌹</div>
+                    <div className="text-8xl drop-shadow-2xl animate-[bounce_1s_ease-in-out_infinite]">🌹</div>
+                  </div>
+                  <motion.div
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: 0.4 }}
+                    className="bg-gradient-to-r from-rose-600 to-pink-600 px-6 py-2 rounded-full shadow-2xl shadow-rose-500/40"
+                  >
+                    <h3 className="text-base font-black text-white uppercase tracking-widest drop-shadow">🌹 Rose Shower!</h3>
+                  </motion.div>
+                </motion.div>
+              )}
+
+              {/* Crown special */}
+              {activeGiftEffect.effect === 'crown' && (
+                <motion.div
+                  initial={{ y: -200, opacity: 0, scale: 0.6 }}
+                  animate={{ y: 0, opacity: 1, scale: [0.6, 1.25, 1.0] }}
+                  exit={{ scale: 1.3, opacity: 0 }}
+                  transition={{ type: 'spring', damping: 8, stiffness: 120, delay: 0 }}
+                  className="flex flex-col items-center gap-3"
+                >
+                  <div className="relative">
+                    <div className="absolute inset-0 blur-3xl scale-200 opacity-70 text-8xl text-center">👑</div>
+                    <div className="text-9xl drop-shadow-[0_10px_30px_rgba(234,179,8,0.7)] animate-[spin_4s_linear_infinite]">👑</div>
+                  </div>
+                  <motion.div
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: 0.5 }}
+                    className="bg-gradient-to-r from-amber-500 to-yellow-400 px-6 py-2 rounded-full shadow-2xl shadow-amber-500/50"
+                  >
+                    <h3 className="text-base font-black text-white uppercase tracking-widest">👑 Royal Majesty!</h3>
+                  </motion.div>
+                </motion.div>
+              )}
+
+              {/* Car special */}
+              {activeGiftEffect.effect === 'car' && (
+                <motion.div
+                  initial={{ x: '-100vw', opacity: 0, scale: 0.8 }}
+                  animate={{ x: 0, opacity: 1, scale: [0.8, 1.1, 1.0] }}
+                  exit={{ x: '100vw', opacity: 0 }}
+                  transition={{ duration: 1.2, ease: 'easeOut' }}
+                  className="flex flex-col items-center gap-3"
+                >
+                  <div className="relative">
+                    <div className="absolute inset-0 blur-2xl scale-150 opacity-50 text-9xl text-center">🏎️</div>
+                    <div className="text-9xl drop-shadow-[0_8px_20px_rgba(239,68,68,0.5)]">🏎️💨</div>
+                  </div>
+                  <motion.div
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: 0.6 }}
+                    className="bg-gradient-to-r from-red-600 to-rose-500 px-6 py-2 rounded-full shadow-2xl shadow-red-500/50"
+                  >
+                    <h3 className="text-base font-black text-white uppercase tracking-widest">⚡ Hypercar Flex!</h3>
+                  </motion.div>
+                </motion.div>
+              )}
+
+              {/* Rocket special */}
+              {activeGiftEffect.effect === 'rocket' && (
+                <motion.div
+                  initial={{ y: '100vh', opacity: 0, scale: 0.4 }}
+                  animate={{ y: 0, opacity: 1, scale: [0.4, 1.3, 1.0] }}
+                  exit={{ y: '-100vh', opacity: 0, scale: 1.2 }}
+                  transition={{ duration: 1.4, ease: 'easeOut' }}
+                  className="flex flex-col items-center gap-3"
+                >
+                  <div className="relative">
+                    <div className="absolute inset-0 blur-3xl scale-150 opacity-60 text-9xl text-center">🚀</div>
+                    <div className="text-9xl drop-shadow-[0_12px_30px_rgba(99,102,241,0.6)] animate-[bounce_0.8s_ease-in-out_infinite]">🚀</div>
+                  </div>
+                  <motion.div
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: 0.7 }}
+                    className="bg-gradient-to-r from-indigo-600 to-violet-600 px-6 py-2 rounded-full shadow-2xl shadow-indigo-500/50"
+                  >
+                    <h3 className="text-base font-black text-white uppercase tracking-widest">🚀 Cosmic Launch!</h3>
+                  </motion.div>
+                </motion.div>
+              )}
+
+              {/* Fallback — any custom gift */}
+              {activeGiftEffect.effect !== 'rose' && activeGiftEffect.effect !== 'crown' && activeGiftEffect.effect !== 'car' && activeGiftEffect.effect !== 'rocket' && (
+                <motion.div
+                  initial={{ scale: 0.2, opacity: 0 }}
+                  animate={{ scale: [0.2, 1.3, 1.0], opacity: 1 }}
+                  exit={{ scale: 1.4, opacity: 0 }}
+                  transition={{ duration: 0.9, ease: 'backOut' }}
+                  className="flex flex-col items-center gap-3"
+                >
+                  <div className="relative">
+                    <div className="absolute inset-0 blur-2xl scale-150 opacity-50 text-center" style={{ fontSize: '5rem' }}>
+                      {activeGiftEffect.icon || '🎁'}
+                    </div>
+                    <div
+                      className="drop-shadow-[0_12px_30px_rgba(244,63,94,0.5)] animate-[bounce_0.9s_ease-in-out_infinite]"
+                      style={{ fontSize: '5.5rem', lineHeight: 1 }}
+                    >
+                      {activeGiftEffect.icon || '🎁'}
+                    </div>
+                  </div>
+                  <motion.div
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: 0.45 }}
+                    className="bg-gradient-to-r from-rose-500 to-pink-600 px-6 py-2 rounded-full shadow-2xl shadow-rose-500/40"
+                  >
+                    <h3 className="text-sm font-black text-white uppercase tracking-widest">
+                      {activeGiftEffect.name} Shower! ✨
+                    </h3>
+                  </motion.div>
+                  {activeGiftEffect.description && (
+                    <motion.p
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ delay: 0.7 }}
+                      className="text-[11px] font-bold text-white/80 bg-black/30 px-4 py-1.5 rounded-full backdrop-blur-sm text-center max-w-[220px]"
+                    >
+                      {activeGiftEffect.description}
+                    </motion.p>
+                  )}
+                </motion.div>
+              )}
+            </div>
+
+            {/* Sparkle corner bursts */}
+            {['top-4 left-4', 'top-4 right-4', 'bottom-28 left-4', 'bottom-28 right-4'].map((pos, i) => (
+              <motion.div
+                key={i}
+                initial={{ opacity: 0, scale: 0 }}
+                animate={{ opacity: [0, 1, 0], scale: [0, 1.5, 0] }}
+                transition={{ duration: 1.2, delay: 0.2 + i * 0.15, repeat: 2, repeatDelay: 0.4 }}
+                className={`absolute ${pos} text-2xl`}
               >
-                <div className="text-9xl">🚀</div>
-                <h3 className="text-lg font-black text-indigo-600 drop-shadow-[0_4px_12px_rgba(6,182,212,0.3)] uppercase mt-3">
-                  COSMIC ROCKET TAKEOFF!
-                </h3>
+                ✨
               </motion.div>
-            )}
-          </div>
+            ))}
+          </motion.div>
         )}
       </AnimatePresence>
 
+
       {/* Room Header */}
-      <div id="voiceRoom_header" className="h-14 px-4 flex items-center justify-between border-b border-zinc-200 z-10 bg-white/90 backdrop-blur-md shrink-0">
+      <div 
+        id="voiceRoom_header" 
+        className="h-14 px-4 flex items-center justify-between border-b border-zinc-200 z-10 bg-white/90 backdrop-blur-md shrink-0"
+        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+      >
         <div className="flex items-center gap-2">
           <button 
             id="voiceRoom_backBtn"
@@ -933,19 +1649,86 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
             <ChevronLeft className="w-5 h-5" />
           </button>
           <div className="min-w-0">
-            <h2 className="text-xs font-black text-zinc-800 truncate w-[160px]">{room.title}</h2>
+            <h2 className="text-xs font-black text-zinc-800 truncate w-[160px] flex items-center gap-1">
+              {(safeRoom as any).isPrivate && <span title="Private Room">🔒</span>}
+              <span className="truncate">{safeRoom.title}</span>
+            </h2>
             <div className="flex items-center gap-1.5 mt-0.5">
-              <span className="text-[9px] text-rose-500 font-bold">Host: {room.host.name}</span>
-              <span className="text-[9px] bg-stone-100 text-zinc-500 px-1.5 py-0.2 rounded font-black">Lvl {room.host.level}</span>
+              <span className="text-[9px] text-rose-500 font-bold">Host: {safeRoom.host.name}</span>
+              <span className="text-[9px] bg-stone-100 text-zinc-500 px-1.5 py-0.2 rounded font-black">Lvl {safeRoom.host.level}</span>
+              {(safeRoom as any).roomId && (
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(String((safeRoom as any).roomId));
+                    toast(`Room code #${(safeRoom as any).roomId} copied! 📋`, 'success');
+                  }}
+                  className="text-[9px] bg-indigo-50 border border-indigo-200 text-indigo-700 px-1.5 py-0.2 rounded font-mono font-bold cursor-pointer hover:bg-indigo-100"
+                  title="Click to copy Room Code"
+                >
+                  #{(safeRoom as any).roomId}
+                </button>
+              )}
             </div>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 text-[10px] bg-rose-50 border border-rose-200 text-rose-700 font-black px-2.5 py-1 rounded-full shadow-sm">
+          {/* Online Room Audience & Participants */}
+          <button
+            onClick={() => setShowAudienceModal(true)}
+            className="flex items-center gap-1 text-[10px] bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 font-black px-2.5 py-1 rounded-full shadow-sm cursor-pointer transition-colors"
+            title="View all users currently in this room"
+          >
             <Users className="w-3 h-3" />
-            <span>{seats.filter(s => s.user !== null).length} mic seats</span>
+            <span>{uniqueParticipants.length}</span>
+          </button>
+
+          {/* Share Room Button */}
+          <button
+            onClick={() => {
+              const code = (safeRoom as any).roomId || '';
+              const inviteText = code
+                ? `Join my ZOYO voice room "${safeRoom.title}"! Room Code: ${code}`
+                : `Join my ZOYO voice room "${safeRoom.title}"! Room ID: ${roomId}`;
+              navigator.clipboard.writeText(inviteText);
+              toast(`Room code ${code || ''} copied! Share with friends 📋🚀`, 'success');
+            }}
+            className="flex items-center gap-1 text-[10px] bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-700 font-black px-2 py-1 rounded-full shadow-sm cursor-pointer transition-colors"
+            title="Share room invitation"
+          >
+            <Share2 className="w-3 h-3" />
+            <span>{(safeRoom as any).roomId ? `#${(safeRoom as any).roomId}` : 'Share'}</span>
+          </button>
+
+          {/* Invite Friends Button — host only, especially for private rooms */}
+          {isCurrentUserHost && (
+            <button
+              onClick={async () => {
+                setShowInvitePanel(true);
+                if (friendsList.length === 0) {
+                  try {
+                    const uid = currentUser._id || currentUser.id;
+                    const res = await fetch(`/api/friends/${uid}`);
+                    if (res.ok) {
+                      const data = await res.json();
+                      setFriendsList(data.friends || []);
+                    }
+                  } catch { /* ignore */ }
+                }
+              }}
+              className="flex items-center gap-1 text-[10px] bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 font-black px-2 py-1 rounded-full shadow-sm cursor-pointer transition-colors"
+              title="Invite friends to room"
+            >
+              <UserPlus className="w-3 h-3" />
+              <span>Invite</span>
+            </button>
+          )}
+
+          <div className="flex items-center gap-1 text-[10px] bg-rose-50 border border-rose-200 text-rose-700 font-black px-2 py-1 rounded-full shadow-sm">
+            <Mic className="w-3 h-3" />
+            <span>{seats.filter(s => s.user !== null).length}/9</span>
           </div>
+
           <button 
             id="voiceRoom_exitBtn"
             onClick={onLeave}
@@ -956,78 +1739,121 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         </div>
       </div>
 
+
+      {/* Audio Autoplay Unblock Notification Banner */}
+      {audioAutoplayBlocked && (
+        <div 
+          onClick={() => {
+            setAudioAutoplayBlocked(false);
+            remoteAudiosRef.current.forEach(audio => audio.play().catch(() => {}));
+          }}
+          className="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 text-[10px] font-black flex items-center justify-between cursor-pointer z-30 shadow-md animate-pulse"
+        >
+          <span>🔊 Live audio requires browser permission. Tap here to hear speakers!</span>
+          <span className="bg-white/20 px-2 py-0.5 rounded text-[9px] uppercase">Enable Sound</span>
+        </div>
+      )}
+
       {/* Core Grid / Stage Area: Seats Panel */}
       <div id="voiceRoom_seatsArea" className="flex-1 overflow-y-auto px-4 py-2 scrollbar-none flex flex-col gap-4 z-10 min-h-0 pb-20">
         
-        {/* The Host Seat (Featured Top) */}
-        <div className="flex flex-col items-center shrink-0 mt-2">
-          <div className="relative">
-            {seats && seats[0] && seats[0].isTalking && (
-              <div className="absolute inset-0 rounded-full bg-rose-400/30 animate-ping border border-rose-400/50 scale-125"></div>
-            )}
+        {/* The Host Seat (Featured Top - Permanently Displays Host Avatar) */}
+        {(() => {
+          const hostAvatar = (seats && seats[0] && seats[0].user?.avatar) || safeRoom.host?.avatar || PRESET_AVATARS[0];
+          const hostName = (seats && seats[0] && seats[0].user?.name) || safeRoom.host?.name || "Host";
 
-            <div
-              onClick={() => handleSeatClick(0)}
-              className="relative w-16 h-16 rounded-full overflow-hidden border-2 border-amber-400 cursor-pointer flex items-center justify-center bg-white shadow-md hover:scale-105 transition-transform"
-            >
-              {seats && seats[0] && seats[0].user ? (
-                <img src={seats[0].user?.avatar} alt="Host" className="w-full h-full object-cover" />
-              ) : (
-                <span className="text-xl">🎙️</span>
-              )}
-              {seats && seats[0] && seats[0].isMuted && (
-                <div className="absolute bottom-0 right-0 bg-rose-500 rounded-full p-0.5 border border-white">
-                  <MicOff className="w-2.5 h-2.5 text-white" />
+          return (
+            <div className="flex flex-col items-center shrink-0 mt-2">
+              <div className="relative">
+                {seats && seats[0] && seats[0].user && seats[0].isTalking && (
+                  <div className="absolute inset-0 rounded-full bg-rose-400/30 animate-ping border border-rose-400/50 scale-125 pointer-events-none"></div>
+                )}
+
+                <div
+                  onClick={() => {
+                    setSelectedSeatIndex(0);
+                    const hostUser = seats?.[0]?.user || safeRoom.host;
+                    if (isCurrentUserHost) {
+                      setInspectedUser(currentUser);
+                      setShowUserProfileModal(true);
+                    } else if (hostUser) {
+                      setInspectedUser(hostUser);
+                      setShowUserProfileModal(true);
+                    }
+                  }}
+                  className="relative z-20 w-16 h-16 rounded-full overflow-hidden border-2 border-amber-400 cursor-pointer flex items-center justify-center bg-white shadow-md hover:scale-105 transition-transform"
+                  title={`Host: ${hostName}`}
+                >
+                  <img
+                    src={hostAvatar}
+                    alt={hostName}
+                    className="w-full h-full object-cover"
+                  />
+                  {seats && seats[0] && seats[0].isMuted && (
+                    <div className="absolute bottom-0 right-0 bg-rose-500 rounded-full p-0.5 border border-white">
+                      <MicOff className="w-2.5 h-2.5 text-white" />
+                    </div>
+                  )}
                 </div>
-              )}
+
+                {reactions.filter(r => r.seatIndex === 0).map(reaction => (
+                  <motion.div
+                    key={reaction.id}
+                    initial={{ y: 0, opacity: 1, scale: 0.5 }}
+                    animate={{ y: -70, opacity: 0, scale: 1.5 }}
+                    transition={{ duration: 1.5 }}
+                    className="absolute inset-0 flex items-center justify-center text-2xl pointer-events-none"
+                  >
+                    {reaction.emoji}
+                  </motion.div>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-1 mt-1">
+                <span className="text-[10px] bg-gradient-to-r from-amber-500 to-rose-500 text-white font-black px-2 py-0.2 rounded-full uppercase scale-90">
+                  Host
+                </span>
+                <span className="text-[10px] font-extrabold text-zinc-700 truncate max-w-[95px]">
+                  {hostName}
+                </span>
+              </div>
             </div>
-
-            {reactions.filter(r => r.seatIndex === 0).map(reaction => (
-              <motion.div
-                key={reaction.id}
-                initial={{ y: 0, opacity: 1, scale: 0.5 }}
-                animate={{ y: -70, opacity: 0, scale: 1.5 }}
-                transition={{ duration: 1.5 }}
-                className="absolute inset-0 flex items-center justify-center text-2xl pointer-events-none"
-              >
-                {reaction.emoji}
-              </motion.div>
-            ))}
-          </div>
-
-          <div className="flex items-center gap-1 mt-1">
-            <span className="text-[10px] bg-gradient-to-r from-amber-500 to-rose-500 text-white font-black px-2 py-0.2 rounded-full uppercase scale-90">
-              Host
-            </span>
-            <span className="text-[10px] font-extrabold text-zinc-700 truncate max-w-[80px]">
-              {seats[0].user?.name || "Open Seat"}
-            </span>
-          </div>
-        </div>
+          );
+        })()}
 
         {/* 8 Guests Seats Grid */}
         <div className="grid grid-cols-4 gap-x-2 gap-y-4 px-2 bg-white border border-zinc-200/80 rounded-3xl p-3 shadow-sm shrink-0">
           {seats && Array.isArray(seats) && seats.slice(1).map((seat) => {
-            const hasUser = seat.user !== null;
-            const isMe = hasUser && seat.user?.id === currentUser.id;
+            const hasUser = Boolean(seat.user && (seat.user.id || (seat.user as any)._id || seat.user.name));
+            const seatUid = seat.user ? String(seat.user.id || (seat.user as any)._id || '') : '';
+            const curUid = String(currentUser.id || (currentUser as any)._id || '');
+            const isMe = hasUser && ((seatUid && curUid && seatUid === curUid) || seat.user?.name === currentUser.name);
 
             return (
               <div key={seat.index} className="flex flex-col items-center relative">
                 <div className="relative">
-                  {isMe && myVoiceLevel > 10 && (
+                  {hasUser && isMe && myVoiceLevel > 10 && (
                     <span 
-                      className="absolute inset-0 rounded-full bg-rose-400/40 animate-pulse border border-rose-400"
+                      className="absolute inset-0 rounded-full bg-rose-400/40 animate-pulse border border-rose-400 pointer-events-none"
                       style={{ transform: `scale(${1 + myVoiceLevel / 100})` }}
                     ></span>
                   )}
 
-                  {!isMe && seat.isTalking && (
-                    <span className="absolute inset-0 rounded-full bg-rose-500/30 animate-ping border border-rose-500/40 scale-125"></span>
+                  {hasUser && !isMe && seat.isTalking && (
+                    <span className="absolute inset-0 rounded-full bg-rose-500/30 animate-ping border border-rose-500/40 scale-125 pointer-events-none"></span>
                   )}
 
                   <div 
-                    onClick={() => handleSeatClick(seat.index)}
-                    className={`w-11 h-11 rounded-full flex items-center justify-center cursor-pointer transition-all hover:scale-105 ${
+                    onClick={() => {
+                      setSelectedSeatIndex(seat.index);
+                      if (hasUser && seat.user) {
+                        setInspectedUser(seat.user);
+                        setShowUserProfileModal(true);
+                      } else {
+                        handleSeatClick(seat.index);
+                      }
+                    }}
+                    className={`relative z-20 w-11 h-11 rounded-full flex items-center justify-center cursor-pointer transition-all hover:scale-105 ${
                       hasUser 
                         ? (seat.user?.frameId === 'frame_neon' ? 'border-2 border-indigo-400 animate-pulse' :
                            seat.user?.frameId === 'frame_pink' ? 'border-2 border-pink-400' :
@@ -1450,90 +2276,133 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       </div>
 
       {/* Message Chat Input Bar */}
-      <form 
-        id="voiceRoom_chatInputForm"
-        onSubmit={handleSendMessage}
-        className="h-14 px-4 bg-white border-t border-zinc-200 flex items-center gap-2 shrink-0 z-20"
+      <div 
+        className="shrink-0 z-20 bg-white border-t border-zinc-200"
+        style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom, 0px))' }}
       >
-        <input
-          type="text"
-          value={textInput}
-          onChange={(e) => setTextInput(e.target.value)}
-          placeholder="Say something to room..."
-          className="flex-1 bg-stone-50 border border-zinc-250 rounded-full px-4 py-2 text-xs text-zinc-800 placeholder-zinc-400 focus:outline-none focus:border-rose-500"
-        />
-        <button
-          type="submit"
-          className="bg-gradient-to-r from-pink-500 to-rose-600 text-white p-2.5 rounded-full cursor-pointer shadow-sm active:scale-95 transition-all"
+        {isTypingInChat && (
+          <div className="flex items-center gap-1.5 px-4 pt-1.5 animate-in fade-in duration-200">
+            <div className="flex gap-1 items-center">
+              <span className="w-1.5 h-1.5 bg-rose-500 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+              <span className="w-1.5 h-1.5 bg-rose-500 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+              <span className="w-1.5 h-1.5 bg-rose-500 rounded-full animate-bounce"></span>
+            </div>
+            <span className="text-[9px] text-zinc-400 font-bold">You are typing...</span>
+          </div>
+        )}
+        <form 
+          id="voiceRoom_chatInputForm"
+          onSubmit={handleSendMessage}
+          className="h-14 px-4 flex items-center gap-2"
         >
-          <Send className="w-3.5 h-3.5" />
-        </button>
-      </form>
+          <input
+            type="text"
+            value={textInput}
+            onChange={(e) => setTextInput(e.target.value)}
+            onFocus={() => setIsTypingInChat(true)}
+            onBlur={() => setIsTypingInChat(false)}
+            placeholder="Say something to room..."
+            className="flex-1 bg-stone-50 border border-zinc-250 rounded-full px-4 py-2 text-xs text-zinc-800 placeholder-zinc-400 focus:outline-none focus:border-rose-500"
+          />
+          <button
+            type="submit"
+            className="bg-gradient-to-r from-pink-500 to-rose-600 text-white p-2.5 rounded-full cursor-pointer shadow-sm active:scale-95 transition-all"
+          >
+            <Send className="w-3.5 h-3.5" />
+          </button>
+        </form>
+      </div>
 
       {/* Gift Selection Drawer */}
       {showGiftDrawer && (
-        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-40 flex flex-col justify-end">
-          <div className="bg-white border-t border-zinc-200 rounded-t-[32px] p-5 flex flex-col gap-4 animate-in slide-in-from-bottom duration-200 max-h-[85%] overflow-y-auto shadow-2xl">
-            <div className="flex justify-between items-center">
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-40 flex flex-col justify-end" onClick={(e) => { if (e.target === e.currentTarget) setShowGiftDrawer(false); }}>
+          <div className="bg-white border-t border-zinc-200 rounded-t-[32px] flex flex-col animate-in slide-in-from-bottom duration-250 max-h-[82%] shadow-2xl">
+            {/* Drawer handle */}
+            <div className="flex justify-center pt-3 pb-1 shrink-0">
+              <div className="w-10 h-1 bg-zinc-200 rounded-full" />
+            </div>
+
+            {/* Header */}
+            <div className="flex justify-between items-center px-5 py-3 shrink-0">
               <div>
-                <h3 className="text-sm font-black text-zinc-800">Send Animated Gift</h3>
-                <p className="text-[10px] text-zinc-400 mt-0.5">Your balance: <span className="text-amber-600 font-bold">🪙 {currentUser.coins}</span></p>
+                <h3 className="text-sm font-black text-zinc-900 flex items-center gap-1.5">
+                  🎁 Send Animated Gift
+                </h3>
+                <p className="text-[10px] text-zinc-400 mt-0.5">
+                  Balance: <span className="text-amber-600 font-black">🪙 {currentUser.role === 'admin' ? '∞' : currentUser.coins.toLocaleString()}</span>
+                </p>
               </div>
               <button
                 onClick={() => setShowGiftDrawer(false)}
-                className="text-zinc-400 hover:text-zinc-700 bg-stone-100 p-1 rounded-full text-xs"
+                className="w-8 h-8 rounded-full bg-zinc-100 hover:bg-zinc-200 flex items-center justify-center cursor-pointer transition-colors"
               >
-                ✕
+                <span className="text-zinc-500 text-sm font-bold">✕</span>
               </button>
             </div>
 
-            <div className="flex flex-col gap-1.5 text-xs">
-              <label className="font-bold text-zinc-500">Select Recipient:</label>
+            {/* Recipient selector */}
+            <div className="px-5 pb-3 shrink-0">
+              <p className="text-[9px] font-black text-zinc-400 uppercase tracking-widest mb-2">Send To</p>
               <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
                 <button
                   onClick={() => setSelectedGiftRecipient('all')}
-                  className={`px-3 py-1.5 rounded-full font-bold shrink-0 transition-all cursor-pointer border ${
+                  className={`flex items-center gap-1.5 px-3 py-2 rounded-2xl font-bold text-[10px] shrink-0 transition-all cursor-pointer border ${
                     selectedGiftRecipient === 'all'
-                      ? 'bg-rose-50 border-rose-300 text-rose-600'
-                      : 'bg-stone-50 border-zinc-200 text-zinc-600'
+                      ? 'bg-rose-500 border-rose-500 text-white shadow-md shadow-rose-500/30'
+                      : 'bg-zinc-50 border-zinc-200 text-zinc-600 hover:border-rose-300'
                   }`}
                 >
-                  🌐 Send to All Seats
+                  🌐 <span>All Seats</span>
                 </button>
                 {seats.filter(s => s.user !== null).map((seat) => (
                   <button
                     key={seat.index}
                     onClick={() => setSelectedGiftRecipient(seat.index)}
-                    className={`px-3 py-1.5 rounded-full font-bold shrink-0 transition-all cursor-pointer border flex items-center gap-1 ${
+                    className={`flex items-center gap-1.5 px-3 py-2 rounded-2xl font-bold text-[10px] shrink-0 transition-all cursor-pointer border ${
                       selectedGiftRecipient === seat.index
-                        ? 'bg-rose-50 border-rose-300 text-rose-600'
-                        : 'bg-stone-50 border-zinc-200 text-zinc-600'
+                        ? 'bg-rose-500 border-rose-500 text-white shadow-md shadow-rose-500/30'
+                        : 'bg-zinc-50 border-zinc-200 text-zinc-600 hover:border-rose-300'
                     }`}
                   >
-                    <img src={seat.user?.avatar} alt="" className="w-4 h-4 rounded-full object-cover" />
-                    <span>{seat.user?.name} {seat.index === 0 ? "(Host)" : `(Seat ${seat.index})`}</span>
+                    <img src={seat.user?.avatar} alt="" className="w-4 h-4 rounded-full object-cover shrink-0" />
+                    <span className="truncate max-w-[70px]">{seat.user?.name} {seat.index === 0 ? '(Host)' : ''}</span>
                   </button>
                 ))}
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 pb-4">
-              {GIFTS.map((gift) => (
-                <div
-                  key={gift.id}
-                  onClick={() => handleSendGift(gift)}
-                  className="bg-stone-50 border border-zinc-200 rounded-2xl p-3 flex items-center gap-3 hover:border-rose-500 cursor-pointer active:scale-95 transition-all shadow-sm"
-                >
-                  <span className="text-3xl">{gift.icon}</span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-black text-zinc-700">{gift.name}</p>
-                    <div className="flex items-center gap-0.5 mt-0.5 text-[10px] text-amber-600 font-bold">
-                      <span>🪙</span>
-                      <span>{gift.coins}</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
+            {/* Gift grid */}
+            <div className="flex-1 overflow-y-auto min-h-0 px-4 pb-6 overscroll-contain">
+              <div className="grid grid-cols-3 gap-2.5">
+                {dynamicGifts.map((gift) => {
+                  const canAfford = currentUser.role === 'admin' || currentUser.coins >= gift.coins;
+                  return (
+                    <button
+                      key={gift.id}
+                      onClick={() => handleSendGift(gift)}
+                      disabled={!canAfford}
+                      className={`flex flex-col items-center gap-1.5 p-3 rounded-2xl border transition-all cursor-pointer active:scale-95 shadow-sm ${
+                        canAfford
+                          ? 'bg-white border-zinc-200 hover:border-rose-400 hover:shadow-rose-100 hover:shadow-md'
+                          : 'bg-zinc-50 border-zinc-100 opacity-40 cursor-not-allowed'
+                      }`}
+                    >
+                      <div className="relative">
+                        <span className="text-4xl drop-shadow-sm">{gift.icon}</span>
+                        {!canAfford && (
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <span className="text-[8px] bg-zinc-800/70 text-white rounded px-1 font-bold">🔒</span>
+                          </div>
+                        )}
+                      </div>
+                      <p className="text-[10px] font-black text-zinc-700 text-center leading-tight truncate w-full">{gift.name}</p>
+                      <div className="flex items-center gap-0.5 text-[9px] font-black text-amber-600 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-full">
+                        🪙 {gift.coins}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
@@ -1559,12 +2428,29 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
             {seats[selectedSeatIndex].user ? (
               // Occupied Seat Options
               <div className="flex flex-col gap-3 text-xs">
-                <div className="flex items-center gap-3 bg-stone-50 border border-zinc-150 p-2.5 rounded-2xl shadow-inner">
-                  <img src={seats[selectedSeatIndex].user?.avatar} alt="" className="w-10 h-10 rounded-full object-cover" />
-                  <div>
-                    <h4 className="font-black text-zinc-800">{seats[selectedSeatIndex].user?.name}</h4>
-                    <p className="text-[10px] text-zinc-400">Badge: {seats[selectedSeatIndex].user?.badge} • Lvl {seats[selectedSeatIndex].user?.level}</p>
+                <div className="flex items-center justify-between bg-stone-50 border border-zinc-150 p-2.5 rounded-2xl shadow-inner">
+                  <div className="flex items-center gap-3">
+                    <img src={seats[selectedSeatIndex].user?.avatar} alt="" className="w-10 h-10 rounded-full object-cover" />
+                    <div>
+                      <h4 className="font-black text-zinc-800">{seats[selectedSeatIndex].user?.name}</h4>
+                      <p className="text-[10px] text-zinc-400">Badge: {seats[selectedSeatIndex].user?.badge} • Lvl {seats[selectedSeatIndex].user?.level}</p>
+                    </div>
                   </div>
+
+                  <button
+                    onClick={() => {
+                      if (seats[selectedSeatIndex].user) {
+                        setInspectedUser(seats[selectedSeatIndex].user);
+                        setShowUserProfileModal(true);
+                        setShowSeatModal(false);
+                      }
+                    }}
+                    className="p-1.5 bg-white border border-rose-200 hover:bg-rose-50 text-rose-600 rounded-xl text-[10px] font-black flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
+                    title="View Profile"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>Profile</span>
+                  </button>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
@@ -1713,6 +2599,273 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
             )}
           </div>
         </div>
+      )}
+
+      {/* --- ROOM AUDIENCE & PARTICIPANTS MODAL DIALOG --- */}
+      {showAudienceModal && (
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white border border-zinc-200 w-full max-w-sm rounded-3xl p-5 flex flex-col gap-3 shadow-2xl animate-in zoom-in-95 duration-150 max-h-[80%] overflow-hidden">
+            <div className="flex justify-between items-center border-b border-zinc-150 pb-2.5 shrink-0">
+              <div>
+                <h3 className="text-xs font-black text-zinc-900 flex items-center gap-1.5 uppercase tracking-wider">
+                  <Users className="w-4 h-4 text-rose-500" /> Room Participants ({uniqueParticipants.length})
+                </h3>
+                <p className="text-[9px] text-zinc-400 font-bold mt-0.5">Live audience & seated mic speakers</p>
+              </div>
+              <button
+                onClick={() => setShowAudienceModal(false)}
+                className="text-zinc-400 hover:text-zinc-700 bg-stone-100 p-1.5 rounded-full text-xs cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto flex flex-col gap-2 pr-1 scrollbar-none my-1">
+              {uniqueParticipants.length === 0 ? (
+                <p className="text-center text-zinc-400 text-xs py-6 font-bold">No active users in room</p>
+              ) : (
+                uniqueParticipants.map((u) => {
+                  const uId = String(u._id || u.id);
+                  const isHost = uId === String((safeRoom.host as any)?._id || safeRoom.host?.id) || (u.name === safeRoom.host?.name);
+                  const isMe = uId === currentUserId || (u.name === currentUser.name);
+                  const seated = seats.find(s => s.user && (String(s.user._id || s.user.id) === uId || s.user.name === u.name));
+
+                  return (
+                    <div 
+                      key={u.name || uId}
+                      className="flex items-center justify-between p-2.5 bg-stone-50 border border-zinc-200/80 rounded-2xl"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <img 
+                          src={u.avatar || PRESET_AVATARS[0]} 
+                          alt="" 
+                          className="w-9 h-9 rounded-full object-cover border border-zinc-200 shrink-0" 
+                        />
+                        <div className="min-w-0">
+                          <p className="font-black text-xs text-zinc-900 truncate flex items-center gap-1">
+                            <span>{u.name}</span>
+                            {isMe && <span className="text-[8px] bg-rose-50 text-rose-600 font-black px-1.5 py-0.2 rounded border border-rose-200 uppercase">You</span>}
+                            {isHost && <span className="text-[8px] bg-amber-50 text-amber-700 font-black px-1.5 py-0.2 rounded border border-amber-200 uppercase">Host</span>}
+                          </p>
+                          <p className="text-[9px] text-zinc-400 font-semibold mt-0.5">
+                            Level {u.level || 1} • {seated ? `Mic Seat ${seated.index}` : 'Audience Listener'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="shrink-0 flex items-center gap-1.5">
+                        {seated ? (
+                          <span className="text-[8px] bg-rose-50 text-rose-600 font-black border border-rose-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                            <Mic className="w-2.5 h-2.5" />
+                            <span>Seat {seated.index}</span>
+                          </span>
+                        ) : (
+                          <span className="text-[8px] bg-zinc-100 text-zinc-500 font-bold px-2 py-0.5 rounded-full">
+                            Audience
+                          </span>
+                        )}
+                        {/* View Profile button */}
+                        <button
+                          title={`View ${u.name}'s profile`}
+                          onClick={() => {
+                            setInspectedUser(u);
+                            setShowUserProfileModal(true);
+                            setShowAudienceModal(false);
+                          }}
+                          className="p-1 bg-white border border-rose-200 hover:bg-rose-50 text-rose-600 rounded-lg text-[9px] font-black flex items-center gap-0.5 cursor-pointer transition-colors shadow-2xs"
+                        >
+                          <Eye className="w-3 h-3" />
+                          <span>Profile</span>
+                        </button>
+                        {/* Add Friend button for other users */}
+                        {!isMe && (
+                          <button
+                            title={`Add ${u.name} as friend`}
+                            onClick={async () => {
+                              try {
+                                const res = await fetch('/api/friend-requests', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    senderId: currentUserId,
+                                    senderName: currentUser.name,
+                                    senderAvatar: currentUser.avatar,
+                                    senderYoyoId: (currentUser as any).yoyoId || '',
+                                    receiverId: uId,
+                                    receiverName: u.name,
+                                    receiverYoyoId: (u as any).yoyoId || ''
+                                  })
+                                });
+                                const data = await res.json();
+                                if (data.success) {
+                                  toast(`Friend request sent to ${u.name}! 🎉`, 'success');
+                                } else {
+                                  toast(data.error || 'Could not send request', 'error');
+                                }
+                              } catch {
+                                toast('Network error. Try again.', 'error');
+                              }
+                            }}
+                            className="text-[8px] bg-pink-50 text-pink-600 font-black border border-pink-200 px-2 py-0.5 rounded-full hover:bg-pink-100 transition-colors"
+                          >
+                            + Friend
+                          </button>
+                        )}
+                      </div>
+
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <button
+              onClick={() => setShowAudienceModal(false)}
+              className="w-full mt-1 bg-gradient-to-r from-rose-500 to-pink-600 text-white font-black py-2.5 rounded-xl uppercase tracking-wider text-[10px] cursor-pointer shadow-md"
+            >
+              Back to Room
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ===== Invite Friends Panel (Host Only) ===== */}
+      {showInvitePanel && (
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-end justify-center z-50 animate-in fade-in duration-200">
+          <div className="bg-white w-full rounded-t-3xl p-5 flex flex-col gap-4 shadow-2xl animate-in slide-in-from-bottom duration-200 max-h-[75%]">
+            <div className="flex justify-between items-center pb-2 border-b border-zinc-100">
+              <h3 className="text-sm font-black text-zinc-900 flex items-center gap-1.5">
+                <UserPlus className="w-4 h-4 text-indigo-500" /> Invite Friends
+              </h3>
+              <button
+                onClick={() => setShowInvitePanel(false)}
+                className="text-zinc-400 hover:text-zinc-600 cursor-pointer bg-zinc-100 p-1.5 rounded-full"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Room Code display */}
+            {(safeRoom as any).roomId && (
+              <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3 flex items-center justify-between">
+                <div>
+                  <p className="text-[9px] text-indigo-500 font-bold uppercase tracking-wider">Room Code</p>
+                  <p className="text-lg font-black text-indigo-700 tracking-[0.3em]">{(safeRoom as any).roomId}</p>
+                </div>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(String((safeRoom as any).roomId));
+                    toast('Room code copied!', 'success');
+                  }}
+                  className="flex items-center gap-1 text-[10px] bg-indigo-100 border border-indigo-300 text-indigo-700 font-black px-3 py-1.5 rounded-full cursor-pointer hover:bg-indigo-200 transition-colors"
+                >
+                  <Copy className="w-3 h-3" /> Copy
+                </button>
+              </div>
+            )}
+
+            <p className="text-[11px] text-zinc-500 font-medium -mt-2">
+              Select friends to invite directly. They'll get a notification and can join without a password.
+            </p>
+
+            <div className="overflow-y-auto flex flex-col gap-2 scrollbar-none">
+              {friendsList.length === 0 ? (
+                <div className="text-center py-8 text-zinc-400">
+                  <p className="text-2xl mb-2">👥</p>
+                  <p className="text-xs font-bold">No friends yet</p>
+                  <p className="text-[10px]">Add friends to invite them to your room</p>
+                </div>
+              ) : (
+                friendsList.map((friend) => {
+                  const friendId = String((friend as any)._id || friend.id);
+                  const isAlreadyInvited = invitedSet.has(friendId);
+                  return (
+                    <div key={friendId} className="flex items-center justify-between bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2.5">
+                      <div className="flex items-center gap-2.5">
+                        <img src={friend.avatar || ''} alt={friend.name} className="w-9 h-9 rounded-full object-cover border border-zinc-200" />
+                        <div>
+                          <p className="text-xs font-black text-zinc-800">{friend.name}</p>
+                          <p className="text-[9px] text-zinc-400 font-mono">ID: {(friend as any).yoyoId || 'N/A'}</p>
+                        </div>
+                      </div>
+                      <button
+                        disabled={isAlreadyInvited || inviteLoading}
+                        onClick={async () => {
+                          setInviteLoading(true);
+                          try {
+                            const hostId = currentUser._id || currentUser.id;
+                            const res = await fetch(`/api/rooms/${roomId}/invite`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ hostId, inviteeId: friendId })
+                            });
+                            const data = await res.json();
+                            if (data.success) {
+                              setInvitedSet(prev => new Set([...prev, friendId]));
+                              toast(`Invitation sent to ${friend.name}! 🎉`, 'success');
+                            } else {
+                              toast(data.error || 'Failed to invite', 'error');
+                            }
+                          } catch {
+                            toast('Network error. Try again.', 'error');
+                          } finally {
+                            setInviteLoading(false);
+                          }
+                        }}
+                        className={`text-[10px] font-black px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
+                          isAlreadyInvited
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-600 cursor-default'
+                            : 'bg-indigo-50 border-indigo-300 text-indigo-700 hover:bg-indigo-100'
+                        }`}
+                      >
+                        {isAlreadyInvited ? '✓ Invited' : 'Invite'}
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden WebRTC Audio Elements for all active remote speaker streams */}
+
+      <div className="hidden pointer-events-none">
+        {Object.entries(remoteStreams).map(([peerId, stream]) => (
+          <audio
+            key={peerId}
+            autoPlay
+            playsInline
+            ref={(el) => {
+              if (el && el.srcObject !== stream) {
+                el.srcObject = stream;
+                el.play().catch(e => {
+                  console.warn(`Audio playback waiting for gesture from peer ${peerId}:`, e);
+                  setAudioAutoplayBlocked(true);
+                });
+              }
+            }}
+          />
+        ))}
+      </div>
+
+      {/* User Profile / Visitor View Modal */}
+      {showUserProfileModal && inspectedUser && (
+        <UserProfileModal
+          user={inspectedUser}
+          currentUser={currentUser}
+          isOpen={showUserProfileModal}
+          onClose={() => {
+            setShowUserProfileModal(false);
+            setInspectedUser(null);
+          }}
+          onSendGift={(u) => {
+            setShowUserProfileModal(false);
+            setShowGiftDrawer(true);
+          }}
+          onLeaveSeat={mySeatIndex !== null ? handleLeaveSeat : undefined}
+        />
       )}
     </div>
   );

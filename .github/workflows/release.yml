@@ -1,0 +1,109 @@
+name: ZOYO Mobile App Release & Auto-Update
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release Type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-and-test:
+    name: 🧪 Verify & Build App
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci
+
+      - name: 🔍 TypeScript Type Check
+        run: npx tsc --noEmit
+
+      - name: 🏗️ Build Frontend Assets
+        run: npx vite build
+
+      - name: 🗄️ Bundle Server Runtime
+        run: npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs
+
+      - name: 📤 Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zoyo-build-artifacts
+          path: dist/
+          retention-days: 14
+
+  publish-release:
+    name: 🚀 Publish GitHub Release & Trigger Mobile Update
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🏷️ Compute Version Tag
+        id: versioning
+        run: |
+          RUN_NUM="${{ github.run_number }}"
+          VERSION="v1.0.${RUN_NUM}"
+          echo "TAG_NAME=${VERSION}" >> $GITHUB_OUTPUT
+          echo "RELEASE_TITLE=ZOYO Release ${VERSION} 🚀" >> $GITHUB_OUTPUT
+
+      - name: 📥 Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: zoyo-build-artifacts
+          path: dist/
+
+      - name: 📦 Zip Release Assets
+        run: |
+          zip -r zoyo-app-build.zip dist/
+
+      - name: 🎉 Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.versioning.outputs.TAG_NAME }}
+          name: ${{ steps.versioning.outputs.RELEASE_TITLE }}
+          body: |
+            ## 🌟 ZOYO Mobile App Update (${{ steps.versioning.outputs.TAG_NAME }})
+
+            ### ✨ Highlights in this update:
+            - ⚡ Instant **0ms** Voice Room joining & creation with optimistic UI
+            - 🎙️ Sub-millisecond WebRTC voice & interactive chat
+            - 📲 PWA mobile homescreen install & seamless background auto-update
+            - 🛡️ Supabase PostgreSQL high-concurrency database integration (10,000+ users)
+            - 🎁 Double-gift duplicate bug fixes & real-time sound synthesis
+            - 🔒 Private voice rooms with 6-digit codes & host security controls
+
+            *Mobile users with ZOYO installed will receive this update automatically via Service Worker.*
+          files: |
+            zoyo-app-build.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

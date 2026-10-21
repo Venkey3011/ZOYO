@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { User } from '../types';
+import { User, Room } from '../types';
 import { PRESET_AVATARS } from '../data';
 import { 
   Shield, Users, Coins, RefreshCw, 
-  Search, Lock, Unlock, UserPlus, FileText, ArrowRightLeft 
+  Search, Lock, Unlock, UserPlus, FileText, ArrowRightLeft,
+  Sparkles, Gift, Gamepad2, Palette, Trash2, Plus 
 } from 'lucide-react';
 
 interface AdminConsoleProps {
@@ -34,7 +35,7 @@ interface ConfirmModalState {
   onConfirm: () => void;
 }
 
-type ManagementTab = 'user_control' | 'coin_transfer' | 'access_privilege' | 'audit_logs';
+type ManagementTab = 'user_control' | 'coin_transfer' | 'access_privilege' | 'audit_logs' | 'room_management' | 'catalog_hub';
 
 export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConsoleProps) {
   const [users, setUsers] = useState<User[]>([]);
@@ -67,6 +68,243 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
 
   // Audit Logs state (strictly Admin only)
   const [transferLogs, setTransferLogs] = useState<TransferRecord[]>([]);
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [roomLoading, setRoomLoading] = useState(false);
+
+  // Catalog Hub state (Admin & Manager can add Gifts, Frames, Games)
+  const [catalogSubTab, setCatalogSubTab] = useState<'gifts' | 'frames' | 'games'>('gifts');
+  const [catalogGifts, setCatalogGifts] = useState<any[]>([]);
+  const [catalogFrames, setCatalogFrames] = useState<any[]>([]);
+  const [catalogGames, setCatalogGames] = useState<any[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+
+  // New Gift form
+  const [newGiftName, setNewGiftName] = useState('');
+  const [newGiftCoins, setNewGiftCoins] = useState('50');
+  const [newGiftIcon, setNewGiftIcon] = useState('💍');
+  const [newGiftEffect, setNewGiftEffect] = useState('confetti');
+  const [newGiftDesc, setNewGiftDesc] = useState('');
+
+  // New Frame form
+  const [newFrameName, setNewFrameName] = useState('');
+  const [newFramePrice, setNewFramePrice] = useState('200');
+  const [newFramePreset, setNewFramePreset] = useState('border-2 border-emerald-400 animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.5)]');
+  const [newFrameIcon, setNewFrameIcon] = useState('✨');
+
+  // New Game form
+  const [newGameName, setNewGameName] = useState('');
+  const [newGameCategory, setNewGameCategory] = useState('Party');
+  const [newGameIcon, setNewGameIcon] = useState('🎯');
+  const [newGameMin, setNewGameMin] = useState('2');
+  const [newGameMax, setNewGameMax] = useState('4');
+  const [newGameDesc, setNewGameDesc] = useState('');
+  const [newGameStatus, setNewGameStatus] = useState<'active' | 'coming_soon'>('active');
+
+  const fetchCatalogData = async () => {
+    setCatalogLoading(true);
+    try {
+      const [gRes, fRes, mRes] = await Promise.all([
+        fetch('/api/catalog/gifts'),
+        fetch('/api/catalog/frames'),
+        fetch('/api/catalog/games')
+      ]);
+      const [gData, fData, mData] = await Promise.all([
+        gRes.json(),
+        fRes.json(),
+        mRes.json()
+      ]);
+      if (gData.success) setCatalogGifts(gData.gifts);
+      if (fData.success) setCatalogFrames(fData.frames);
+      if (mData.success) setCatalogGames(mData.games);
+    } catch (err) {
+      console.error('Error fetching catalog data:', err);
+    } finally {
+      setCatalogLoading(false);
+    }
+  };
+
+  const handleAddGift = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newGiftName.trim() || !newGiftCoins) return;
+    try {
+      const res = await fetch('/api/catalog/gifts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newGiftName.trim(),
+          coins: parseInt(newGiftCoins, 10),
+          icon: newGiftIcon.trim(),
+          effect: newGiftEffect,
+          description: newGiftDesc.trim(),
+          userRole: currentUser.role,
+          addedBy: currentUser.name
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSuccessMsg(`Added new animated gift "${data.gift.name}"!`);
+        setNewGiftName('');
+        setNewGiftDesc('');
+        fetchCatalogData();
+      } else {
+        setErrorMsg(data.error || 'Failed to add gift');
+      }
+    } catch {
+      setErrorMsg('Connection error adding gift');
+    }
+  };
+
+  const handleDeleteGift = async (id: string, name: string) => {
+    try {
+      const res = await fetch(`/api/catalog/gifts/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        setSuccessMsg(`Removed gift "${name}"`);
+        fetchCatalogData();
+      }
+    } catch {
+      setErrorMsg('Failed to delete gift');
+    }
+  };
+
+  const handleAddFrame = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newFrameName.trim() || !newFramePrice) return;
+    try {
+      const res = await fetch('/api/catalog/frames', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newFrameName.trim(),
+          price: parseInt(newFramePrice, 10),
+          value: newFramePreset,
+          icon: newFrameIcon.trim(),
+          userRole: currentUser.role,
+          addedBy: currentUser.name
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSuccessMsg(`Added new avatar frame "${data.frame.name}"!`);
+        setNewFrameName('');
+        fetchCatalogData();
+      } else {
+        setErrorMsg(data.error || 'Failed to add frame');
+      }
+    } catch {
+      setErrorMsg('Connection error adding frame');
+    }
+  };
+
+  const handleDeleteFrame = async (id: string, name: string) => {
+    try {
+      const res = await fetch(`/api/catalog/frames/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        setSuccessMsg(`Removed frame "${name}"`);
+        fetchCatalogData();
+      }
+    } catch {
+      setErrorMsg('Failed to delete frame');
+    }
+  };
+
+  const handleAddGame = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newGameName.trim()) return;
+    try {
+      const res = await fetch('/api/catalog/games', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newGameName.trim(),
+          category: newGameCategory,
+          icon: newGameIcon.trim(),
+          minPlayers: newGameMin,
+          maxPlayers: newGameMax,
+          description: newGameDesc.trim(),
+          status: newGameStatus,
+          userRole: currentUser.role,
+          addedBy: currentUser.name
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSuccessMsg(`Added new game "${data.game.name}"!`);
+        setNewGameName('');
+        setNewGameDesc('');
+        fetchCatalogData();
+      } else {
+        setErrorMsg(data.error || 'Failed to add game');
+      }
+    } catch {
+      setErrorMsg('Connection error adding game');
+    }
+  };
+
+  const handleDeleteGame = async (id: string, name: string) => {
+    try {
+      const res = await fetch(`/api/catalog/games/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        setSuccessMsg(`Removed game "${name}"`);
+        fetchCatalogData();
+      }
+    } catch {
+      setErrorMsg('Failed to delete game');
+    }
+  };
+
+  // Fetch rooms for management
+  const fetchRooms = async () => {
+    setRoomLoading(true);
+    try {
+      const res = await fetch('/api/rooms');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setRooms(data.rooms);
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching rooms:', err);
+    } finally {
+      setRoomLoading(false);
+    }
+  };
+
+  // Delete room
+  const handleDeleteRoom = (roomId: string, roomTitle: string) => {
+    setConfirmModal({
+      isOpen: true,
+      title: 'Confirm Room Deletion',
+      message: `Are you sure you want to permanently delete the room "${roomTitle}"? This action cannot be undone.`,
+      onConfirm: () => {
+        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+        executeDeleteRoom(roomId);
+      }
+    });
+  };
+
+  const executeDeleteRoom = async (roomId: string) => {
+    setErrorMsg('');
+    setSuccessMsg('');
+    try {
+      const res = await fetch(`/api/rooms/${roomId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSuccessMsg('Room deleted successfully!');
+        fetchRooms();
+      } else {
+        setErrorMsg(data.error || 'Failed to delete room.');
+      }
+    } catch (err) {
+      setErrorMsg('Connection error.');
+    }
+  };
 
   // Sync activeTab with role-based accessibility on initial load
   useEffect(() => {
@@ -129,6 +367,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
     fetchData();
     if (currentUser.role === 'admin') {
       fetchTransferLogs();
+      fetchRooms();
     }
   }, [currentUser]);
 
@@ -174,8 +413,8 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
   };
 
   const filteredUsers = getManageableUsers().filter(u =>
-    u.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (u.role || 'user').toLowerCase().includes(searchQuery.toLowerCase())
+    !searchQuery.trim() ||
+    (u.yoyoId || '').toLowerCase().includes(searchQuery.toLowerCase().trim())
   );
 
   console.log('🔍 Filtered users after search:', filteredUsers.length, 'query:', searchQuery);
@@ -421,7 +660,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-50 text-xs text-zinc-800 p-4 overflow-y-auto scrollbar-none pb-12 relative">
+    <div className="flex-1 flex flex-col h-full bg-slate-50 text-xs text-zinc-800 p-4 overflow-y-auto scrollbar-none pb-32 overscroll-contain relative">
       
       {/* Header section */}
       <div className="flex justify-between items-center shrink-0 border-b border-zinc-200 pb-3">
@@ -442,19 +681,21 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
         </button>
       </div>
 
-      {/* DB Status Badge */}
-      <div className={`mt-3 p-2.5 rounded-xl border flex items-center justify-between text-[10px] ${
-        dbStatus.connected 
-          ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
-          : 'bg-amber-50 border-amber-200 text-amber-800'
-      }`}>
-        <div className="flex items-center gap-1.5">
-          <span className={`w-2 h-2 rounded-full ${dbStatus.connected ? 'bg-emerald-500 animate-ping' : 'bg-amber-500'}`}></span>
-          <span className="font-bold uppercase tracking-wider">Database Mode:</span>
-          <span className="font-black">{dbStatus.connected ? 'MongoDB Cloud Active' : dbStatus.mode}</span>
+      {/* DB Status Badge — ADMIN ONLY */}
+      {currentUser.role === 'admin' && (
+        <div className={`mt-3 p-2.5 rounded-xl border flex items-center justify-between text-[10px] ${
+          dbStatus.connected 
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
+            : 'bg-amber-50 border-amber-200 text-amber-800'
+        }`}>
+          <div className="flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full ${dbStatus.connected ? 'bg-emerald-500 animate-ping' : 'bg-amber-500'}`}></span>
+            <span className="font-bold uppercase tracking-wider">Database Mode:</span>
+            <span className="font-black">{dbStatus.connected ? (dbStatus.mode || 'Supabase (PostgreSQL) Cloud Active') : (dbStatus.mode || 'Offline / Fallback')}</span>
+          </div>
+          {dbStatus.connected && <span className="font-semibold text-emerald-700 font-mono text-[9px]">Supabase Connected ✓</span>}
         </div>
-        {dbStatus.connected && <span className="font-semibold text-emerald-700 font-mono text-[9px]">Atlas Connected</span>}
-      </div>
+      )}
 
       {/* Notification Banner */}
       {successMsg && (
@@ -499,8 +740,8 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
             <button
               onClick={() => setActiveTab('access_privilege')}
               className={`flex-1 min-w-[75px] py-2 text-center font-bold rounded-lg transition-all text-[10px] cursor-pointer whitespace-nowrap px-1.5 ${
-                activeTab === 'access_privilege' 
-                  ? 'bg-gradient-to-r from-rose-500 to-pink-600 text-white shadow-sm' 
+                activeTab === 'access_privilege'
+                  ? 'bg-gradient-to-r from-rose-500 to-pink-600 text-white shadow-sm'
                   : 'text-zinc-500 hover:text-zinc-800'
               }`}
             >
@@ -509,14 +750,40 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
             <button
               onClick={() => setActiveTab('audit_logs')}
               className={`flex-1 min-w-[75px] py-2 text-center font-bold rounded-lg transition-all text-[10px] cursor-pointer whitespace-nowrap px-1.5 ${
-                activeTab === 'audit_logs' 
-                  ? 'bg-gradient-to-r from-rose-500 to-pink-600 text-white shadow-sm' 
+                activeTab === 'audit_logs'
+                  ? 'bg-gradient-to-r from-rose-500 to-pink-600 text-white shadow-sm'
                   : 'text-zinc-500 hover:text-zinc-800'
               }`}
             >
               Audit Logs
             </button>
+            <button
+              onClick={() => setActiveTab('room_management')}
+              className={`flex-1 min-w-[75px] py-2 text-center font-bold rounded-lg transition-all text-[10px] cursor-pointer whitespace-nowrap px-1.5 ${
+                activeTab === 'room_management'
+                  ? 'bg-gradient-to-r from-rose-500 to-pink-600 text-white shadow-sm'
+                  : 'text-zinc-500 hover:text-zinc-800'
+              }`}
+            >
+              Rooms
+            </button>
           </>
+        )}
+
+        {(currentUser.role === 'admin' || currentUser.role === 'manager') && (
+          <button
+            onClick={() => {
+              setActiveTab('catalog_hub');
+              fetchCatalogData();
+            }}
+            className={`flex-1 min-w-[75px] py-2 text-center font-bold rounded-lg transition-all text-[10px] cursor-pointer whitespace-nowrap px-1.5 ${
+              activeTab === 'catalog_hub'
+                ? 'bg-gradient-to-r from-rose-500 to-pink-600 text-white shadow-sm'
+                : 'text-zinc-500 hover:text-zinc-800'
+            }`}
+          >
+            Catalog Hub
+          </button>
         )}
       </div>
 
@@ -631,8 +898,8 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search registered users..."
-                className="w-full bg-white border border-zinc-200 rounded-xl pl-9 pr-4 py-2 text-xs text-zinc-800 focus:outline-none focus:ring-1 focus:ring-rose-500 shadow-sm"
+                placeholder="Search users by ZOYO ID..."
+                className="w-full bg-white border border-zinc-200 rounded-xl pl-9 pr-4 py-2 text-xs text-zinc-800 focus:outline-none focus:ring-1 focus:ring-rose-500 shadow-sm font-mono"
               />
             </div>
 
@@ -640,7 +907,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
             <div className="flex flex-col gap-2">
               {filteredUsers.length === 0 ? (
                 <div className="py-8 text-center text-zinc-500 font-bold bg-white rounded-2xl border border-zinc-200 shadow-sm">
-                  No users under your jurisdiction matched.
+                  No users with that ZOYO ID matched.
                 </div>
               ) : (
                 filteredUsers.map((user) => {
@@ -671,10 +938,11 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                             {user.name}
                             {isSelf && <span className="text-[7px] bg-rose-50 text-rose-600 border border-rose-200 px-1 rounded uppercase font-extrabold">Me</span>}
                           </p>
-                          <p className="text-[9px] text-zinc-500 mt-0.5">
-                            Role: <span className="text-rose-600 font-extrabold uppercase font-mono">{user.role || 'user'}</span>
+                          <p className="text-[9px] text-zinc-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                            <span>ZOYO ID: <strong className="text-rose-600 font-mono font-bold">{user.yoyoId || '—'}</strong></span>
+                            <span>Role: <span className="text-rose-600 font-extrabold uppercase font-mono">{user.role || 'user'}</span></span>
                             {user.createdBy && user.createdBy !== 'self' && (
-                              <span className="ml-1 border-l border-zinc-200 pl-1 text-[8px]">By: {user.createdBy}</span>
+                              <span className="border-l border-zinc-200 pl-1 text-[8px]">By: {user.createdBy}</span>
                             )}
                           </p>
                         </div>
@@ -755,8 +1023,8 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search recipient by username..."
-                className="w-full bg-white border border-zinc-200 rounded-xl pl-9 pr-4 py-2 text-xs text-zinc-800 focus:outline-none focus:ring-1 focus:ring-rose-500 shadow-sm"
+                placeholder="Search recipient by ZOYO ID..."
+                className="w-full bg-white border border-zinc-200 rounded-xl pl-9 pr-4 py-2 text-xs text-zinc-800 focus:outline-none focus:ring-1 focus:ring-rose-500 shadow-sm font-mono"
               />
             </div>
 
@@ -764,7 +1032,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
             <div className="flex flex-col gap-2">
               {filteredUsers.length === 0 ? (
                 <div className="py-8 text-center text-zinc-500 font-bold bg-white rounded-2xl border border-zinc-200 shadow-sm">
-                  No recipient accounts matched.
+                  No recipient accounts with that ZOYO ID matched.
                 </div>
               ) : (
                 filteredUsers.map((user) => {
@@ -791,8 +1059,9 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                             <p className="font-black text-zinc-900 text-xs">
                               {user.name}
                             </p>
-                            <p className="text-[9px] text-zinc-500 mt-0.5">
-                              Coins Balance: <span className="text-amber-600 font-bold font-mono">🪙 {user.coins}</span>
+                            <p className="text-[9px] text-zinc-500 mt-0.5 flex items-center gap-1.5">
+                              <span>ZOYO ID: <strong className="text-rose-600 font-mono font-bold">{user.yoyoId || '—'}</strong></span>
+                              <span>Coins: <span className="text-amber-600 font-bold font-mono">🪙 {user.coins}</span></span>
                             </p>
                           </div>
                         </div>
@@ -947,7 +1216,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
         {/* TAB 4: AUDIT LOGS LEDGER (Admin Only) */}
         {activeTab === 'audit_logs' && currentUser.role === 'admin' && (
           <div className="flex flex-col gap-3">
-            
+
             <div className="bg-white p-2.5 rounded-xl border border-zinc-200 text-zinc-500 text-[10px] leading-relaxed flex items-center gap-2 shadow-sm">
               <FileText className="w-4 h-4 text-rose-500 shrink-0" />
               <span>
@@ -967,7 +1236,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                   const formattedDate = new Date(log.timestamp).toLocaleString();
 
                   return (
-                    <div 
+                    <div
                       key={logId}
                       className="bg-white border border-zinc-200 rounded-2xl p-3 flex flex-col gap-2 shadow-sm"
                     >
@@ -1004,6 +1273,565 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                 })
               )}
             </div>
+
+          </div>
+        )}
+
+        {/* TAB 5: ROOM MANAGEMENT (Admin Only) */}
+        {activeTab === 'room_management' && currentUser.role === 'admin' && (
+          <div className="flex flex-col gap-3">
+
+            <div className="bg-white p-2.5 rounded-xl border border-zinc-200 text-zinc-500 text-[10px] leading-relaxed flex items-center gap-2 shadow-sm">
+              <Shield className="w-4 h-4 text-rose-500 shrink-0" />
+              <span>
+                🏠 <strong className="text-zinc-800">Voice Room Management</strong>: View and manage all voice chat rooms. Delete rooms that violate guidelines.
+              </span>
+            </div>
+
+            {/* Rooms list */}
+            <div className="flex flex-col gap-2">
+              {roomLoading ? (
+                <div className="py-8 text-center text-zinc-500 font-bold bg-white rounded-2xl border border-zinc-200 shadow-sm">
+                  Loading rooms...
+                </div>
+              ) : rooms.length === 0 ? (
+                <div className="py-8 text-center text-zinc-500 font-bold bg-white rounded-2xl border border-zinc-200 shadow-sm">
+                  No voice rooms found.
+                </div>
+              ) : (
+                rooms.map((room) => {
+                  const roomId = (room as any)._id || room.id;
+                  const isActive = room.isActive !== false;
+
+                  return (
+                    <div
+                      key={roomId}
+                      className="bg-white border border-zinc-200 rounded-2xl p-3 flex flex-col gap-2 shadow-sm"
+                    >
+                      <div className="flex justify-between items-center">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <img
+                            src={(room.host?.avatar) || PRESET_AVATARS[0]}
+                            alt={room.host?.name || 'Host'}
+                            className="w-8 h-8 rounded-full object-cover border border-zinc-200"
+                          />
+                          <div className="min-w-0">
+                            <p className="font-black text-zinc-900 text-xs truncate">{room.title}</p>
+                            <p className="text-[9px] text-zinc-500 mt-0.5">
+                              Host: <span className="text-rose-600 font-extrabold">{room.host?.name || 'Unknown'}</span> •
+                              Category: <span className="text-rose-600 font-extrabold uppercase">{room.category}</span>
+                            </p>
+                          </div>
+                        </div>
+
+                        <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${
+                          isActive
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : 'bg-rose-50 text-rose-700 border border-rose-200'
+                        }`}>
+                          {isActive ? 'Active' : 'Closed'}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 mt-1.5 pt-2 border-t border-zinc-100 text-[9px]">
+                        <span className="text-zinc-400">Seats: <strong className="font-bold text-zinc-600">{room.seats?.filter((s: any) => s.user).length || 0}</strong></span>
+                        <span className="text-zinc-400">Online: <strong className="font-bold text-zinc-600">{room.onlineCount || 0}</strong></span>
+                        <span className="text-zinc-400">Created: <strong className="font-bold text-zinc-600">{room.createdAt ? new Date(room.createdAt).toLocaleDateString() : 'Unknown'}</strong></span>
+                      </div>
+
+                      {/* Action Row */}
+                      <div className="flex gap-2 mt-2">
+                        <button
+                          onClick={() => handleDeleteRoom(roomId, room.title)}
+                          disabled={!isActive}
+                          className="flex-1 bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100 font-bold py-2 rounded-xl cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed uppercase tracking-wider"
+                        >
+                          🗑️ Delete Room
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+          </div>
+        )}
+
+        {/* TAB 6: CATALOG HUB (Admin & Manager: Add Gifts, Frames, Games) */}
+        {activeTab === 'catalog_hub' && (currentUser.role === 'admin' || currentUser.role === 'manager') && (
+          <div className="flex flex-col gap-3">
+            
+            {/* Header / Intro Eyebrow */}
+            <div className="bg-white p-3 rounded-2xl border border-zinc-200 text-zinc-500 text-[10px] flex items-center justify-between shadow-xs">
+              <div>
+                <span className="font-extrabold text-zinc-900 text-xs flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-rose-500" /> Platform Catalog & Game Hub
+                </span>
+                <p className="text-zinc-400 text-[10px] mt-0.5">
+                  Admins and Managers can dynamically publish new gifts, avatar frames, and voice room games!
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={fetchCatalogData}
+                className="p-1.5 bg-stone-100 hover:bg-stone-200 rounded-lg text-zinc-600 cursor-pointer transition-colors"
+                title="Refresh Catalog"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${catalogLoading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+
+            {/* Sub-tab pills */}
+            <div className="grid grid-cols-3 gap-1.5 bg-zinc-200/70 p-1 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setCatalogSubTab('gifts')}
+                className={`py-2 rounded-lg font-black text-center text-[10px] transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                  catalogSubTab === 'gifts'
+                    ? 'bg-white text-rose-600 shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-900'
+                }`}
+              >
+                <Gift className="w-3.5 h-3.5" />
+                <span>Gifts ({catalogGifts.length})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setCatalogSubTab('frames')}
+                className={`py-2 rounded-lg font-black text-center text-[10px] transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                  catalogSubTab === 'frames'
+                    ? 'bg-white text-rose-600 shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-900'
+                }`}
+              >
+                <Palette className="w-3.5 h-3.5" />
+                <span>Frames ({catalogFrames.length})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setCatalogSubTab('games')}
+                className={`py-2 rounded-lg font-black text-center text-[10px] transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                  catalogSubTab === 'games'
+                    ? 'bg-white text-rose-600 shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-900'
+                }`}
+              >
+                <Gamepad2 className="w-3.5 h-3.5" />
+                <span>Games ({catalogGames.length})</span>
+              </button>
+            </div>
+
+            {/* 1. SUB-TAB: GIFTS MANAGEMENT */}
+            {catalogSubTab === 'gifts' && (
+              <div className="flex flex-col gap-3">
+                
+                {/* Add Gift Form */}
+                <form onSubmit={handleAddGift} className="bg-white border border-zinc-200 rounded-2xl p-3.5 flex flex-col gap-3 shadow-sm">
+                  <h4 className="font-black text-zinc-800 text-xs flex items-center gap-1.5">
+                    <Plus className="w-3.5 h-3.5 text-rose-500" /> Add New Animated Gift
+                  </h4>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Gift Name</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. Diamond Ring"
+                        value={newGiftName}
+                        onChange={e => setNewGiftName(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Coin Cost</label>
+                      <input
+                        type="number"
+                        required
+                        min="1"
+                        placeholder="e.g. 99"
+                        value={newGiftCoins}
+                        onChange={e => setNewGiftCoins(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Icon / Emoji</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="💍 or image URL"
+                        value={newGiftIcon}
+                        onChange={e => setNewGiftIcon(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Animation Effect</label>
+                      <select
+                        value={newGiftEffect}
+                        onChange={e => setNewGiftEffect(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      >
+                        <option value="confetti">🎉 Confetti Blast</option>
+                        <option value="fireworks">🎆 Fireworks Show</option>
+                        <option value="hearts">💖 Floating Hearts</option>
+                        <option value="diamond">💎 Diamond Sparkle</option>
+                        <option value="car">🏎️ Golden Supercar</option>
+                        <option value="rocket">🚀 Cosmic Rocket</option>
+                        <option value="rose">🌹 Rose Shower</option>
+                        <option value="crown">👑 Royal Crown</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[9px] font-black text-zinc-400 uppercase">Description</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Shower the screen with pure diamonds!"
+                      value={newGiftDesc}
+                      onChange={e => setNewGiftDesc(e.target.value)}
+                      className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-medium mt-0.5 focus:outline-none focus:border-rose-500"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-2.5 bg-gradient-to-r from-rose-500 to-pink-600 hover:opacity-95 text-white font-black rounded-xl text-xs shadow-sm cursor-pointer transition-all active:scale-98"
+                  >
+                    + Publish Gift to App
+                  </button>
+                </form>
+
+                {/* List Current Gifts */}
+                <div className="flex flex-col gap-2">
+                  <span className="text-[10px] font-black text-zinc-400 uppercase tracking-wider px-1">
+                    Live Gifts in App ({catalogGifts.length})
+                  </span>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    {catalogGifts.map((gift) => (
+                      <div key={gift.id} className="bg-white border border-zinc-200 rounded-2xl p-3 flex flex-col justify-between shadow-xs">
+                        <div className="flex items-start justify-between">
+                          <span className="text-3xl">{gift.icon}</span>
+                          <span className="text-[9px] bg-amber-50 text-amber-700 font-extrabold px-2 py-0.5 rounded-full border border-amber-200">
+                            🪙 {gift.coins}
+                          </span>
+                        </div>
+                        <div className="mt-2 min-w-0">
+                          <h5 className="font-black text-xs text-zinc-900 truncate">{gift.name}</h5>
+                          <p className="text-[9px] text-zinc-400 truncate mt-0.5">{gift.description || gift.effect}</p>
+                        </div>
+                        <div className="mt-2.5 pt-2 border-t border-zinc-100 flex items-center justify-between">
+                          <span className="text-[8px] bg-stone-100 text-zinc-500 px-1.5 py-0.5 rounded font-bold uppercase">
+                            {gift.effect}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteGift(gift.id, gift.name)}
+                            className="text-zinc-400 hover:text-rose-600 p-1 rounded-md transition-colors cursor-pointer"
+                            title="Delete Gift"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+              </div>
+            )}
+
+            {/* 2. SUB-TAB: FRAMES MANAGEMENT */}
+            {catalogSubTab === 'frames' && (
+              <div className="flex flex-col gap-3">
+                
+                {/* Add Frame Form */}
+                <form onSubmit={handleAddFrame} className="bg-white border border-zinc-200 rounded-2xl p-3.5 flex flex-col gap-3 shadow-sm">
+                  <h4 className="font-black text-zinc-800 text-xs flex items-center gap-1.5">
+                    <Plus className="w-3.5 h-3.5 text-rose-500" /> Add New Avatar Frame
+                  </h4>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Frame Name</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. Dragon Flame"
+                        value={newFrameName}
+                        onChange={e => setNewFrameName(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Price (Coins)</label>
+                      <input
+                        type="number"
+                        required
+                        min="1"
+                        placeholder="e.g. 250"
+                        value={newFramePrice}
+                        onChange={e => setNewFramePrice(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Icon Emoji</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="🐉"
+                        value={newFrameIcon}
+                        onChange={e => setNewFrameIcon(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Glow / Border Style</label>
+                      <select
+                        value={newFramePreset}
+                        onChange={e => setNewFramePreset(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2 py-1.5 text-[10px] text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      >
+                        <option value="border-2 border-emerald-400 animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.5)]">
+                          Emerald Neon Aura
+                        </option>
+                        <option value="border-2 border-orange-500 shadow-[0_0_10px_rgba(249,115,22,0.5)] animate-[bounce_3s_infinite]">
+                          Fiery Orange Flare
+                        </option>
+                        <option value="border-2 border-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.6)]">
+                          Imperial Gold Crown
+                        </option>
+                        <option value="border-2 border-purple-500 animate-[spin_8s_linear_infinite]">
+                          Cosmic Fire Ring
+                        </option>
+                        <option value="border-2 border-rose-600 shadow-[0_0_10px_rgba(225,29,72,0.6)] animate-pulse">
+                          Crimson Phoenix Halo
+                        </option>
+                        <option value="border-2 border-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.5)]">
+                          Arctic Ice Pulse
+                        </option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Preview Frame */}
+                  <div className="flex items-center gap-3 bg-stone-50 p-2.5 rounded-xl border border-zinc-200/60">
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center p-0.5 bg-white ${newFramePreset}`}>
+                      <img src={currentUser.avatar} alt="Preview" className="w-full h-full rounded-full object-cover" />
+                    </div>
+                    <div>
+                      <span className="text-[9px] font-black text-zinc-400 uppercase">Live Frame Preview</span>
+                      <p className="text-xs font-black text-zinc-800">{newFrameName || 'Frame Preview'}</p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-2.5 bg-gradient-to-r from-rose-500 to-pink-600 hover:opacity-95 text-white font-black rounded-xl text-xs shadow-sm cursor-pointer transition-all active:scale-98"
+                  >
+                    + Publish Frame to Store
+                  </button>
+                </form>
+
+                {/* List Current Frames */}
+                <div className="flex flex-col gap-2">
+                  <span className="text-[10px] font-black text-zinc-400 uppercase tracking-wider px-1">
+                    Live Avatar Frames ({catalogFrames.length})
+                  </span>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    {catalogFrames.map((frame) => (
+                      <div key={frame.id} className="bg-white border border-zinc-200 rounded-2xl p-3 flex flex-col items-center text-center shadow-xs">
+                        <div className={`w-14 h-14 rounded-full flex items-center justify-center p-0.5 bg-white my-1 ${frame.value}`}>
+                          <img src={currentUser.avatar} alt="" className="w-full h-full rounded-full object-cover" />
+                        </div>
+                        <h5 className="font-black text-xs text-zinc-900 mt-1 truncate max-w-full">{frame.name}</h5>
+                        <span className="text-[9px] text-amber-600 font-extrabold mt-0.5">🪙 {frame.price} Coins</span>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteFrame(frame.id, frame.name)}
+                          className="mt-2 text-zinc-400 hover:text-rose-600 text-[10px] flex items-center gap-1 font-bold transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Delete</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+              </div>
+            )}
+
+            {/* 3. SUB-TAB: GAMES MANAGEMENT */}
+            {catalogSubTab === 'games' && (
+              <div className="flex flex-col gap-3">
+                
+                {/* Add Game Form */}
+                <form onSubmit={handleAddGame} className="bg-white border border-zinc-200 rounded-2xl p-3.5 flex flex-col gap-3 shadow-sm">
+                  <h4 className="font-black text-zinc-800 text-xs flex items-center gap-1.5">
+                    <Plus className="w-3.5 h-3.5 text-rose-500" /> Add New Voice Room Game
+                  </h4>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Game Title</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. Teen Patti Champion"
+                        value={newGameName}
+                        onChange={e => setNewGameName(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Category</label>
+                      <select
+                        value={newGameCategory}
+                        onChange={e => setNewGameCategory(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      >
+                        <option value="Board">🎲 Board Game</option>
+                        <option value="Cards">🃏 Cards</option>
+                        <option value="Dice">🎯 Dice</option>
+                        <option value="Party">🎉 Party & Social</option>
+                        <option value="Trivia">🧠 Trivia & Quiz</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Icon Emoji</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="🃏"
+                        value={newGameIcon}
+                        onChange={e => setNewGameIcon(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Min Players</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="8"
+                        value={newGameMin}
+                        onChange={e => setNewGameMin(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Max Players</label>
+                      <input
+                        type="number"
+                        min="2"
+                        max="16"
+                        value={newGameMax}
+                        onChange={e => setNewGameMax(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Status</label>
+                      <select
+                        value={newGameStatus}
+                        onChange={e => setNewGameStatus(e.target.value as any)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-bold mt-0.5 focus:outline-none focus:border-rose-500"
+                      >
+                        <option value="active">🟢 Active / Playable</option>
+                        <option value="coming_soon">🟡 Coming Soon</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase">Description</label>
+                      <input
+                        type="text"
+                        placeholder="Short summary of rules"
+                        value={newGameDesc}
+                        onChange={e => setNewGameDesc(e.target.value)}
+                        className="w-full bg-stone-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 font-medium mt-0.5 focus:outline-none focus:border-rose-500"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-2.5 bg-gradient-to-r from-rose-500 to-pink-600 hover:opacity-95 text-white font-black rounded-xl text-xs shadow-sm cursor-pointer transition-all active:scale-98"
+                  >
+                    + Publish Game to Platform
+                  </button>
+                </form>
+
+                {/* List Current Games */}
+                <div className="flex flex-col gap-2">
+                  <span className="text-[10px] font-black text-zinc-400 uppercase tracking-wider px-1">
+                    Platform Games ({catalogGames.length})
+                  </span>
+
+                  <div className="flex flex-col gap-2">
+                    {catalogGames.map((game) => (
+                      <div key={game.id} className="bg-white border border-zinc-200 rounded-2xl p-3 flex items-center justify-between shadow-xs">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="text-3xl shrink-0">{game.icon}</span>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <h5 className="font-black text-xs text-zinc-900 truncate">{game.name}</h5>
+                              <span className={`text-[8px] font-black px-1.5 py-0.2 rounded-full uppercase ${
+                                game.status === 'active' ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' : 'bg-amber-50 text-amber-600 border border-amber-200'
+                              }`}>
+                                {game.status === 'active' ? 'Active' : 'Soon'}
+                              </span>
+                            </div>
+                            <p className="text-[9px] text-zinc-400 truncate mt-0.5">{game.description}</p>
+                            <span className="text-[8px] text-zinc-500 font-bold mt-1 inline-block">
+                              👥 {game.minPlayers}-{game.maxPlayers} Players • {game.category}
+                            </span>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteGame(game.id, game.name)}
+                          className="text-zinc-400 hover:text-rose-600 p-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ml-2"
+                          title="Delete Game"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+              </div>
+            )}
 
           </div>
         )}

@@ -1,8 +1,9 @@
 import React from 'react';
 import YoYoLogo from './YoYoLogo';
+import { PRESET_AVATARS } from '../data';
 import { 
   Mic, MessageCircle, Shield, User, Coins, Trophy, 
-  Flame, Bell, Sparkles, LogIn, ChevronLeft, Calendar, HelpCircle
+  Flame, Bell, Sparkles, LogIn, ChevronLeft, Calendar, HelpCircle, Users, Gamepad2
 } from 'lucide-react';
 
 interface MobileFrameProps {
@@ -16,6 +17,8 @@ interface MobileFrameProps {
   userAvatar: string;
   currentUserRole?: string;
   isLoggedIn?: boolean;
+  inboxCount?: number;
+  onOpenFriends?: () => void;
 }
 
 export default function MobileFrame({
@@ -29,18 +32,22 @@ export default function MobileFrame({
   userAvatar,
   currentUserRole,
   isLoggedIn,
+  inboxCount = 0,
+  onOpenFriends,
 }: MobileFrameProps) {
 
-  // Clean navigation tabs with premium Lucide components instead of raw emojis
+  // Clean navigation tabs: Rooms, Friends, Games, Chat, [Console], Profile (Me)
   const tabs = [
     { id: 'home', label: 'Rooms', icon: Mic },
+    { id: 'friends', label: 'Friends', icon: Users },
+    { id: 'games', label: 'Games', icon: Gamepad2 },
     { id: 'chat', label: 'Chat', icon: MessageCircle },
     ...(currentUserRole && currentUserRole !== 'user' ? [{ id: 'admin', label: 'Console', icon: Shield }] : []),
     { id: 'profile', label: 'Me', icon: User },
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 text-zinc-800 font-sans antialiased select-none flex justify-center items-center md:py-6 md:px-4 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:16px_16px]">
+    <div className="w-full h-[100dvh] max-h-[100dvh] bg-slate-50 text-zinc-800 font-sans antialiased select-none flex justify-center items-center md:py-6 md:px-4 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:16px_16px] overflow-hidden">
       
       {/* ================= DESKTOP LEFT SIDEBAR ================= */}
       {!inRoom && isLoggedIn !== false && (
@@ -85,18 +92,34 @@ export default function MobileFrame({
               <span className="text-[9px] text-zinc-400 font-bold uppercase tracking-widest px-2.5 mb-1">Navigation</span>
               {tabs.map((tab) => {
                 const IconComponent = tab.icon;
+                const isSelected = activeTab === tab.id;
+                const isFriends = tab.id === 'friends';
+                const handleClick = () => onTabChange(tab.id);
+
                 return (
                   <button
                     key={tab.id}
-                    onClick={() => onTabChange(tab.id)}
+                    onClick={handleClick}
                     className={`flex items-center gap-3 px-4 py-3 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
-                      activeTab === tab.id
+                      isSelected
                         ? 'bg-gradient-to-r from-rose-500/10 to-pink-500/10 text-rose-600 border border-rose-200/50 shadow-sm font-extrabold'
                         : 'text-zinc-500 hover:bg-zinc-50 border border-transparent hover:text-zinc-800'
                     }`}
                   >
-                    <IconComponent className={`w-4 h-4 ${activeTab === tab.id ? 'stroke-[2.5]' : 'stroke-2'}`} />
+                    <div className="relative">
+                      <IconComponent className={`w-4 h-4 ${isSelected ? 'stroke-[2.5]' : 'stroke-2'}`} />
+                      {isFriends && inboxCount > 0 && (
+                        <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[8px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center">
+                          {inboxCount}
+                        </span>
+                      )}
+                    </div>
                     <span>{tab.label}</span>
+                    {isFriends && inboxCount > 0 && (
+                      <span className="ml-auto bg-rose-100 text-rose-600 text-[9px] font-black px-1.5 py-0.5 rounded-full">
+                        {inboxCount}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -116,11 +139,14 @@ export default function MobileFrame({
       )}
 
       {/* ================= CENTRAL APPLICATION SHELL ================= */}
-      <div className="w-full h-screen flex flex-col bg-white md:w-[400px] md:h-[800px] md:rounded-[36px] md:border-[10px] md:border-zinc-900 md:shadow-2xl relative overflow-hidden transition-all duration-300">
+      <div className="w-full h-[100dvh] max-h-[100dvh] flex flex-col bg-white md:w-[400px] md:h-[800px] md:rounded-[36px] md:border-[10px] md:border-zinc-900 md:shadow-2xl relative overflow-hidden transition-all duration-300">
         
-        {/* Dynamic Mobile Header */}
+        {/* Dynamic Mobile Header - Firmly Fixed at Top */}
         {!inRoom && isLoggedIn !== false && (
-          <div className="h-14 px-4 flex items-center justify-between bg-white border-b border-zinc-200/60 shrink-0 z-30 sticky top-0">
+          <header 
+            className="h-14 px-4 flex items-center justify-between bg-white border-b border-zinc-200/60 shrink-0 z-30 select-none shadow-[0_1px_3px_rgba(0,0,0,0.03)]"
+            style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+          >
             <div className="flex items-center gap-2.5 md:hidden">
               <div className="relative">
                 <img
@@ -155,17 +181,20 @@ export default function MobileFrame({
                 <span>{currentUserRole === 'admin' ? '∞' : coins}</span>
               </div>
             </div>
-          </div>
+          </header>
         )}
 
-        {/* Screen Content Window */}
-        <div className="flex-1 overflow-hidden relative flex flex-col bg-slate-50">
+        {/* Screen Content Window - Middle area, never displacing the bars */}
+        <main className="flex-1 min-h-0 overflow-hidden relative flex flex-col bg-slate-50">
           {children}
-        </div>
+        </main>
 
-        {/* Bottom Navigation (Only if not inRoom, logged in & always sticky to shell bottom) */}
+        {/* Bottom Navigation - Firmly Fixed at Bottom */}
         {!inRoom && isLoggedIn !== false && (
-          <div className="bg-white/95 backdrop-blur-md border-t border-zinc-200/60 pb-6 pt-2.5 px-3 shrink-0 z-40 sticky bottom-0">
+          <nav 
+            className="bg-white/95 backdrop-blur-md border-t border-zinc-200/70 pt-2 px-3 shrink-0 z-40 select-none shadow-[0_-2px_10px_rgba(0,0,0,0.04)]"
+            style={{ paddingBottom: 'max(14px, env(safe-area-inset-bottom, 0px))' }}
+          >
             <div 
               className="grid text-center max-w-md mx-auto"
               style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}
@@ -173,10 +202,13 @@ export default function MobileFrame({
               {tabs.map((tab) => {
                 const IconComponent = tab.icon;
                 const isSelected = activeTab === tab.id;
+                const isFriends = tab.id === 'friends';
+                const handleClick = () => onTabChange(tab.id);
+
                 return (
                   <button
                     key={tab.id}
-                    onClick={() => onTabChange(tab.id)}
+                    onClick={handleClick}
                     className={`flex flex-col items-center justify-center gap-1 py-1 transition-all cursor-pointer ${
                       isSelected
                         ? 'text-rose-600 scale-105 font-black'
@@ -185,14 +217,20 @@ export default function MobileFrame({
                   >
                     <div className="relative text-xl flex items-center justify-center">
                       <IconComponent className={`w-5 h-5 ${isSelected ? 'stroke-[2.5]' : 'stroke-2'}`} />
+                      {isFriends && inboxCount > 0 && (
+                        <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[8px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center leading-none">
+                          {inboxCount}
+                        </span>
+                      )}
                     </div>
                     <span className="text-[10px] font-bold tracking-wide mt-1">{tab.label}</span>
                   </button>
                 );
               })}
             </div>
-          </div>
+          </nav>
         )}
+
       </div>
 
       {/* ================= DESKTOP RIGHT PANEL ================= */}

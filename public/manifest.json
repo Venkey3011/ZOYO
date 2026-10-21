@@ -1,0 +1,25 @@
+{
+  "short_name": "ZOYO",
+  "name": "ZOYO - Voice Chat & Games",
+  "description": "Drop into social live voice rooms, chat, send animated gifts, and play interactive games like Ludo, Dice Duel, and Lucky Wheel with friends!",
+  "icons": [
+    {
+      "src": "/logo.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/logo.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#090d16",
+  "theme_color": "#f43f5e",
+  "display": "standalone",
+  "orientation": "portrait",
+  "categories": ["social", "entertainment", "games"]
+}

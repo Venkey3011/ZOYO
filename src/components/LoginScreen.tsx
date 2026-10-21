@@ -4,7 +4,7 @@ import { PRESET_AVATARS } from '../data';
 import { 
   Shield, Sparkles, UserPlus, Image, LogIn, Mail, Lock, 
   User as UserIcon, Globe, Calendar, Check, AlertCircle, 
-  Chrome, Facebook, Twitter, ArrowRight, ExternalLink 
+  Chrome, Facebook, Twitter, ArrowRight, ExternalLink, AtSign, Star
 } from 'lucide-react';
 import YoYoLogo from './YoYoLogo';
 
@@ -37,6 +37,13 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
+  // Nickname = display name for sign-up
+  const [nickname, setNickname] = useState('');
+
+  // Sanitise username handle: only lowercase alphanumeric + underscore
+  const sanitiseUsername = (val: string) =>
+    val.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 24);
+
   // Validate email address format helper
   const isValidEmail = (val: string) => {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
@@ -61,7 +68,15 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     if (isSignUp) {
       // REGISTRATION MANDATORY FIELD CHECKS
       if (!username.trim()) {
-        setErrorMsg('Username/Nickname is mandatory.');
+        setErrorMsg('Unique Username (@handle) is mandatory.');
+        return;
+      }
+      if (username.trim().length < 3) {
+        setErrorMsg('Username must be at least 3 characters.');
+        return;
+      }
+      if (!nickname.trim()) {
+        setErrorMsg('Nickname (Display Name) is mandatory.');
         return;
       }
       if (password.length < 4) {
@@ -75,7 +90,8 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            username: username.trim(),
+            username: sanitiseUsername(username.trim()),
+            nickname: nickname.trim(),
             password: password.trim(),
             email: email.trim().toLowerCase(),
             gender,
@@ -87,9 +103,11 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         });
         const data = await res.json();
         if (res.ok && data.success) {
-          setSuccessMsg('Account registered successfully with Mail ID! Please login now.');
+          setSuccessMsg('🎉 Account created! Login with your username or email now.');
           setIsSignUp(false);
           setPassword('');
+          setNickname('');
+          setUsername('');
         } else {
           setErrorMsg(data.error || 'Failed to complete registration.');
         }
@@ -185,12 +203,12 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
           />
           <h2 className="text-sm font-display font-black text-zinc-900 flex items-center justify-center gap-1.5 uppercase tracking-wider">
             <Sparkles className="w-4 h-4 text-rose-500 animate-pulse" />
-            {isSignUp ? 'Mail ID Signup' : 'ZOYO Secure Access'}
+            {isSignUp ? '🎉 Join the Party!' : '🔥 Welcome Back!'}
           </h2>
           <p className="text-[10px] text-zinc-500 mt-1 font-medium leading-normal max-w-[220px]">
             {isSignUp 
-              ? 'Create a unique user profile using your Mail ID & optional avatar customization.' 
-              : 'Sign in to access voice channels, direct chat rooms, and play games.'}
+              ? 'Create your ZOYO identity — pick a unique handle & nickname to vibe with the squad! 🎙️' 
+              : 'Drop in, grab a mic, send gifts & play games with legends! 🚀'}
           </p>
         </div>
 
@@ -231,24 +249,51 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
 
           {/* Registration Extra Details */}
           {isSignUp && (
-            <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-top-1 duration-200">
-              {/* Display Username */}
+            <div className="flex flex-col gap-3 animate-in fade-in slide-in-from-top-1 duration-200">
+
+              {/* Unique @handle Username */}
               <div className="flex flex-col gap-1">
-                <label className="font-extrabold text-zinc-500 text-[9px] uppercase tracking-wider flex justify-between">
-                  <span>Username / Nickname</span>
+                <label className="font-extrabold text-zinc-500 text-[9px] uppercase tracking-wider flex items-center gap-1">
+                  <AtSign className="w-3 h-3 text-rose-500" />
+                  Unique Username <span className="text-rose-500">*</span>
+                  <span className="ml-auto text-[8px] text-zinc-400 normal-case font-medium">@handle · letters, numbers, _</span>
+                </label>
+                <div className="relative">
+                  <AtSign className="absolute left-3.5 top-3 w-4 h-4 text-rose-400" />
+                  <input
+                    type="text"
+                    required
+                    value={username}
+                    onChange={(e) => setUsername(sanitiseUsername(e.target.value))}
+                    placeholder="e.g. zoyo_star"
+                    maxLength={24}
+                    className="w-full bg-rose-50/40 border border-rose-200 rounded-xl pl-10 pr-4 py-2.5 text-zinc-800 placeholder-zinc-400 focus:outline-none focus:border-rose-500 text-xs font-semibold"
+                  />
+                </div>
+                <p className="text-[9px] text-zinc-400 font-medium pl-1">This is your permanent login handle. Cannot be changed.</p>
+              </div>
+
+              {/* Display Nickname */}
+              <div className="flex flex-col gap-1">
+                <label className="font-extrabold text-zinc-500 text-[9px] uppercase tracking-wider flex items-center gap-1">
+                  <Star className="w-3 h-3 text-amber-500" />
+                  Nickname (Display Name) <span className="text-rose-500">*</span>
                 </label>
                 <div className="relative">
                   <UserIcon className="absolute left-3.5 top-3 w-4 h-4 text-zinc-400" />
                   <input
                     type="text"
                     required
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    placeholder="e.g. zoyo_star"
+                    value={nickname}
+                    onChange={(e) => setNickname(e.target.value)}
+                    placeholder="e.g. StarGirl 🌟 or King Z"
+                    maxLength={32}
                     className="w-full bg-stone-50 border border-zinc-200 rounded-xl pl-10 pr-4 py-2.5 text-zinc-800 placeholder-zinc-400 focus:outline-none focus:border-rose-500 text-xs font-semibold"
                   />
                 </div>
+                <p className="text-[9px] text-zinc-400 font-medium pl-1">This is how others will see you. Can use emojis! ✨</p>
               </div>
+
             </div>
           )}
 

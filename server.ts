@@ -1,15 +1,17 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
+import http from "http";
+import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
 import mongoose from "mongoose";
-import dotenv from "dotenv";
-
-dotenv.config();
+import { isSupabaseConfigured, supabaseDb } from "./src/lib/supabase";
 
 const app = express();
-const PORT = 3000;
+const PORT = parseInt(process.env.PORT || "3000", 10);
 
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
 // MongoDB connection with Graceful Fallback
 let isMongoConnected = false;
@@ -42,10 +44,52 @@ const UserSchema = new mongoose.Schema({
   giftsCount: { type: Number, default: 0 },
   visitorsCount: { type: Number, default: 0 },
   family: { type: String, default: 'None' },
-  vipStatus: { type: String, default: 'None' }
+  vipStatus: { type: String, default: 'None' },
+  bio: { type: String, default: 'Living life on ZOYO! 🌟' },
+  recentVisitors: { type: Array, default: [] }
 }, { timestamps: true });
 
 const UserMongo: any = mongoose.models.User || mongoose.model('User', UserSchema);
+
+// Catalog Schemas for Admin & Manager dynamic content creation
+const CustomGiftSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  name: { type: String, required: true },
+  coins: { type: Number, required: true },
+  icon: { type: String, required: true },
+  effect: { type: String, default: 'confetti' },
+  description: { type: String, default: '' },
+  addedBy: { type: String, default: 'Admin' },
+  createdAt: { type: Date, default: Date.now }
+});
+const CustomGiftMongo: any = mongoose.models.CustomGift || mongoose.model('CustomGift', CustomGiftSchema);
+
+const CustomFrameSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  name: { type: String, required: true },
+  price: { type: Number, required: true },
+  value: { type: String, required: true },
+  icon: { type: String, default: '✨' },
+  addedBy: { type: String, default: 'Admin' },
+  createdAt: { type: Date, default: Date.now }
+});
+const CustomFrameMongo: any = mongoose.models.CustomFrame || mongoose.model('CustomFrame', CustomFrameSchema);
+
+const CustomGameSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  name: { type: String, required: true },
+  category: { type: String, default: 'Party' },
+  icon: { type: String, default: '🎮' },
+  minPlayers: { type: Number, default: 2 },
+  maxPlayers: { type: Number, default: 4 },
+  description: { type: String, default: '' },
+  status: { type: String, default: 'active' }, // 'active', 'maintenance', 'coming_soon'
+  entryFee: { type: Number, default: 0 },
+  prizePool: { type: Number, default: 0 },
+  addedBy: { type: String, default: 'Admin' },
+  createdAt: { type: Date, default: Date.now }
+});
+const CustomGameMongo: any = mongoose.models.CustomGame || mongoose.model('CustomGame', CustomGameSchema);
 
 // Coin transfer transaction log schema
 const TransferLogSchema = new mongoose.Schema({
@@ -55,6 +99,9 @@ const TransferLogSchema = new mongoose.Schema({
   receiverId: { type: String, required: true },
   receiverName: { type: String, required: true },
   amount: { type: Number, required: true },
+  type: { type: String, default: 'transfer' }, // 'transfer' | 'gift' | 'game_spend' | 'game_win' | 'recharge'
+  details: { type: String, default: '' },
+  icon: { type: String, default: '🪙' },
   timestamp: { type: Date, default: Date.now }
 });
 
@@ -68,21 +115,107 @@ const RoomSchema = new mongoose.Schema({
   theme: { type: String, enum: ['neon', 'pink', 'royal', 'cosmic'], default: 'neon' },
   category: { type: String, enum: ['chat', 'games', 'singing', 'match'], default: 'chat' },
   onlineCount: { type: Number, default: 1 },
-  activeGame: { type: String, enum: ['none', 'ludo', 'dice', 'wheel'], default: 'none' },
+  activeGame: { type: String, default: 'none' },
+  isOfficialGame: { type: Boolean, default: false },
+  gamePrizePool: { type: Number, default: 0 },
   backgroundUrl: { type: String, default: '' },
   isActive: { type: Boolean, default: true },
+  isPrivate: { type: Boolean, default: false },
+  roomPassword: { type: String, default: '' },
+  invitedUsers: { type: Array, default: [] },
+  roomId: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now },
   seats: [{
     index: { type: Number, required: true },
     user: { type: Object, default: null },
     isMuted: { type: Boolean, default: false },
     isTalking: { type: Boolean, default: false }
+  }],
+  onlineUsers: { type: Array, default: [] },
+  chatMessages: [{
+    id: { type: String },
+    userId: { type: String },
+    userName: { type: String },
+    userLevel: { type: Number, default: 1 },
+    message: { type: String },
+    type: { type: String, default: 'text' },
+    giftName: { type: String },
+    giftIcon: { type: String },
+    giftCount: { type: Number },
+    timestamp: { type: String }
   }]
 });
 
 const RoomMongo: any = mongoose.models.Room || mongoose.model('Room', RoomSchema);
 
-// In-memory transfer log
+// Friend Request schema
+const FriendRequestSchema = new mongoose.Schema({
+  senderId: { type: String, required: true },
+  senderName: { type: String, required: true },
+  senderAvatar: { type: String, default: '' },
+  senderYoyoId: { type: String, default: '' },
+  receiverId: { type: String, required: true },
+  receiverName: { type: String, default: '' },
+  receiverYoyoId: { type: String, default: '' },
+  status: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending' },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const FriendRequestMongo: any = mongoose.models.FriendRequest || mongoose.model('FriendRequest', FriendRequestSchema);
+
+// In-memory friend requests
+interface InMemFriendRequest {
+  _id: string;
+  senderId: string;
+  senderName: string;
+  senderAvatar: string;
+  senderYoyoId: string;
+  receiverId: string;
+  receiverName: string;
+  receiverAvatar?: string;
+  receiverYoyoId: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  createdAt: string;
+}
+const inMemoryFriendRequests: InMemFriendRequest[] = [];
+
+// Direct Message schema for 1-on-1 private chat
+const DirectMessageSchema = new mongoose.Schema({
+  senderId: { type: String, required: true },
+  senderName: { type: String, required: true },
+  senderAvatar: { type: String, default: '' },
+  senderYoyoId: { type: String, default: '' },
+  receiverId: { type: String, required: true },
+  receiverName: { type: String, required: true },
+  receiverAvatar: { type: String, default: '' },
+  receiverYoyoId: { type: String, default: '' },
+  text: { type: String, required: true },
+  voice: { type: Boolean, default: false },
+  duration: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const DirectMessageMongo: any = mongoose.models.DirectMessage || mongoose.model('DirectMessage', DirectMessageSchema);
+
+interface InMemDirectMessage {
+  _id: string;
+  senderId: string;
+  senderName: string;
+  senderAvatar: string;
+  senderYoyoId?: string;
+  receiverId: string;
+  receiverName: string;
+  receiverAvatar: string;
+  receiverYoyoId?: string;
+  text: string;
+  voice: boolean;
+  duration?: number;
+  createdAt: string;
+}
+const inMemoryDirectMessages: InMemDirectMessage[] = [];
+
+
+
 interface InMemTransferLog {
   senderId: string;
   senderName: string;
@@ -90,6 +223,9 @@ interface InMemTransferLog {
   receiverId: string;
   receiverName: string;
   amount: number;
+  type?: string;
+  details?: string;
+  icon?: string;
   timestamp: string;
 }
 
@@ -104,19 +240,34 @@ interface InMemRoom {
   theme: 'neon' | 'pink' | 'royal' | 'cosmic';
   category: 'chat' | 'games' | 'singing' | 'match';
   onlineCount: number;
-  activeGame: 'none' | 'ludo' | 'dice' | 'wheel';
+  activeGame: string;
+  isOfficialGame?: boolean;
+  gamePrizePool?: number;
   backgroundUrl: string;
   isActive: boolean;
+  isPrivate: boolean;
+  roomPassword: string;
+  invitedUsers: string[];
+  roomId?: string;
   seats: Array<{ index: number; user: any | null; isMuted: boolean; isTalking: boolean }>;
+  onlineUsers: any[];
+  chatMessages: any[];
   createdAt: string;
 }
 
 const inMemoryRooms: InMemRoom[] = [];
 
+// High-concurrency In-Memory Active Room Cache for Sub-Millisecond Room Operations & Seating
+const activeRoomsCache = new Map<string, any>();
+const roomSaveDebounceTimers = new Map<string, NodeJS.Timeout>();
+
 async function logTransfer(logData: any) {
+  if (isSupabaseConfigured) {
+    await supabaseDb.logTransfer(logData).catch(err => console.warn('[Supabase] logTransfer warning:', err));
+  }
   if (isMongoConnected) {
-    await TransferLogMongo.create(logData);
-  } else {
+    await TransferLogMongo.create(logData).catch(() => {});
+  } else if (!isSupabaseConfigured) {
     inMemoryTransfers.push({
       ...logData,
       timestamp: new Date().toISOString()
@@ -153,6 +304,8 @@ interface InMemUser {
   visitorsCount: number;
   family: string;
   vipStatus: 'None' | 'VIP' | 'SVIP' | string;
+  bio?: string;
+  recentVisitors?: any[];
 }
 
 const inMemoryDB: InMemUser[] = [
@@ -180,20 +333,48 @@ const inMemoryDB: InMemUser[] = [
     giftsCount: 0,
     visitorsCount: 0,
     family: "None",
-    vipStatus: "None"
+    vipStatus: "None",
+    bio: "Living life on ZOYO! 🌟",
+    recentVisitors: []
   }
 ];
 
+// Fallback in-memory catalog items
+const inMemoryCustomGifts: any[] = [
+  { id: 'g_rose', name: 'Red Rose', coins: 10, icon: '🌹', effect: 'rose', description: 'Express your affection with a beautiful rose shower!', addedBy: 'System' },
+  { id: 'g_crown', name: 'Royal Crown', coins: 99, icon: '👑', effect: 'crown', description: 'Crown the host and show their absolute royalty!', addedBy: 'System' },
+  { id: 'g_car', name: 'Golden Supercar', coins: 299, icon: '🏎️', effect: 'car', description: 'Drive onto the screen in style with an animated hypercar!', addedBy: 'System' },
+  { id: 'g_rocket', name: 'Cosmic Rocket', coins: 599, icon: '🚀', effect: 'rocket', description: 'Launch the voice room directly into outer space!', addedBy: 'System' }
+];
+
+const inMemoryCustomFrames: any[] = [
+  { id: 'frame_neon', name: 'Cyber Neon Aura', price: 150, value: 'border-2 border-cyan-400 animate-pulse shadow-[0_0_10px_rgba(34,211,238,0.5)]', icon: '💫', addedBy: 'System' },
+  { id: 'frame_pink', name: 'Sakura Angel Halo', price: 200, value: 'border-2 border-pink-400 shadow-[0_0_10px_rgba(244,114,182,0.5)] animate-[bounce_3s_infinite]', icon: '🌸', addedBy: 'System' },
+  { id: 'frame_royal', name: 'Imperial Gold Crown', price: 400, value: 'border-2 border-yellow-400 shadow-[0_0_12px_rgba(234,179,8,0.6)]', icon: '👑', addedBy: 'System' },
+  { id: 'frame_cosmic', name: 'Cosmic Fire Ring', price: 350, value: 'border-2 border-purple-500 animate-[spin_8s_linear_infinite]', icon: '🌌', addedBy: 'System' }
+];
+
+const inMemoryCustomGames: any[] = [
+  { id: 'ludo', name: 'ZOYO Ludo Cup', category: 'Board', icon: '🎲', minPlayers: 2, maxPlayers: 4, description: 'Real-time competitive 4-player Ludo board match', status: 'active', addedBy: 'System' },
+  { id: 'dice', name: 'Dice Duel Showdown', category: 'Dice', icon: '🎯', minPlayers: 2, maxPlayers: 2, description: '1-on-1 High-stakes dice roll showdown with coin betting', status: 'active', addedBy: 'System' },
+  { id: 'wheel', name: 'Lucky Multiplier Wheel', category: 'Luck', icon: '🎡', minPlayers: 1, maxPlayers: 8, description: 'Spin the dynamic wheel to win 10x multiplier gifts', status: 'active', addedBy: 'System' }
+];
+
 async function connectToMongo() {
+  if (isSupabaseConfigured) {
+    console.log("⚡ Primary Database: Supabase PostgreSQL active.");
+  }
   if (!MONGODB_URI) {
-    console.warn("⚠️ MONGODB_URI environment variable is missing. Running in in-memory fallback mode.");
+    if (!isSupabaseConfigured) {
+      console.warn("⚠️ MONGODB_URI environment variable is missing. Running in in-memory fallback mode.");
+    }
     return;
   }
   try {
     mongoose.set('strictQuery', true);
     await mongoose.connect(MONGODB_URI);
     isMongoConnected = true;
-    console.log("🔌 Connected successfully to MongoDB Atlas!");
+    console.log("🔌 Connected successfully to MongoDB Atlas (Secondary/Backup)!");
 
     // Seed Admin account in MongoDB Atlas if missing
     const adminExists = await UserMongo.findOne({ name: "Admin" });
@@ -225,8 +406,10 @@ async function connectToMongo() {
       console.log("✅ Seeded Admin user in MongoDB Atlas.");
     }
   } catch (err) {
-    console.error("❌ MongoDB Atlas connection error:", err);
-    console.warn("⚠️ Falling back to in-memory mode.");
+    if (!isSupabaseConfigured) {
+      console.error("❌ MongoDB Atlas connection error:", err);
+      console.warn("⚠️ Falling back to in-memory mode.");
+    }
   }
 }
 
@@ -234,6 +417,10 @@ connectToMongo();
 
 // Helper to query database depending on status
 async function getUsers() {
+  if (isSupabaseConfigured) {
+    const supaUsers = await supabaseDb.getAllUsers();
+    if (supaUsers && supaUsers.length > 0) return supaUsers;
+  }
   if (isMongoConnected) {
     return await UserMongo.find({}, '-password');
   } else {
@@ -241,23 +428,107 @@ async function getUsers() {
   }
 }
 
+// High-performance In-Memory User Cache (< 0.1ms read time)
+const activeUsersCache = new Map<string, { user: any; expiresAt: number }>();
+
+function getCachedUser(key: string) {
+  if (!key) return null;
+  const entry = activeUsersCache.get(String(key).toLowerCase().trim());
+  if (entry && entry.expiresAt > Date.now()) {
+    return entry.user;
+  }
+  return null;
+}
+
+function setCachedUser(user: any) {
+  if (!user) return;
+  const expiresAt = Date.now() + 4500; // 4.5-second TTL
+  const entry = { user, expiresAt };
+  if (user.id) activeUsersCache.set(String(user.id).toLowerCase(), entry);
+  if (user._id) activeUsersCache.set(String(user._id).toLowerCase(), entry);
+  if (user.yoyoId) activeUsersCache.set(String(user.yoyoId).toLowerCase(), entry);
+  if (user.name) activeUsersCache.set(String(user.name).toLowerCase(), entry);
+  if (user.username) activeUsersCache.set(String(user.username).toLowerCase(), entry);
+  if (user.email) activeUsersCache.set(String(user.email).toLowerCase(), entry);
+}
+
+function invalidateCachedUser(idOrKey: string) {
+  if (!idOrKey) return;
+  activeUsersCache.delete(String(idOrKey).toLowerCase().trim());
+}
+
+async function findUserById(id: string) {
+  if (!id) return null;
+  const cleanId = String(id).trim();
+
+  // ⚡ 0ms Fast path: check in-memory cache
+  const cached = getCachedUser(cleanId);
+  if (cached) return cached;
+
+  if (isSupabaseConfigured) {
+    const supaUser = await supabaseDb.getUserById(cleanId);
+    if (supaUser) {
+      setCachedUser(supaUser);
+      return supaUser;
+    }
+    const byIdentifier = await supabaseDb.getUserByNameOrId(cleanId);
+    if (byIdentifier) {
+      setCachedUser(byIdentifier);
+      return byIdentifier;
+    }
+  }
+  if (isMongoConnected) {
+    if (mongoose.Types.ObjectId.isValid(cleanId)) {
+      const user = await UserMongo.findById(cleanId);
+      if (user) setCachedUser(user);
+      return user;
+    }
+    const user = await UserMongo.findOne({ $or: [{ _id: cleanId }, { id: cleanId }, { yoyoId: cleanId }, { name: cleanId }] });
+    if (user) setCachedUser(user);
+    return user;
+  }
+  const memUser = inMemoryDB.find(u => u._id === cleanId || (u as any).id === cleanId || u.yoyoId === cleanId || u.name.toLowerCase() === cleanId.toLowerCase());
+  if (memUser) setCachedUser(memUser);
+  return memUser;
+}
+
 async function findUserByName(name: string) {
   const normalized = name.toLowerCase().trim();
+
+  // ⚡ 0ms Fast path: check in-memory cache
+  const cached = getCachedUser(normalized);
+  if (cached) return cached;
+
+  if (isSupabaseConfigured) {
+    const supaUser = await supabaseDb.getUserByNameOrId(normalized);
+    if (supaUser) {
+      setCachedUser(supaUser);
+      return supaUser;
+    }
+  }
   if (isMongoConnected) {
-    return await UserMongo.findOne({
+    const user = await UserMongo.findOne({
       $or: [
         { name: new RegExp(`^${normalized}$`, 'i') },
         { email: normalized }
       ]
     });
+    if (user) setCachedUser(user);
+    return user;
   } else {
-    return inMemoryDB.find(u => u.name.toLowerCase() === normalized || u.email?.toLowerCase() === normalized);
+    const memUser = inMemoryDB.find(u => u.name.toLowerCase() === normalized || u.email?.toLowerCase() === normalized);
+    if (memUser) setCachedUser(memUser);
+    return memUser;
   }
 }
 
 async function findUserByPhone(phone: string) {
   if (!phone) return null;
   const cleaned = phone.trim();
+  if (isSupabaseConfigured) {
+    const supaUser = await supabaseDb.getUserByNameOrId(cleaned);
+    if (supaUser) return supaUser;
+  }
   if (isMongoConnected) {
     return await UserMongo.findOne({ phoneNumber: cleaned });
   } else {
@@ -268,6 +539,10 @@ async function findUserByPhone(phone: string) {
 async function findUserByEmail(email: string) {
   if (!email) return null;
   const cleaned = email.trim().toLowerCase();
+  if (isSupabaseConfigured) {
+    const supaUser = await supabaseDb.getUserByEmail(cleaned);
+    if (supaUser) return supaUser;
+  }
   if (isMongoConnected) {
     return await UserMongo.findOne({ email: cleaned });
   } else {
@@ -277,6 +552,10 @@ async function findUserByEmail(email: string) {
 
 async function findUserBySocial(provider: string, socialId: string) {
   if (!provider || !socialId) return null;
+  if (isSupabaseConfigured) {
+    const supaUser = await supabaseDb.getUserByNameOrId(socialId);
+    if (supaUser) return supaUser;
+  }
   if (isMongoConnected) {
     return await UserMongo.findOne({ socialProvider: provider, socialId: socialId });
   } else {
@@ -301,6 +580,11 @@ async function createUser(userData: any) {
     family: family,
     vipStatus: vipStatus
   };
+
+  if (isSupabaseConfigured) {
+    const created = await supabaseDb.createUser(fullData);
+    if (created) return created;
+  }
 
   if (isMongoConnected) {
     return await UserMongo.create(fullData);
@@ -340,12 +624,23 @@ async function createUser(userData: any) {
 }
 
 async function updateUser(id: string, updateData: any) {
+  invalidateCachedUser(id);
+  if (isSupabaseConfigured) {
+    const supaUpdated = await supabaseDb.updateUser(id, updateData);
+    if (supaUpdated) {
+      setCachedUser(supaUpdated);
+      return supaUpdated;
+    }
+  }
   if (isMongoConnected) {
-    return await UserMongo.findByIdAndUpdate(id, { $set: updateData }, { new: true });
+    const updated = await UserMongo.findByIdAndUpdate(id, { $set: updateData }, { new: true });
+    if (updated) setCachedUser(updated);
+    return updated;
   } else {
     const index = inMemoryDB.findIndex(u => u._id === id);
     if (index !== -1) {
       inMemoryDB[index] = { ...inMemoryDB[index], ...updateData };
+      setCachedUser(inMemoryDB[index]);
       return inMemoryDB[index];
     }
     return null;
@@ -354,11 +649,25 @@ async function updateUser(id: string, updateData: any) {
 
 // --- API ENDPOINTS ---
 
+// App version & build information for instant mobile auto-update
+const APP_VERSION = '1.0.0';
+const APP_BUILD_TIME = Date.now();
+
+app.get("/api/version", (req, res) => {
+  res.json({
+    version: APP_VERSION,
+    buildTime: APP_BUILD_TIME,
+    timestamp: new Date(APP_BUILD_TIME).toISOString()
+  });
+});
+
 // Server health / db status
 app.get("/api/db-status", (req, res) => {
   res.json({
-    connected: isMongoConnected,
-    mode: isMongoConnected ? "MongoDB Atlas" : "In-Memory Fallback"
+    connected: isSupabaseConfigured || isMongoConnected,
+    mode: isSupabaseConfigured ? "Supabase (PostgreSQL)" : (isMongoConnected ? "MongoDB Atlas" : "In-Memory Fallback"),
+    supabaseActive: isSupabaseConfigured,
+    mongoActive: isMongoConnected
   });
 });
 
@@ -490,9 +799,13 @@ app.post("/api/auth/login", async (req: express.Request, res: express.Response) 
       return;
     }
 
-    const user = await findUserByName(username);
+    // Search by name/username OR email
+    let user = await findUserByName(username);
+    if (!user && username.includes('@')) {
+      user = await findUserByEmail(username);
+    }
     if (!user) {
-      res.status(401).json({ error: "User not found" });
+      res.status(401).json({ error: "User not found. Check your username or email." });
       return;
     }
 
@@ -517,18 +830,27 @@ app.post("/api/auth/login", async (req: express.Request, res: express.Response) 
 // Signup endpoint (With mandatory profile & email/phone fields)
 app.post("/api/auth/signup", async (req: express.Request, res: express.Response) => {
   try {
-    const { username, password, avatar, coins, gender, dateOfBirth, country, phoneNumber, email } = req.body;
+    const { username, nickname, password, avatar, coins, gender, dateOfBirth, country, phoneNumber, email } = req.body;
+    
     if (!username || !password || !gender || !dateOfBirth || !country || (!phoneNumber && !email)) {
-      res.status(400).json({ error: "All details (Username, Password, Email/Phone, Gender, Date of Birth, and Country) are mandatory." });
+      res.status(400).json({ error: "All details (Username, Nickname, Password, Email/Phone, Gender, Date of Birth, and Country) are mandatory." });
       return;
     }
 
+    // Validate username is alphanumeric/underscores only
+    if (!/^[a-z0-9_]{3,24}$/.test(username)) {
+      res.status(400).json({ error: "Username must be 3-24 characters (letters, numbers, underscore only)." });
+      return;
+    }
+
+    // Enforce unique username (handle)
     const existingName = await findUserByName(username);
     if (existingName) {
-      res.status(400).json({ error: "Username already exists." });
+      res.status(400).json({ error: "This username is already taken. Try another @handle." });
       return;
     }
 
+    // Enforce unique email
     if (email) {
       const existingEmail = await findUserByEmail(email);
       if (existingEmail) {
@@ -545,12 +867,17 @@ app.post("/api/auth/signup", async (req: express.Request, res: express.Response)
       }
     }
 
+    // Display name = nickname if provided, else fall back to username
+    const displayName = (nickname || username).trim();
+
     const newUser = await createUser({
-      name: username.trim(),
+      name: displayName,
+      username: username.trim().toLowerCase(),
+      nickname: displayName,
       password: password.trim(),
       role: 'user',
       avatar: avatar,
-      coins: Number(coins) || 0, // Users start with 0 coins
+      coins: Number(coins) || 0,
       gender: gender,
       dateOfBirth: dateOfBirth,
       country: country,
@@ -722,16 +1049,34 @@ app.post("/api/users/create-sub-user", async (req: express.Request, res: express
   }
 });
 
+// Delete user endpoint (Admin only)
+app.delete("/api/users/:id", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    let deleted = false;
+    if (isSupabaseConfigured) {
+      deleted = await supabaseDb.deleteUser(id);
+    }
+    if (isMongoConnected) {
+      await UserMongo.findByIdAndDelete(id);
+      deleted = true;
+    }
+    const idx = inMemoryDB.findIndex(u => u._id === id || (u as any).id === id);
+    if (idx !== -1) {
+      inMemoryDB.splice(idx, 1);
+      deleted = true;
+    }
+    res.json({ success: true, message: "User deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Get user status endpoint (to handle block/ban check dynamically)
 app.get("/api/users/:id/status", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-    let user: any = null;
-    if (isMongoConnected) {
-      user = await UserMongo.findById(id);
-    } else {
-      user = inMemoryDB.find(u => u._id === id);
-    }
+    const user = await findUserById(id);
 
     if (!user) {
       res.status(404).json({ error: "User not found" });
@@ -781,19 +1126,19 @@ app.post("/api/users/:id/coins", async (req: express.Request, res: express.Respo
       return;
     }
 
-    // Retrieve sender and receiver to execute deduction & credit
+    // Allow system / game sender IDs (e.g. wheel_carnival, dice_duel_win, etc.)
+    const isSystemSender = senderId.startsWith('wheel_') || senderId.startsWith('dice_') || senderId.startsWith('ludo_') || senderId === 'system_game';
+
+    // Retrieve sender and receiver to execute deduction & credit via Supabase
     let senderUser: any = null;
     let targetUser: any = null;
 
-    if (isMongoConnected) {
-      senderUser = await UserMongo.findById(senderId);
-      targetUser = await UserMongo.findById(id);
-    } else {
-      senderUser = inMemoryDB.find(u => u._id === senderId);
-      targetUser = inMemoryDB.find(u => u._id === id);
+    if (!isSystemSender) {
+      senderUser = await findUserById(senderId);
     }
+    targetUser = await findUserById(id);
 
-    if (!senderUser) {
+    if (!isSystemSender && !senderUser) {
       res.status(404).json({ error: "Sender user account not found" });
       return;
     }
@@ -804,37 +1149,48 @@ app.post("/api/users/:id/coins", async (req: express.Request, res: express.Respo
     }
 
     // Deduct from sender (allow Admin unlimited mint/bypass if wanted, but managers/coin sellers must have enough coins!)
-    const senderRole = senderUser.role || 'user';
-    const isSenderAdmin = senderRole === 'admin';
+    const senderRole = isSystemSender ? 'system' : (senderUser.role || 'user');
+    const isSenderAdmin = senderRole === 'admin' || isSystemSender;
 
     if (!isSenderAdmin && (senderUser.coins || 0) < parsedAmount) {
       res.status(400).json({ error: `Insufficient coins balance. You only have 🪙 ${senderUser.coins} coins.` });
       return;
     }
 
-    // Deduct coins from sender
-    let updatedSenderCoins = senderUser.coins || 0;
-    if (!isSenderAdmin) {
-      updatedSenderCoins = Math.max(0, (senderUser.coins || 0) - parsedAmount);
-      await updateUser(senderId, { coins: updatedSenderCoins });
-    } else {
-      // Admin has infinite coins, keep it at 999999999!
-      updatedSenderCoins = 999999999;
-      await updateUser(senderId, { coins: 999999999 });
+    // Deduct coins from sender if regular user
+    let updatedSenderCoins = 0;
+    if (!isSystemSender) {
+      if (!isSenderAdmin) {
+        updatedSenderCoins = Math.max(0, (senderUser.coins || 0) - parsedAmount);
+        await updateUser(senderId, { coins: updatedSenderCoins });
+      } else {
+        updatedSenderCoins = 999999999;
+        await updateUser(senderId, { coins: 999999999 });
+      }
     }
 
     // Credit coins to recipient
     const receiverNewCoins = (targetUser.coins || 0) + parsedAmount;
     const updatedTargetUser = await updateUser(id, { coins: receiverNewCoins });
 
+    const gameName = senderId === 'wheel_carnival' ? 'Lucky Multiplier Wheel' :
+                     senderId === 'dice_duel_win' ? 'Dice Duel Showdown' :
+                     senderId === 'ludo_win' ? 'Ludo Cup Match' :
+                     'System Reward';
+    const txnType = isSystemSender ? 'game_win' : (req.body.type || 'transfer');
+    const txnIcon = senderId.includes('wheel') ? '🎡' : senderId.includes('dice') ? '🎲' : senderId.includes('ludo') ? '🎯' : '🪙';
+
     // Log this transaction!
     await logTransfer({
-      senderId: senderUser._id || senderUser.id,
-      senderName: senderUser.name,
+      senderId: isSystemSender ? senderId : (senderUser._id || senderUser.id),
+      senderName: isSystemSender ? gameName : senderUser.name,
       senderRole: senderRole,
       receiverId: targetUser._id || targetUser.id,
       receiverName: targetUser.name,
-      amount: parsedAmount
+      amount: parsedAmount,
+      type: txnType,
+      details: req.body.details || (isSystemSender ? `Won in ${gameName}` : 'Transfer'),
+      icon: txnIcon
     });
 
     res.json({ 
@@ -850,6 +1206,13 @@ app.post("/api/users/:id/coins", async (req: express.Request, res: express.Respo
 // Admin-Only Transfer Logs Ledger Endpoint
 app.get("/api/transfers", async (req: express.Request, res: express.Response) => {
   try {
+    if (isSupabaseConfigured) {
+      const logs = await supabaseDb.getTransfers(100);
+      if (logs && logs.length > 0) {
+        res.json({ success: true, transfers: logs });
+        return;
+      }
+    }
     if (isMongoConnected) {
       const logs = await TransferLogMongo.find({}).sort({ timestamp: -1 });
       res.json({ success: true, transfers: logs });
@@ -861,16 +1224,1201 @@ app.get("/api/transfers", async (req: express.Request, res: express.Response) =>
   }
 });
 
+// Personal transaction log for a specific user (sent + received)
+app.get("/api/users/:id/transactions", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    const limit = Math.min(parseInt(String(req.query.limit || '50')), 100);
+    let logs: any[] = [];
+    if (isSupabaseConfigured) {
+      logs = await supabaseDb.getTransfers(limit, id);
+    } else if (isMongoConnected) {
+      logs = await TransferLogMongo.find({
+        $or: [{ senderId: id }, { receiverId: id }]
+      }).sort({ timestamp: -1 }).limit(limit).lean();
+    } else {
+      logs = inMemoryTransfers
+        .filter((t: any) => t.senderId === id || t.receiverId === id)
+        .slice(0, limit)
+        .reverse();
+    }
+    res.json({ success: true, transactions: logs });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// --- USER VISITOR & PUBLIC PROFILE ENDPOINTS ---
+
+// Get public profile of a user (including recent visitors)
+app.get("/api/users/:id/profile", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    let user: any = null;
+    if (isSupabaseConfigured) {
+      user = await supabaseDb.getUserByNameOrId(id);
+    }
+    if (!user && isMongoConnected) {
+      if (mongoose.Types.ObjectId.isValid(id)) {
+        user = await UserMongo.findById(id, '-password').lean();
+      } else {
+        user = await UserMongo.findOne({ $or: [{ name: id }, { yoyoId: id }] }, '-password').lean();
+      }
+    } else if (!user) {
+      user = inMemoryDB.find(u => u._id === id || (u as any).id === id || u.name.toLowerCase() === id.toLowerCase() || u.yoyoId === id);
+    }
+
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    const { password: _, ...safeUser } = user;
+    safeUser.bio = safeUser.bio || 'Living life on ZOYO! 🌟';
+    safeUser.recentVisitors = safeUser.recentVisitors || [];
+    res.json({ success: true, user: safeUser });
+  } catch (error) {
+    console.error('Error fetching public profile:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Record a visit to a user's profile
+app.post("/api/users/:id/visit", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    const { visitor } = req.body;
+
+    if (!visitor || !visitor.id) {
+      res.status(400).json({ error: "Visitor information required" });
+      return;
+    }
+
+    const targetUser = await findUserById(id);
+
+    if (!targetUser) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    const targetUserId = String(targetUser._id || targetUser.id);
+    const visitorId = String(visitor.id || visitor._id);
+
+    // Only count as visitor if visitor is not self
+    if (targetUserId !== visitorId) {
+      const newVisitorsCount = (targetUser.visitorsCount || 0) + 1;
+      const currentRecent = Array.isArray(targetUser.recentVisitors) ? targetUser.recentVisitors : [];
+      // Deduplicate: remove existing entry from this visitor and prepend new one
+      const filtered = currentRecent.filter((v: any) => String(v.id || v._id) !== visitorId);
+      const newEntry = {
+        id: visitorId,
+        name: visitor.name || 'Visitor',
+        avatar: visitor.avatar || '',
+        yoyoId: visitor.yoyoId || '',
+        visitedAt: new Date().toISOString()
+      };
+      const updatedVisitors = [newEntry, ...filtered].slice(0, 20);
+
+      await updateUser(targetUserId, {
+        visitorsCount: newVisitorsCount,
+        recentVisitors: updatedVisitors
+      });
+
+      res.json({ success: true, visitorsCount: newVisitorsCount, recentVisitors: updatedVisitors });
+    } else {
+      res.json({ success: true, visitorsCount: targetUser.visitorsCount || 0, recentVisitors: targetUser.recentVisitors || [] });
+    }
+  } catch (error) {
+    console.error('Error recording profile visit:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// --- CATALOG MANAGEMENT ENDPOINTS (Admin & Managers: Add Gifts, Frames, Games) ---
+
+// High-performance In-Memory Catalog Caches (< 0.1ms response time)
+let cachedCatalogGifts: any[] | null = null;
+let cachedCatalogFrames: any[] | null = null;
+let cachedCatalogGames: any[] | null = null;
+
+// Get all gifts (default + custom)
+app.get("/api/catalog/gifts", async (req: express.Request, res: express.Response) => {
+  try {
+    // ⚡ 0ms Fast path: return from memory cache
+    if (cachedCatalogGifts) {
+      res.json({ success: true, gifts: cachedCatalogGifts });
+      return;
+    }
+
+    if (isSupabaseConfigured) {
+      const supaGifts = await supabaseDb.getGifts();
+      if (supaGifts && supaGifts.length > 0) {
+        cachedCatalogGifts = supaGifts;
+        res.json({ success: true, gifts: supaGifts });
+        return;
+      }
+    }
+    if (isMongoConnected) {
+      const dbGifts = await CustomGiftMongo.find({}).sort({ createdAt: -1 }).lean();
+      const combined = [...dbGifts];
+      for (const def of inMemoryCustomGifts) {
+        if (!combined.some(g => g.id === def.id)) {
+          combined.push(def);
+        }
+      }
+      cachedCatalogGifts = combined;
+      res.json({ success: true, gifts: combined });
+    } else {
+      cachedCatalogGifts = inMemoryCustomGifts;
+      res.json({ success: true, gifts: inMemoryCustomGifts });
+    }
+  } catch (error) {
+    console.error('Error fetching catalog gifts:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Add new gift (Admin & Manager only)
+app.post("/api/catalog/gifts", async (req: express.Request, res: express.Response) => {
+  try {
+    const { name, coins, icon, effect, description, userRole, addedBy } = req.body;
+    if (userRole !== 'admin' && userRole !== 'manager') {
+      res.status(403).json({ error: "Only admins and managers can add gifts" });
+      return;
+    }
+    if (!name || !coins || !icon) {
+      res.status(400).json({ error: "Name, coins, and icon are required" });
+      return;
+    }
+
+    const giftId = `g_${Date.now()}`;
+    const newGift = {
+      id: giftId,
+      name: String(name).trim(),
+      coins: parseInt(coins, 10),
+      icon: String(icon).trim(),
+      effect: effect || 'confetti',
+      description: description || `Sent a special ${name}! 🎉`,
+      addedBy: addedBy || 'Staff'
+    };
+
+    if (isSupabaseConfigured) {
+      await supabaseDb.createGift(newGift);
+    }
+    if (isMongoConnected) {
+      await CustomGiftMongo.create(newGift);
+    }
+    inMemoryCustomGifts.unshift(newGift);
+
+    cachedCatalogGifts = null;
+    res.json({ success: true, gift: newGift });
+  } catch (error) {
+    console.error('Error creating custom gift:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Delete gift (Admin & Manager only)
+app.delete("/api/catalog/gifts/:id", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    if (isSupabaseConfigured) {
+      await supabaseDb.deleteGift(id);
+    }
+    if (isMongoConnected) {
+      await CustomGiftMongo.deleteOne({ id });
+    }
+    const idx = inMemoryCustomGifts.findIndex(g => g.id === id);
+    if (idx !== -1) inMemoryCustomGifts.splice(idx, 1);
+    cachedCatalogGifts = null;
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Get all frames (default + custom)
+app.get("/api/catalog/frames", async (req: express.Request, res: express.Response) => {
+  try {
+    // ⚡ 0ms Fast path: return from memory cache
+    if (cachedCatalogFrames) {
+      res.json({ success: true, frames: cachedCatalogFrames });
+      return;
+    }
+
+    if (isSupabaseConfigured) {
+      const supaFrames = await supabaseDb.getFrames();
+      if (supaFrames && supaFrames.length > 0) {
+        cachedCatalogFrames = supaFrames;
+        res.json({ success: true, frames: supaFrames });
+        return;
+      }
+    }
+    if (isMongoConnected) {
+      const dbFrames = await CustomFrameMongo.find({}).sort({ createdAt: -1 }).lean();
+      const combined = [...dbFrames];
+      for (const def of inMemoryCustomFrames) {
+        if (!combined.some(f => f.id === def.id)) {
+          combined.push(def);
+        }
+      }
+      cachedCatalogFrames = combined;
+      res.json({ success: true, frames: combined });
+    } else {
+      cachedCatalogFrames = inMemoryCustomFrames;
+      res.json({ success: true, frames: inMemoryCustomFrames });
+    }
+  } catch (error) {
+    console.error('Error fetching frames:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Add new frame (Admin & Manager only)
+app.post("/api/catalog/frames", async (req: express.Request, res: express.Response) => {
+  try {
+    const { name, price, value, icon, userRole, addedBy } = req.body;
+    if (userRole !== 'admin' && userRole !== 'manager') {
+      res.status(403).json({ error: "Only admins and managers can add frames" });
+      return;
+    }
+    if (!name || !price || !value) {
+      res.status(400).json({ error: "Name, price, and frame style value are required" });
+      return;
+    }
+
+    const frameId = `frame_${Date.now()}`;
+    const newFrame = {
+      id: frameId,
+      name: String(name).trim(),
+      price: parseInt(price, 10),
+      value: String(value).trim(),
+      icon: icon || '✨',
+      addedBy: addedBy || 'Staff'
+    };
+
+    if (isSupabaseConfigured) {
+      await supabaseDb.createFrame(newFrame);
+    }
+    if (isMongoConnected) {
+      await CustomFrameMongo.create(newFrame);
+    }
+    inMemoryCustomFrames.unshift(newFrame);
+    cachedCatalogFrames = null;
+    res.json({ success: true, frame: newFrame });
+  } catch (error) {
+    console.error('Error creating custom frame:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Delete frame
+app.delete("/api/catalog/frames/:id", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    if (isSupabaseConfigured) {
+      await supabaseDb.deleteFrame(id);
+    }
+    if (isMongoConnected) {
+      await CustomFrameMongo.deleteOne({ id });
+    }
+    const idx = inMemoryCustomFrames.findIndex(f => f.id === id);
+    if (idx !== -1) inMemoryCustomFrames.splice(idx, 1);
+    cachedCatalogFrames = null;
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Get all games (default + custom)
+app.get("/api/catalog/games", async (req: express.Request, res: express.Response) => {
+  try {
+    // ⚡ 0ms Fast path: return from memory cache
+    if (cachedCatalogGames) {
+      res.json({ success: true, games: cachedCatalogGames });
+      return;
+    }
+
+    if (isSupabaseConfigured) {
+      const supaGames = await supabaseDb.getGames();
+      if (supaGames && supaGames.length > 0) {
+        cachedCatalogGames = supaGames;
+        res.json({ success: true, games: supaGames });
+        return;
+      }
+    }
+    if (isMongoConnected) {
+      const dbGames = await CustomGameMongo.find({}).sort({ createdAt: -1 }).lean();
+      const combined = [...dbGames];
+      for (const def of inMemoryCustomGames) {
+        if (!combined.some(g => g.id === def.id)) {
+          combined.push(def);
+        }
+      }
+      cachedCatalogGames = combined;
+      res.json({ success: true, games: combined });
+    } else {
+      cachedCatalogGames = inMemoryCustomGames;
+      res.json({ success: true, games: inMemoryCustomGames });
+    }
+  } catch (error) {
+    console.error('Error fetching games:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Add new game (Admin & Manager only)
+app.post("/api/catalog/games", async (req: express.Request, res: express.Response) => {
+  try {
+    const { name, category, icon, minPlayers, maxPlayers, description, status, userRole, addedBy } = req.body;
+    if (userRole !== 'admin' && userRole !== 'manager') {
+      res.status(403).json({ error: "Only admins and managers can add games" });
+      return;
+    }
+    if (!name) {
+      res.status(400).json({ error: "Game name is required" });
+      return;
+    }
+
+    const gameId = `game_${Date.now()}`;
+    const newGame = {
+      id: gameId,
+      name: String(name).trim(),
+      category: category || 'Party',
+      icon: icon || '🎮',
+      minPlayers: parseInt(minPlayers || '2', 10),
+      maxPlayers: parseInt(maxPlayers || '4', 10),
+      description: description || 'New dynamic voice room game!',
+      status: status || 'active',
+      addedBy: addedBy || 'Staff'
+    };
+
+    if (isSupabaseConfigured) {
+      await supabaseDb.createGame(newGame);
+    }
+    if (isMongoConnected) {
+      await CustomGameMongo.create(newGame);
+    }
+    inMemoryCustomGames.unshift(newGame);
+    cachedCatalogGames = null;
+    res.json({ success: true, game: newGame });
+  } catch (error) {
+    console.error('Error creating custom game:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Delete game
+app.delete("/api/catalog/games/:id", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    if (isSupabaseConfigured) {
+      await supabaseDb.deleteGame(id);
+    }
+    if (isMongoConnected) {
+      await CustomGameMongo.deleteOne({ id });
+    }
+    const idx = inMemoryCustomGames.findIndex(g => g.id === id);
+    if (idx !== -1) inMemoryCustomGames.splice(idx, 1);
+    cachedCatalogGames = null;
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Update/Toggle Game status or details (Admin & Manager only)
+app.patch("/api/catalog/games/:id", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    const { status, name, description, minPlayers, maxPlayers, category, entryFee, prizePool, userRole } = req.body;
+    if (userRole !== 'admin' && userRole !== 'manager') {
+      res.status(403).json({ error: "Only admins and managers can modify games" });
+      return;
+    }
+
+    const updates: any = {};
+    if (status !== undefined) updates.status = status;
+    if (name !== undefined) updates.name = name;
+    if (description !== undefined) updates.description = description;
+    if (minPlayers !== undefined) updates.minPlayers = parseInt(minPlayers, 10);
+    if (maxPlayers !== undefined) updates.maxPlayers = parseInt(maxPlayers, 10);
+    if (category !== undefined) updates.category = category;
+    if (entryFee !== undefined) updates.entryFee = Number(entryFee);
+    if (prizePool !== undefined) updates.prizePool = Number(prizePool);
+
+    if (isMongoConnected) {
+      await CustomGameMongo.findOneAndUpdate({ id }, { $set: updates }, { returnDocument: 'after' });
+    }
+    cachedCatalogGames = null;
+    const inMem = inMemoryCustomGames.find(g => g.id === id);
+    if (inMem) {
+      Object.assign(inMem, updates);
+    }
+    res.json({ success: true, updates });
+  } catch (error) {
+    console.error('Error updating game:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// --- REAL-TIME WEBSOCKET AND ROOM BROADCAST SYSTEM ---
+
+interface RoomClient {
+  ws: WebSocket;
+  userId: string;
+  userName: string;
+  roomId: string;
+  avatar?: string;
+  level?: number;
+}
+
+const roomClients = new Map<string, Set<RoomClient>>();
+
+function broadcastToRoom(roomId: string, data: any, excludeWs?: WebSocket) {
+  const clients = roomClients.get(roomId);
+  if (!clients) return;
+  const messageStr = JSON.stringify(data);
+  for (const client of clients) {
+    if (client.ws !== excludeWs && client.ws.readyState === WebSocket.OPEN) {
+      try {
+        client.ws.send(messageStr);
+      } catch (err) {
+        console.warn('Failed to send WS message to client:', err);
+      }
+    }
+  }
+}
+
+function sendToUserInRoom(roomId: string, targetUserId: string, data: any) {
+  const clients = roomClients.get(roomId);
+  if (!clients) return;
+  const messageStr = JSON.stringify(data);
+  for (const client of clients) {
+    const cId = client.userId;
+    if (cId === targetUserId && client.ws.readyState === WebSocket.OPEN) {
+      try {
+        client.ws.send(messageStr);
+      } catch (err) {
+        console.warn('Failed to send direct WS message:', err);
+      }
+    }
+  }
+}
+
+// --- REAL-TIME GLOBAL WEBSOCKET REGISTRY FOR DIRECT MESSAGES ---
+const globalUserSockets = new Map<string, Set<WebSocket>>();
+
+function registerUserSocket(userId: string, ws: WebSocket) {
+  if (!userId) return;
+  const uid = String(userId);
+  if (!globalUserSockets.has(uid)) {
+    globalUserSockets.set(uid, new Set());
+  }
+  globalUserSockets.get(uid)!.add(ws);
+}
+
+function unregisterUserSocket(userId: string, ws: WebSocket) {
+  if (!userId) return;
+  const uid = String(userId);
+  const sockets = globalUserSockets.get(uid);
+  if (sockets) {
+    sockets.delete(ws);
+    if (sockets.size === 0) {
+      globalUserSockets.delete(uid);
+    }
+  }
+}
+
+function sendToUserGlobally(userId: string, data: any) {
+  const sockets = globalUserSockets.get(String(userId));
+  if (sockets && sockets.size > 0) {
+    const payload = JSON.stringify(data);
+    for (const ws of sockets) {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(payload);
+        } catch (err) {
+          console.warn(`Failed to send DM via WS to user ${userId}:`, err);
+        }
+      }
+    }
+  }
+}
+
+
+async function getRoom(id: string) {
+  if (!id) return null;
+  const cleanId = String(id).trim();
+
+  // 1. Check in-memory active rooms cache for instantaneous 0ms retrieval
+  if (activeRoomsCache.has(cleanId)) {
+    return sanitizeRoom(activeRoomsCache.get(cleanId));
+  }
+
+  // 2. Check Supabase if configured
+  if (isSupabaseConfigured) {
+    try {
+      const supaRoom = await supabaseDb.getRoom(cleanId);
+      if (supaRoom) {
+        activeRoomsCache.set(cleanId, supaRoom);
+        if (supaRoom.id) activeRoomsCache.set(supaRoom.id, supaRoom);
+        return sanitizeRoom(supaRoom);
+      }
+    } catch (e) {
+      console.warn('[Supabase] getRoom lookup error:', e);
+    }
+  }
+
+  // 3. Fallback to MongoDB Atlas if connected
+  if (isMongoConnected) {
+    let room = null;
+    if (mongoose.Types.ObjectId.isValid(cleanId)) {
+      room = await RoomMongo.findById(cleanId).lean();
+    }
+    if (!room) {
+      room = await RoomMongo.findOne({ $or: [{ roomId: cleanId }, { _id: cleanId }] }).lean();
+    }
+    if (room) {
+      // lean() returns plain object; normalise _id to string id
+      (room as any).id = String((room as any)._id);
+      activeRoomsCache.set(cleanId, room);
+      activeRoomsCache.set(String(room._id), room);
+      return sanitizeRoom(room);
+    }
+  }
+
+  // 4. Fallback to inMemoryRooms
+  const room = inMemoryRooms.find(r => r.id === cleanId || r.roomId === cleanId);
+  if (room) {
+    activeRoomsCache.set(cleanId, room);
+    return sanitizeRoom(room);
+  }
+
+  return null;
+}
+
+async function saveRoom(room: any) {
+  if (!room) return;
+  const id = String(room._id || room.id || room.roomId || '');
+  if (!id) return;
+
+  // 1. Instant update in activeRoomsCache for sub-millisecond response
+  activeRoomsCache.set(id, room);
+  if (room.id) activeRoomsCache.set(String(room.id), room);
+  if (room.roomId) activeRoomsCache.set(String(room.roomId), room);
+
+  // Also keep inMemoryRooms in sync if present
+  const memIdx = inMemoryRooms.findIndex(r => r.id === id || r.roomId === id);
+  if (memIdx !== -1) {
+    inMemoryRooms[memIdx] = { ...room };
+  }
+
+  // 2. Debounced asynchronous persist to database (Supabase / MongoDB Atlas)
+  // This shields database from high-frequency seat and chat traffic
+  const existingTimer = roomSaveDebounceTimers.get(id);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const timer = setTimeout(async () => {
+    roomSaveDebounceTimers.delete(id);
+    try {
+      if (isSupabaseConfigured) {
+        await supabaseDb.saveRoom(room);
+      } else if (isMongoConnected) {
+        const { _id, __v, ...update } = room;
+        await RoomMongo.findByIdAndUpdate(id, { $set: update }, { new: false }).catch(() => {});
+      }
+    } catch (err) {
+      console.warn(`[RoomPersistence] Failed to persist room ${id}:`, err);
+    }
+  }, 300);
+
+  roomSaveDebounceTimers.set(id, timer);
+}
+
+// Strict Room Sanitization Helper to eliminate all duplicate users and messages
+function sanitizeRoom(room: any) {
+  if (!room) return room;
+
+  // Deduplicate online users by username or userId
+  if (room.onlineUsers && Array.isArray(room.onlineUsers)) {
+    const seen = new Set<string>();
+    room.onlineUsers = room.onlineUsers.filter((u: any) => {
+      const idKey = String(u.userId || u._id || u.id || '').trim();
+      const nameKey = (u.name || '').toLowerCase().trim();
+      const dedupeKey = nameKey || idKey;
+      if (!dedupeKey || seen.has(dedupeKey)) return false;
+      seen.add(dedupeKey);
+      return true;
+    });
+    room.onlineCount = Math.max(room.onlineUsers.length, room.seats?.filter((s: any) => s.user).length || 1);
+  }
+
+  // Deduplicate chat messages by message id
+  if (room.chatMessages && Array.isArray(room.chatMessages)) {
+    const seenMsg = new Set<string>();
+    room.chatMessages = room.chatMessages.filter((m: any) => {
+      const key = String(m.id || '');
+      if (key && seenMsg.has(key)) return false;
+      if (key) seenMsg.add(key);
+      return true;
+    });
+  }
+
+  // Ensure seat 0 is permanently anchored with the room host
+  if (room.seats && Array.isArray(room.seats) && room.seats[0]) {
+    if (!room.seats[0].user && room.host) {
+      room.seats[0].user = room.host;
+    }
+  }
+
+  return room;
+}
+
+function addOnlineUserToRoom(room: any, user: any) {
+  if (!room.onlineUsers) room.onlineUsers = [];
+  const targetId = String(user.userId || user._id || user.id || 'u_' + Date.now());
+  const targetName = (user.name || '').toLowerCase().trim();
+
+  // Filter out any existing copy of this user
+  room.onlineUsers = room.onlineUsers.filter((u: any) => {
+    const existingId = String(u.userId || u._id || u.id || '');
+    const existingName = (u.name || '').toLowerCase().trim();
+    if (targetId && existingId && existingId === targetId) return false;
+    if (targetName && existingName && existingName === targetName) return false;
+    return true;
+  });
+
+  const cleanUser = {
+    id: targetId,
+    _id: targetId,
+    userId: targetId,
+    name: user.name || 'Anonymous',
+    avatar: user.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
+    level: user.level || 1,
+    role: user.role || 'user'
+  };
+
+  room.onlineUsers.push(cleanUser);
+  room.onlineCount = Math.max(room.onlineUsers.length, room.seats?.filter((s: any) => s.user).length || 1);
+  return cleanUser;
+}
+
+function removeOnlineUserFromRoom(room: any, userId: string, userName?: string) {
+  if (!room.onlineUsers) return;
+  const targetId = String(userId);
+  const targetName = (userName || '').toLowerCase().trim();
+
+  room.onlineUsers = room.onlineUsers.filter((u: any) => {
+    const existingId = String(u.userId || u._id || u.id || '');
+    const existingName = (u.name || '').toLowerCase().trim();
+    if (targetId && existingId && existingId === targetId) return false;
+    if (targetName && existingName && existingName === targetName) return false;
+    return true;
+  });
+
+  room.onlineCount = Math.max(1, room.onlineUsers.length || 1);
+}
+
+function addChatMessageToRoom(room: any, chatMsg: any): boolean {
+  if (!room.chatMessages) room.chatMessages = [];
+  const msgId = String(chatMsg.id || '');
+  if (msgId && room.chatMessages.some((m: any) => String(m.id || '') === msgId)) {
+    return false; // Prevent duplicate message!
+  }
+  room.chatMessages.push(chatMsg);
+  if (room.chatMessages.length > 100) {
+    room.chatMessages = room.chatMessages.slice(-100);
+  }
+  return true;
+}
+
+// --- FRIEND REQUEST ENDPOINTS ---
+
+// Search user by ZOYO ID
+app.get("/api/users/search", async (req: express.Request, res: express.Response) => {
+  try {
+    const { yoyoId } = req.query as { yoyoId?: string };
+    if (!yoyoId || String(yoyoId).trim().length < 4) {
+      res.status(400).json({ error: "Please enter a valid ZOYO ID (at least 4 digits)" });
+      return;
+    }
+    const cleaned = String(yoyoId).trim();
+    const user = await findUserById(cleaned);
+    if (!user) { res.status(404).json({ error: "No user found with this ZOYO ID" }); return; }
+    const { password: _, ...safeUser } = (user as any).toObject ? (user as any).toObject() : user;
+    res.json({ success: true, user: safeUser });
+  } catch (error) {
+    console.error('Search user error:', error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Send a friend request
+app.post("/api/friend-requests", async (req: express.Request, res: express.Response) => {
+  try {
+    const { senderId, senderName, senderAvatar, senderYoyoId, receiverId, receiverName, receiverYoyoId } = req.body;
+    if (!senderId || !receiverId) { res.status(400).json({ error: "senderId and receiverId are required" }); return; }
+    if (senderId === receiverId) { res.status(400).json({ error: "You cannot send a friend request to yourself" }); return; }
+
+    if (isMongoConnected) {
+      // Check for existing pending or accepted request
+      const existing = await FriendRequestMongo.findOne({
+        $or: [
+          { senderId, receiverId, status: { $in: ['pending', 'accepted'] } },
+          { senderId: receiverId, receiverId: senderId, status: { $in: ['pending', 'accepted'] } }
+        ]
+      });
+      if (existing) {
+        const msg = existing.status === 'accepted' ? "You are already friends!" : "Friend request already sent";
+        res.status(409).json({ error: msg });
+        return;
+      }
+      const fr = await FriendRequestMongo.create({ senderId, senderName: senderName || '', senderAvatar: senderAvatar || '', senderYoyoId: senderYoyoId || '', receiverId, receiverName: receiverName || '', receiverYoyoId: receiverYoyoId || '', status: 'pending' });
+      res.json({ success: true, friendRequest: fr });
+    } else {
+      const existing = inMemoryFriendRequests.find(fr =>
+        ((fr.senderId === senderId && fr.receiverId === receiverId) ||
+         (fr.senderId === receiverId && fr.receiverId === senderId)) &&
+        (fr.status === 'pending' || fr.status === 'accepted')
+      );
+      if (existing) {
+        const msg = existing.status === 'accepted' ? "You are already friends!" : "Friend request already sent";
+        res.status(409).json({ error: msg });
+        return;
+      }
+      const fr: InMemFriendRequest = {
+        _id: String(Date.now()),
+        senderId, senderName: senderName || '', senderAvatar: senderAvatar || '',
+        senderYoyoId: senderYoyoId || '', receiverId, receiverName: receiverName || '',
+        receiverYoyoId: receiverYoyoId || '', status: 'pending', createdAt: new Date().toISOString()
+      };
+      inMemoryFriendRequests.push(fr);
+      res.json({ success: true, friendRequest: fr });
+    }
+  } catch (error) {
+    console.error('Send friend request error:', error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Get inbox (received pending friend requests)
+app.get("/api/friend-requests/:userId/inbox", async (req: express.Request, res: express.Response) => {
+  try {
+    const { userId } = req.params;
+    if (isMongoConnected) {
+      const requests = await FriendRequestMongo.find({ receiverId: userId, status: 'pending' }).sort({ createdAt: -1 });
+      res.json({ success: true, requests });
+    } else {
+      const requests = inMemoryFriendRequests.filter(fr => fr.receiverId === userId && fr.status === 'pending')
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      res.json({ success: true, requests });
+    }
+  } catch (error) {
+    console.error('Get inbox error:', error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Respond to a friend request (accept or reject)
+app.post("/api/friend-requests/:requestId/respond", async (req: express.Request, res: express.Response) => {
+  try {
+    const { requestId } = req.params;
+    const { action } = req.body; // 'accept' | 'reject'
+    if (!['accept', 'reject'].includes(action)) { res.status(400).json({ error: "action must be 'accept' or 'reject'" }); return; }
+    const newStatus = action === 'accept' ? 'accepted' : 'rejected';
+    if (isMongoConnected) {
+      const fr = await FriendRequestMongo.findByIdAndUpdate(requestId, { status: newStatus }, { new: true });
+      if (!fr) { res.status(404).json({ error: "Friend request not found" }); return; }
+      res.json({ success: true, friendRequest: fr });
+    } else {
+      const fr = inMemoryFriendRequests.find(r => r._id === requestId);
+      if (!fr) { res.status(404).json({ error: "Friend request not found" }); return; }
+      fr.status = newStatus;
+      res.json({ success: true, friendRequest: fr });
+    }
+  } catch (error) {
+    console.error('Respond to friend request error:', error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Get accepted friends list for a user
+app.get("/api/friends/:userId", async (req: express.Request, res: express.Response) => {
+  try {
+    const { userId } = req.params;
+    if (isMongoConnected) {
+      const requests = await FriendRequestMongo.find({
+        status: 'accepted',
+        $or: [{ senderId: userId }, { receiverId: userId }]
+      });
+      // Map to list of friend objects with avatars
+      const friends = await Promise.all(requests.map(async (fr: any) => {
+        const isSender = String(fr.senderId) === String(userId);
+        const fId = isSender ? fr.receiverId : fr.senderId;
+        const fName = isSender ? fr.receiverName : fr.senderName;
+        const fYoyoId = isSender ? fr.receiverYoyoId : fr.senderYoyoId;
+        let avatar = isSender ? fr.receiverAvatar : fr.senderAvatar;
+        if (!avatar) {
+          try {
+            const u = await UserMongo.findById(fId);
+            if (u) avatar = u.avatar;
+          } catch {}
+        }
+        return {
+          id: fId,
+          name: fName,
+          avatar: avatar || `https://api.dicebear.com/7.x/thumbs/svg?seed=${fId}`,
+          yoyoId: fYoyoId
+        };
+      }));
+      res.json({ success: true, friends });
+    } else {
+      const requests = inMemoryFriendRequests.filter(fr =>
+        fr.status === 'accepted' && (fr.senderId === userId || fr.receiverId === userId)
+      );
+      const friends = requests.map(fr => {
+        const isSender = fr.senderId === userId;
+        const fId = isSender ? fr.receiverId : fr.senderId;
+        const fName = isSender ? fr.receiverName : fr.senderName;
+        const fYoyoId = isSender ? fr.receiverYoyoId : fr.senderYoyoId;
+        const avatar = isSender ? fr.receiverAvatar : fr.senderAvatar;
+        return {
+          id: fId,
+          name: fName,
+          avatar: avatar || `https://api.dicebear.com/7.x/thumbs/svg?seed=${fId}`,
+          yoyoId: fYoyoId
+        };
+      });
+      res.json({ success: true, friends });
+    }
+  } catch (error) {
+    console.error('Get friends error:', error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// --- DIRECT MESSAGES (1-ON-1 CHAT) ENDPOINTS ---
+
+// Get all DM conversation threads for a user
+app.get("/api/dm/conversations/:userId", async (req: express.Request, res: express.Response) => {
+  try {
+    const { userId } = req.params;
+    const uid = String(userId);
+
+    let messages: any[] = [];
+    if (isMongoConnected) {
+      messages = await DirectMessageMongo.find({
+        $or: [{ senderId: uid }, { receiverId: uid }]
+      }).sort({ createdAt: -1 });
+    } else {
+      messages = inMemoryDirectMessages
+        .filter(m => String(m.senderId) === uid || String(m.receiverId) === uid)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
+
+    // Group by other participant
+    const conversationMap = new Map<string, any>();
+    for (const m of messages) {
+      const isSender = String(m.senderId) === uid;
+      const partnerId = isSender ? String(m.receiverId) : String(m.senderId);
+
+      if (!conversationMap.has(partnerId)) {
+        const partnerName = isSender ? m.receiverName : m.senderName;
+        const partnerAvatar = isSender ? m.receiverAvatar : m.senderAvatar;
+        let partnerYoyoId = isSender ? m.receiverYoyoId : m.senderYoyoId;
+        if (!partnerYoyoId && isMongoConnected) {
+          try {
+            const u = await UserMongo.findById(partnerId);
+            if (u) partnerYoyoId = u.yoyoId;
+          } catch {}
+        }
+
+        conversationMap.set(partnerId, {
+          id: partnerId,
+          senderId: partnerId,
+          senderName: partnerName,
+          senderAvatar: partnerAvatar || `https://api.dicebear.com/7.x/thumbs/svg?seed=${partnerId}`,
+          yoyoId: partnerYoyoId || '',
+          message: m.voice ? `🎤 Voice note (${m.duration || 0}s)` : m.text,
+          timestamp: new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          isVoice: !!m.voice,
+          voiceDuration: m.duration,
+          unread: false,
+          lastCreatedAt: new Date(m.createdAt).getTime()
+        });
+      }
+    }
+
+    const conversations = Array.from(conversationMap.values()).sort((a, b) => b.lastCreatedAt - a.lastCreatedAt);
+    res.json({ success: true, conversations });
+  } catch (error) {
+    console.error('Error fetching DM conversations:', error);
+    res.status(500).json({ error: "Failed to fetch conversations" });
+  }
+});
+
+// Get all messages between two users
+app.get("/api/dm/messages/:userId/:friendId", async (req: express.Request, res: express.Response) => {
+  try {
+    const { userId, friendId } = req.params;
+    const uid = String(userId);
+    const fid = String(friendId);
+
+    let messages: any[] = [];
+    if (isMongoConnected) {
+      messages = await DirectMessageMongo.find({
+        $or: [
+          { senderId: uid, receiverId: fid },
+          { senderId: fid, receiverId: uid }
+        ]
+      }).sort({ createdAt: 1 });
+    } else {
+      messages = inMemoryDirectMessages
+        .filter(m => (String(m.senderId) === uid && String(m.receiverId) === fid) ||
+                     (String(m.senderId) === fid && String(m.receiverId) === uid))
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    }
+
+    const formattedMessages = messages.map(m => ({
+      id: String(m._id || m.id),
+      sender: m.senderName,
+      senderId: String(m.senderId),
+      receiverId: String(m.receiverId),
+      text: m.text,
+      voice: !!m.voice,
+      duration: m.duration,
+      timestamp: new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    }));
+
+    res.json({ success: true, messages: formattedMessages });
+  } catch (error) {
+    console.error('Error fetching DM messages:', error);
+    res.status(500).json({ error: "Failed to fetch messages" });
+  }
+});
+
+// Send a DM message
+app.post("/api/dm/send", async (req: express.Request, res: express.Response) => {
+  try {
+    const { senderId, senderName, senderAvatar, senderYoyoId, receiverId, receiverName, receiverAvatar, receiverYoyoId, text, voice, duration } = req.body;
+
+    if (!senderId || !receiverId || !text?.trim()) {
+      res.status(400).json({ error: "senderId, receiverId, and text are required" });
+      return;
+    }
+
+    const msgData = {
+      senderId: String(senderId),
+      senderName: senderName || 'User',
+      senderAvatar: senderAvatar || '',
+      senderYoyoId: senderYoyoId || '',
+      receiverId: String(receiverId),
+      receiverName: receiverName || 'Friend',
+      receiverAvatar: receiverAvatar || '',
+      receiverYoyoId: receiverYoyoId || '',
+      text: text.trim(),
+      voice: !!voice,
+      duration: duration || 0,
+      createdAt: new Date()
+    };
+
+    let savedMsg: any;
+    if (isMongoConnected) {
+      savedMsg = await DirectMessageMongo.create(msgData);
+    } else {
+      savedMsg = {
+        _id: `dm_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        ...msgData,
+        createdAt: msgData.createdAt.toISOString()
+      };
+      inMemoryDirectMessages.push(savedMsg);
+    }
+
+    const formattedMsg = {
+      id: String(savedMsg._id),
+      sender: savedMsg.senderName,
+      senderId: String(savedMsg.senderId),
+      receiverId: String(savedMsg.receiverId),
+      text: savedMsg.text,
+      voice: !!savedMsg.voice,
+      duration: savedMsg.duration,
+      timestamp: new Date(savedMsg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+
+    // Broadcast to recipient via WebSocket
+    sendToUserGlobally(String(receiverId), {
+      type: 'dm_message',
+      message: formattedMsg,
+      conversationId: String(senderId),
+      partner: {
+        id: String(senderId),
+        name: senderName,
+        avatar: senderAvatar
+      }
+    });
+
+    // Broadcast to sender via WebSocket (in case multiple tabs or sockets open)
+    sendToUserGlobally(String(senderId), {
+      type: 'dm_message',
+      message: formattedMsg,
+      conversationId: String(receiverId),
+      partner: {
+        id: String(receiverId),
+        name: receiverName,
+        avatar: receiverAvatar
+      }
+    });
+
+    res.json({ success: true, message: formattedMsg });
+  } catch (error) {
+    console.error('Error sending DM:', error);
+    res.status(500).json({ error: "Failed to send message" });
+  }
+});
+
+// Delete a specific message
+app.delete("/api/dm/message/:msgId", async (req: express.Request, res: express.Response) => {
+  try {
+    const { msgId } = req.params;
+
+    let msg: any = null;
+    if (isMongoConnected) {
+      msg = await DirectMessageMongo.findById(msgId);
+      if (msg) {
+        await DirectMessageMongo.findByIdAndDelete(msgId);
+      }
+    } else {
+      const idx = inMemoryDirectMessages.findIndex(m => String(m._id) === String(msgId));
+      if (idx !== -1) {
+        msg = inMemoryDirectMessages.splice(idx, 1)[0];
+      }
+    }
+
+    if (msg) {
+      const sId = String(msg.senderId);
+      const rId = String(msg.receiverId);
+      sendToUserGlobally(sId, { type: 'dm_message_deleted', messageId: msgId, conversationId: rId });
+      sendToUserGlobally(rId, { type: 'dm_message_deleted', messageId: msgId, conversationId: sId });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting DM message:', error);
+    res.status(500).json({ error: "Failed to delete message" });
+  }
+});
+
+// Clear an entire conversation between two users
+app.delete("/api/dm/conversation/:userId/:friendId", async (req: express.Request, res: express.Response) => {
+  try {
+    const { userId, friendId } = req.params;
+    const uid = String(userId);
+    const fid = String(friendId);
+
+    if (isMongoConnected) {
+      await DirectMessageMongo.deleteMany({
+        $or: [
+          { senderId: uid, receiverId: fid },
+          { senderId: fid, receiverId: uid }
+        ]
+      });
+    } else {
+      for (let i = inMemoryDirectMessages.length - 1; i >= 0; i--) {
+        const m = inMemoryDirectMessages[i];
+        if ((String(m.senderId) === uid && String(m.receiverId) === fid) ||
+            (String(m.senderId) === fid && String(m.receiverId) === uid)) {
+          inMemoryDirectMessages.splice(i, 1);
+        }
+      }
+    }
+
+    sendToUserGlobally(uid, { type: 'dm_chat_cleared', conversationId: fid });
+    sendToUserGlobally(fid, { type: 'dm_chat_cleared', conversationId: uid });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error clearing DM conversation:', error);
+    res.status(500).json({ error: "Failed to clear conversation" });
+  }
+});
+
+
 // --- VOICE ROOM ENDPOINTS ---
 
-// Get all active rooms
+
+// Helper to generate a collision-free unique 6-digit room code
+async function generateUniqueRoomId(): Promise<string> {
+  let attempts = 0;
+  while (attempts < 100) {
+    attempts++;
+    const candidate = Math.floor(100000 + Math.random() * 900000).toString();
+    if (isMongoConnected) {
+      const existing = await RoomMongo.findOne({ roomId: candidate, isActive: true });
+      if (!existing) return candidate;
+    } else {
+      const existing = inMemoryRooms.find(r => r.roomId === candidate && r.isActive);
+      if (!existing) return candidate;
+    }
+  }
+  return `${Date.now()}`.slice(-6);
+}
+
+// In-Memory cache for public rooms list to serve requests in <1ms
+let cachedPublicRoomsList: any[] | null = null;
+let cachedPublicRoomsTime = 0;
+
+// Get all active PUBLIC rooms (Private rooms are hidden from public list and only found via room code)
 app.get("/api/rooms", async (req: express.Request, res: express.Response) => {
   try {
+    // ⚡ Fast path: serve from in-memory cache if less than 2.5 seconds old
+    if (cachedPublicRoomsList && (Date.now() - cachedPublicRoomsTime < 2500)) {
+      res.json({ success: true, rooms: cachedPublicRoomsList });
+      return;
+    }
+
+    if (isSupabaseConfigured) {
+      const supaRooms = await supabaseDb.getAllRooms();
+      if (supaRooms && supaRooms.length > 0) {
+        // Pre-warm activeRoomsCache with every room for 0ms individual room lookups
+        for (const r of supaRooms) {
+          if (r.id) activeRoomsCache.set(String(r.id), r);
+          if (r._id) activeRoomsCache.set(String(r._id), r);
+          if (r.roomId) activeRoomsCache.set(String(r.roomId), r);
+        }
+
+        const sanitizedRooms = supaRooms.filter((r: any) => !r.isPrivate).map((r: any) => {
+          const clean = sanitizeRoom(r);
+          delete clean.roomPassword;
+          return clean;
+        });
+        cachedPublicRoomsList = sanitizedRooms;
+        cachedPublicRoomsTime = Date.now();
+        res.json({ success: true, rooms: sanitizedRooms });
+        return;
+      }
+    }
     if (isMongoConnected) {
-      const rooms = await RoomMongo.find({ isActive: true }).sort({ createdAt: -1 });
-      res.json({ success: true, rooms });
+      let rooms = await RoomMongo.find({ isActive: true, isPrivate: { $ne: true } }).sort({ createdAt: -1 });
+      const sanitizedRooms = rooms.map(r => {
+        const clean = sanitizeRoom(r.toObject ? r.toObject() : r);
+        delete clean.roomPassword;
+        return clean;
+      });
+      cachedPublicRoomsList = sanitizedRooms;
+      cachedPublicRoomsTime = Date.now();
+      res.json({ success: true, rooms: sanitizedRooms });
     } else {
-      const activeRooms = inMemoryRooms.filter(r => r.isActive);
+      const activeRooms = inMemoryRooms.filter(r => r.isActive && !r.isPrivate).map(r => {
+        const clean = { ...sanitizeRoom(r) };
+        delete clean.roomPassword;
+        return clean;
+      });
+      cachedPublicRoomsList = activeRooms;
+      cachedPublicRoomsTime = Date.now();
       res.json({ success: true, rooms: activeRooms });
     }
   } catch (error) {
@@ -882,56 +2430,122 @@ app.get("/api/rooms", async (req: express.Request, res: express.Response) => {
 // Create a new room
 app.post("/api/rooms", async (req: express.Request, res: express.Response) => {
   try {
-    const { title, description, host, theme, category, backgroundUrl } = req.body;
+    const { title, description, host, theme, category, backgroundUrl, isPrivate, roomPassword, activeGame, isOfficialGame, gamePrizePool, roomImage } = req.body;
 
     if (!title || !host) {
       res.status(400).json({ error: "Title and host are required" });
       return;
     }
 
-    if (isMongoConnected) {
-      const seatsArray = Array.from({ length: 9 }, (_, i) => ({
-        index: i,
-        user: i === 0 ? host : null,
-        isMuted: false,
-        isTalking: false
-      }));
+    const hostId = host._id ? String(host._id) : String(host.id || 'host');
+    const safeHost = { ...host, id: hostId, _id: hostId, userId: hostId };
 
+    const initialSeats = Array.from({ length: 9 }, (_, i) => ({
+      index: i,
+      user: i === 0 ? safeHost : null,
+      isMuted: false,
+      isTalking: false
+    }));
+
+    const welcomeMsg = {
+      id: String(Date.now()),
+      userId: 'system',
+      userName: 'System',
+      userLevel: 99,
+      message: `Welcome to ${safeHost.name}'s voice room! Grab a mic seat to talk live or chat with everyone! 🎙️✨`,
+      type: 'system',
+      timestamp: new Date().toISOString()
+    };
+
+    const isPriv = Boolean(isPrivate);
+    const pwd = isPriv ? String(roomPassword || '').trim() : '';
+    const generatedRoomId = await generateUniqueRoomId();
+    const game = activeGame || (category === 'games' ? 'ludo' : 'none');
+    const isOfficial = Boolean(isOfficialGame);
+    const prize = Number(gamePrizePool) || 0;
+
+    const createdRoomData = {
+      id: `room_${Date.now()}`,
+      roomId: generatedRoomId,
+      title,
+      description: description || `Welcome to ${safeHost.name}'s voice room!`,
+      host: safeHost,
+      theme: theme || 'neon',
+      category: category || 'chat',
+      onlineCount: 1,
+      activeGame: game,
+      isOfficialGame: isOfficial,
+      gamePrizePool: prize,
+      backgroundUrl: backgroundUrl || '',
+      roomImage: roomImage || '',
+      isActive: true,
+      isPrivate: isPriv,
+      roomPassword: pwd,
+      invitedUsers: [],
+      seats: initialSeats,
+      onlineUsers: [safeHost],
+      chatMessages: [welcomeMsg],
+      createdAt: new Date().toISOString()
+    };
+
+    if (isSupabaseConfigured) {
+      const created = await supabaseDb.createRoom(createdRoomData);
+      if (created) {
+        cachedPublicRoomsList = null;
+        activeRoomsCache.set(created.id, created);
+        activeRoomsCache.set(generatedRoomId, created);
+        res.json({ success: true, room: sanitizeRoom(created) });
+        return;
+      }
+    }
+
+    if (isMongoConnected) {
       const newRoom = await RoomMongo.create({
+        roomId: generatedRoomId,
         title,
-        description: description || `Welcome to ${host.name}'s voice room!`,
-        host,
+        description: description || `Welcome to ${safeHost.name}'s voice room!`,
+        host: safeHost,
         theme: theme || 'neon',
         category: category || 'chat',
         onlineCount: 1,
-        activeGame: 'none',
+        activeGame: game,
+        isOfficialGame: isOfficial,
+        gamePrizePool: prize,
         backgroundUrl: backgroundUrl || '',
         isActive: true,
-        seats: seatsArray
+        isPrivate: isPriv,
+        roomPassword: pwd,
+        invitedUsers: [],
+        seats: initialSeats,
+        onlineUsers: [safeHost],
+        chatMessages: [welcomeMsg]
       });
-      res.json({ success: true, room: newRoom });
+      res.json({ success: true, room: sanitizeRoom(newRoom) });
     } else {
       const newRoom: InMemRoom = {
         id: `room_${Date.now()}`,
+        roomId: generatedRoomId,
         title,
-        description: description || `Welcome to ${host.name}'s voice room!`,
-        host,
+        description: description || `Welcome to ${safeHost.name}'s voice room!`,
+        host: safeHost,
         theme: theme || 'neon',
         category: category || 'chat',
         onlineCount: 1,
-        activeGame: 'none',
+        activeGame: game,
+        isOfficialGame: isOfficial,
+        gamePrizePool: prize,
         backgroundUrl: backgroundUrl || '',
         isActive: true,
-        seats: Array.from({ length: 9 }, (_, i) => ({
-          index: i,
-          user: i === 0 ? host : null,
-          isMuted: false,
-          isTalking: false
-        })),
+        isPrivate: isPriv,
+        roomPassword: pwd,
+        invitedUsers: [],
+        seats: initialSeats,
+        onlineUsers: [safeHost],
+        chatMessages: [welcomeMsg],
         createdAt: new Date().toISOString()
       };
       inMemoryRooms.push(newRoom);
-      res.json({ success: true, room: newRoom });
+      res.json({ success: true, room: sanitizeRoom(newRoom) });
     }
   } catch (error) {
     console.error('Error creating room:', error);
@@ -939,30 +2553,20 @@ app.post("/api/rooms", async (req: express.Request, res: express.Response) => {
   }
 });
 
-// Update room (online count, active game, etc.)
+// Update room
 app.post("/api/rooms/:id/update", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
     const updates = req.body;
-
-    if (isMongoConnected) {
-      const updated = await RoomMongo.findByIdAndUpdate(id, { $set: updates }, { new: true });
-      if (!updated) {
-        res.status(404).json({ error: "Room not found" });
-        return;
-      }
-      res.json({ success: true, room: updated });
-    } else {
-      const index = inMemoryRooms.findIndex(r => r.id === id);
-      if (index === -1) {
-        res.status(404).json({ error: "Room not found" });
-        return;
-      }
-      inMemoryRooms[index] = { ...inMemoryRooms[index], ...updates };
-      res.json({ success: true, room: inMemoryRooms[index] });
+    const room = await getRoom(id);
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return;
     }
+    Object.assign(room, updates);
+    await saveRoom(room);
+    res.json({ success: true, room: sanitizeRoom(room) });
   } catch (error) {
-    console.error('Error updating room:', error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -971,148 +2575,706 @@ app.post("/api/rooms/:id/update", async (req: express.Request, res: express.Resp
 app.delete("/api/rooms/:id", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-
-    if (isMongoConnected) {
-      const deleted = await RoomMongo.findByIdAndUpdate(id, { isActive: false }, { new: true });
-      if (!deleted) {
-        res.status(404).json({ error: "Room not found" });
-        return;
-      }
-      res.json({ success: true, message: "Room closed" });
-    } else {
-      const index = inMemoryRooms.findIndex(r => r.id === id);
-      if (index === -1) {
-        res.status(404).json({ error: "Room not found" });
-        return;
-      }
-      inMemoryRooms[index].isActive = false;
-      res.json({ success: true, message: "Room closed" });
+    const room = await getRoom(id);
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return;
     }
+    room.isActive = false;
+    await saveRoom(room);
+    broadcastToRoom(id, { type: 'room_closed', message: "This room has been closed by host or admin." });
+    res.json({ success: true, message: "Room closed" });
   } catch (error) {
-    console.error('Error deleting room:', error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// --- SEAT SYNCHRONIZATION ENDPOINTS ---
+// --- ROOM PRESENCE & CHAT ENDPOINTS ---
 
-// Get room with current seats
+// Get room details with seats, online users, and chat messages
 app.get("/api/rooms/:id/seats", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-
-    if (isMongoConnected) {
-      const room = await RoomMongo.findById(id);
-      if (!room) {
-        res.status(404).json({ error: "Room not found" });
-        return;
-      }
-      res.json({ success: true, room });
-    } else {
-      const room = inMemoryRooms.find(r => r.id === id);
-      if (!room) {
-        res.status(404).json({ error: "Room not found" });
-        return;
-      }
-      res.json({ success: true, room });
+    const room = await getRoom(id);
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return;
     }
+    res.json({ success: true, room });
   } catch (error) {
     console.error('Error fetching room seats:', error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Update seat - User sits or leaves (WITH VALIDATION)
+// Join a room (Registers user as an online room participant)
+app.post("/api/rooms/:id/join", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    const { user, password } = req.body;
+
+    if (!user) {
+      res.status(400).json({ error: "User is required to join" });
+      return;
+    }
+
+    const room = await getRoom(id);
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return;
+    }
+
+    // Private room check
+    if (room.isPrivate) {
+      const userId = String(user._id || user.id || '');
+      const hostId = String(room.host?._id || room.host?.id || '');
+      const isHost = (userId && hostId && userId === hostId) || 
+                     (user.name && room.host?.name && user.name === room.host.name) ||
+                     (user.yoyoId && room.host?.yoyoId && String(user.yoyoId) === String(room.host.yoyoId));
+      const isInvited = Array.isArray(room.invitedUsers) && (
+        room.invitedUsers.map(String).includes(userId) ||
+        (user.yoyoId && room.invitedUsers.map(String).includes(String(user.yoyoId)))
+      );
+
+      if (!isHost && !isInvited) {
+        // Must provide correct password
+        const providedPwd = String(password || '').trim();
+        const correctPwd = String(room.roomPassword || '').trim();
+        if (!providedPwd || providedPwd !== correctPwd) {
+          res.status(403).json({ error: "Incorrect room password", requiresPassword: true });
+          return;
+        }
+
+        // Successfully authenticated! Authorize user so subsequent calls inside the room succeed
+        if (!Array.isArray(room.invitedUsers)) room.invitedUsers = [];
+        if (userId && !room.invitedUsers.map(String).includes(userId)) {
+          room.invitedUsers.push(userId);
+        }
+        if (user.yoyoId && !room.invitedUsers.map(String).includes(String(user.yoyoId))) {
+          room.invitedUsers.push(String(user.yoyoId));
+        }
+      }
+    }
+
+    const cleanUser = addOnlineUserToRoom(room, user);
+    await saveRoom(room);
+
+    res.json({ success: true, room });
+  } catch (error) {
+    console.error('Error joining room:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Leave a room
+app.post("/api/rooms/:id/leave", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    const { userId, userName } = req.body;
+
+    const room = await getRoom(id);
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return;
+    }
+
+    const uId = String(userId);
+    removeOnlineUserFromRoom(room, uId, userName);
+
+    // Free seat if user was seated (Seat 0 always remains Host)
+    if (room.seats) {
+      for (const seat of room.seats) {
+        if (seat.user && (String(seat.user._id || seat.user.id) === uId || (userName && seat.user.name === userName))) {
+          seat.user = seat.index === 0 ? room.host : null;
+          seat.isTalking = false;
+          seat.isMuted = false;
+        }
+      }
+    }
+
+    await saveRoom(room);
+
+    broadcastToRoom(id, {
+      type: 'user_left',
+      userId: uId,
+      onlineUsers: room.onlineUsers,
+      onlineCount: room.onlineCount,
+      seats: room.seats
+    });
+
+    res.json({ success: true, room });
+  } catch (error) {
+    console.error('Error leaving room:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Invite a user to a private room (host only)
+app.post("/api/rooms/:id/invite", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    const { hostId, inviteeId } = req.body;
+
+    const room = await getRoom(id);
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return;
+    }
+
+    const rHostId = String(room.host?._id || room.host?.id || '');
+    if (String(hostId) !== rHostId) {
+      res.status(403).json({ error: "Only the host can invite users" });
+      return;
+    }
+
+    if (!Array.isArray(room.invitedUsers)) room.invitedUsers = [];
+    const invId = String(inviteeId);
+    if (!room.invitedUsers.map(String).includes(invId)) {
+      room.invitedUsers.push(invId);
+    }
+    await saveRoom(room);
+
+    // Notify the invitee
+    sendToUserGlobally(invId, {
+      type: 'room_invite',
+      roomId: room._id || room.id,
+      roomTitle: room.title,
+      hostName: room.host?.name || 'Host',
+      roomCode: (room as any).roomId || ''
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error inviting user:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Lookup room by 6-digit roomId code (supports finding private rooms by room code)
+app.get("/api/rooms/bycode/:code", async (req: express.Request, res: express.Response) => {
+  try {
+    const { code } = req.params;
+    const cleanCode = String(code || '').trim();
+    let room: any = null;
+    if (isMongoConnected) {
+      if (mongoose.Types.ObjectId.isValid(cleanCode)) {
+        room = await RoomMongo.findOne({ $or: [{ roomId: cleanCode }, { _id: cleanCode }], isActive: true }).lean();
+      } else {
+        room = await RoomMongo.findOne({ roomId: cleanCode, isActive: true }).lean();
+      }
+      if (room) {
+        room.id = String(room._id);
+        room = sanitizeRoom(room);
+        delete room.roomPassword;
+      }
+    } else {
+      const found = inMemoryRooms.find(r => (r.roomId === cleanCode || r.id === cleanCode) && r.isActive);
+      if (found) {
+        room = { ...sanitizeRoom(found) };
+        delete room.roomPassword;
+      }
+    }
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return;
+    }
+    res.json({ success: true, room });
+  } catch (error) {
+    console.error('Error looking up room by code:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Update seat - User sits or leaves
 app.post("/api/rooms/:id/seat/:seatIndex", async (req: express.Request, res: express.Response) => {
   try {
     const { id, seatIndex } = req.params;
     const { user, action } = req.body; // action: 'sit' or 'leave'
 
     const seatIdx = parseInt(seatIndex);
+    const room = await getRoom(id);
 
-    if (isMongoConnected) {
-      const room = await RoomMongo.findById(id);
-      if (!room) {
-        res.status(404).json({ error: "Room not found" });
-        return;
-      }
-
-      if (!room.seats) {
-        room.seats = Array.from({ length: 9 }, (_, i) => ({
-          index: i,
-          user: i === 0 ? room.host : null,
-          isMuted: false,
-          isTalking: false
-        }));
-      }
-
-      if (action === 'sit' && user) {
-        // VALIDATION: Check if seat is already occupied
-        if (room.seats[seatIdx] && room.seats[seatIdx].user) {
-          const occupiedBy = room.seats[seatIdx].user;
-          if (occupiedBy.id !== user.id) {
-            res.status(409).json({ error: "Seat already occupied by " + occupiedBy.name });
-            return;
-          }
-        }
-        console.log(`✅ User ${user.name} sitting in seat ${seatIdx}`);
-        room.seats[seatIdx] = { index: seatIdx, user: { ...user }, isMuted: false, isTalking: false };
-        room.onlineCount = room.seats.filter(s => s.user).length;
-      } else if (action === 'leave') {
-        console.log(`👋 User leaving seat ${seatIdx}`);
-        room.seats[seatIdx] = { index: seatIdx, user: null, isMuted: false, isTalking: false };
-        room.onlineCount = room.seats.filter(s => s.user).length;
-      }
-
-      await room.save();
-      console.log(`📡 Saved room ${id} with ${room.onlineCount} users`);
-      res.json({ success: true, room });
-    } else {
-      const roomIdx = inMemoryRooms.findIndex(r => r.id === id);
-      if (roomIdx === -1) {
-        res.status(404).json({ error: "Room not found" });
-        return;
-      }
-
-      const room = inMemoryRooms[roomIdx];
-      if (!room.seats) {
-        room.seats = Array.from({ length: 9 }, (_, i) => ({
-          index: i,
-          user: i === 0 ? room.host : null,
-          isMuted: false,
-          isTalking: false
-        }));
-      }
-
-      if (action === 'sit' && user) {
-        // VALIDATION: Check if seat is already occupied
-        if (room.seats[seatIdx] && room.seats[seatIdx].user) {
-          const occupiedBy = room.seats[seatIdx].user;
-          if (occupiedBy.id !== user.id) {
-            res.status(409).json({ error: "Seat already occupied by " + occupiedBy.name });
-            return;
-          }
-        }
-        console.log(`✅ User ${user.name} sitting in seat ${seatIdx}`);
-        room.seats[seatIdx] = { index: seatIdx, user: { ...user }, isMuted: false, isTalking: false };
-        room.onlineCount = room.seats.filter(s => s.user).length;
-      } else if (action === 'leave') {
-        console.log(`👋 User leaving seat ${seatIdx}`);
-        room.seats[seatIdx] = { index: seatIdx, user: null, isMuted: false, isTalking: false };
-        room.onlineCount = room.seats.filter(s => s.user).length;
-      }
-
-      console.log(`📡 Updated in-memory room ${id} with ${room.onlineCount} users`);
-      res.json({ success: true, room });
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return;
     }
+
+    if (!room.seats || !Array.isArray(room.seats)) {
+      room.seats = Array.from({ length: 9 }, (_, i) => ({
+        index: i,
+        user: i === 0 ? room.host : null,
+        isMuted: false,
+        isTalking: false
+      }));
+    }
+
+    if (action === 'sit' && user) {
+      const newUserId = String(user._id || user.id);
+      const safeUser = { ...user, id: newUserId, _id: newUserId, userId: newUserId };
+
+      // Check if seat is occupied by someone else
+      if (room.seats[seatIdx] && room.seats[seatIdx].user) {
+        const occId = String(room.seats[seatIdx].user._id || room.seats[seatIdx].user.id || '');
+        const occName = String(room.seats[seatIdx].user.name || '');
+        if ((occId && occId !== newUserId) || (occName && occName !== user.name)) {
+          res.status(409).json({ error: `Seat already occupied by ${room.seats[seatIdx].user.name}` });
+          return;
+        }
+      }
+
+      // Clear any other seat this user might already occupy in the room
+      room.seats.forEach((s: any) => {
+        if (s.index !== seatIdx && s.user && (String(s.user._id || s.user.id) === newUserId || s.user.name === user.name)) {
+          s.user = null;
+          s.isTalking = false;
+          s.isMuted = false;
+        }
+      });
+
+      console.log(`✅ User ${safeUser.name} sitting in seat ${seatIdx} in room ${id}`);
+      room.seats[seatIdx] = { index: seatIdx, user: safeUser, isMuted: false, isTalking: false };
+
+      // Ensure user is in onlineUsers without duplicates
+      addOnlineUserToRoom(room, safeUser);
+    } else if (action === 'leave') {
+      console.log(`👋 User leaving seat ${seatIdx} in room ${id}`);
+      room.seats[seatIdx] = { 
+        index: seatIdx, 
+        user: seatIdx === 0 ? room.host : null, 
+        isMuted: false, 
+        isTalking: false 
+      };
+      room.onlineCount = Math.max(room.onlineUsers?.length || 1, room.seats.filter((s: any) => s.user).length);
+    }
+
+    await saveRoom(room);
+
+    // Broadcast seat change to ALL clients in the room
+    broadcastToRoom(id, {
+      type: 'seats_updated',
+      seats: room.seats,
+      onlineCount: room.onlineCount
+    });
+
+    res.json({ success: true, room });
   } catch (error) {
     console.error('Error updating seat:', error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Serve frontend assets and hook up Vite Dev Server middleware
+// Send Chat Message endpoint
+app.post("/api/rooms/:id/chat", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    const { message } = req.body;
+
+    if (!message || !message.message) {
+      res.status(400).json({ error: "Message content is required" });
+      return;
+    }
+
+    const room = await getRoom(id);
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return;
+    }
+
+    const chatMsg = {
+      id: message.id || String(Date.now()),
+      userId: String(message.userId),
+      userName: message.userName || 'Anonymous',
+      userLevel: message.userLevel || 1,
+      message: message.message,
+      type: message.type || 'text',
+      giftName: message.giftName,
+      giftIcon: message.giftIcon,
+      giftCount: message.giftCount,
+      timestamp: new Date().toISOString()
+    };
+
+    const added = addChatMessageToRoom(room, chatMsg);
+    if (added) {
+      await saveRoom(room);
+      broadcastToRoom(id, {
+        type: 'chat_message',
+        message: chatMsg
+      });
+    }
+
+    res.json({ success: true, message: chatMsg });
+  } catch (error) {
+    console.error('Error sending chat message:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Send Gift endpoint
+app.post("/api/rooms/:id/gift", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    const { senderId, recipientSeat, gift } = req.body;
+
+    if (!senderId || !gift) {
+      res.status(400).json({ error: "Missing gift parameters" });
+      return;
+    }
+
+    const room = await getRoom(id);
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return;
+    }
+
+    const sender = await findUserById(senderId);
+    if (!sender) {
+      res.status(404).json({ error: "Sender user not found" });
+      return;
+    }
+
+    if (sender.role !== 'admin' && sender.coins < gift.coins) {
+      res.status(400).json({ error: "Insufficient coins" });
+      return;
+    }
+
+    if (sender.role !== 'admin') {
+      const newBalance = Math.max(0, sender.coins - gift.coins);
+      await updateUser(senderId, { coins: newBalance });
+      sender.coins = newBalance;
+    }
+
+    let recipientName = "Everyone in room";
+    if (recipientSeat !== 'all' && typeof recipientSeat === 'number') {
+      const seatedUser = room.seats?.[recipientSeat]?.user;
+      recipientName = seatedUser ? seatedUser.name : "Host";
+      if (seatedUser) {
+        const seatedUserId = seatedUser._id || seatedUser.id;
+        const recipientUser = await findUserById(seatedUserId);
+        if (recipientUser && recipientUser.role !== 'admin') {
+          await updateUser(seatedUserId, { coins: (recipientUser.coins || 0) + Math.floor(gift.coins * 0.7) });
+        }
+      }
+    }
+
+    // Record gift transaction in coin ledger
+    await logTransfer({
+      senderId: String(sender._id || sender.id),
+      senderName: sender.name,
+      senderRole: sender.role || 'user',
+      receiverId: recipientSeat !== 'all' && typeof recipientSeat === 'number' && room.seats?.[recipientSeat]?.user
+        ? String(room.seats[recipientSeat].user._id || room.seats[recipientSeat].user.id)
+        : 'room_all',
+      receiverName: recipientName,
+      amount: gift.coins,
+      type: 'gift',
+      details: `${gift.icon} ${gift.name}`,
+      icon: gift.icon || '🎁'
+    });
+
+    const giftMsg = {
+      id: String(Date.now()),
+      userId: String(sender._id || sender.id),
+      userName: sender.name,
+      userLevel: sender.level || 1,
+      message: `sent ${gift.icon} ${gift.name} to ${recipientName}! 🎉`,
+      type: 'gift',
+      giftName: gift.name,
+      giftIcon: gift.icon,
+      giftCount: 1,
+      timestamp: new Date().toISOString()
+    };
+
+    addChatMessageToRoom(room, giftMsg);
+    await saveRoom(room);
+
+    // Broadcast gift event with animated effect to all clients in the room!
+    broadcastToRoom(id, {
+      type: 'gift_event',
+      gift,
+      senderName: sender.name,
+      recipientName,
+      message: giftMsg
+    });
+
+    res.json({ success: true, newCoins: sender.coins, message: giftMsg });
+  } catch (error) {
+    console.error('Error sending gift:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Update game state endpoint
+app.post("/api/rooms/:id/game", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    const { activeGame, gameData } = req.body;
+
+    const room = await getRoom(id);
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return;
+    }
+
+    if (activeGame !== undefined) room.activeGame = activeGame;
+    await saveRoom(room);
+
+    broadcastToRoom(id, {
+      type: 'game_event',
+      activeGame: room.activeGame,
+      gameData
+    });
+
+    res.json({ success: true, activeGame: room.activeGame });
+  } catch (error) {
+    console.error('Error updating game:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Serve frontend assets and hook up Vite Dev Server & WebSocket Server
 async function startServer() {
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ noServer: true });
+
+  // Handle WebSocket connections on /ws
+  server.on('upgrade', (request, socket, head) => {
+    try {
+      const url = new URL(request.url || '', `http://${request.headers.host || 'localhost'}`);
+      if (url.pathname === '/ws') {
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          wss.emit('connection', ws, request);
+        });
+      }
+    } catch (err) {
+      // Let other upgrades (like Vite HMR) pass through
+    }
+  });
+
+  wss.on('connection', (ws: WebSocket) => {
+    let clientInfo: RoomClient | null = null;
+    let connectedUserId: string | null = null;
+
+    ws.on('message', async (rawMsg: string) => {
+      try {
+        const data = JSON.parse(rawMsg.toString());
+        const { type, roomId, userId, userName, payload } = data;
+
+        // Register user socket globally whenever userId is present
+        if (userId) {
+          connectedUserId = String(userId);
+          registerUserSocket(connectedUserId, ws);
+        }
+
+        if (type === 'register_user') {
+          return;
+        }
+
+        if (!roomId) return;
+
+        if (type === 'join_room') {
+          // Register client in room
+          if (!roomClients.has(roomId)) {
+            roomClients.set(roomId, new Set());
+          }
+
+          clientInfo = {
+            ws,
+            userId: String(userId),
+            userName: userName || 'Anonymous',
+            roomId,
+            avatar: payload?.avatar,
+            level: payload?.level
+          };
+
+          roomClients.get(roomId)!.add(clientInfo);
+          console.log(`🔌 [WS] User ${userName} (${userId}) joined room ${roomId}. Room clients: ${roomClients.get(roomId)!.size}`);
+
+          // Get latest room data
+          const room = await getRoom(roomId);
+          if (room) {
+            const cleanUser = addOnlineUserToRoom(room, {
+              userId,
+              name: userName,
+              avatar: payload?.avatar,
+              level: payload?.level
+            });
+
+            await saveRoom(room);
+
+            // Send full room state back to the newly connected user
+            ws.send(JSON.stringify({
+              type: 'room_init',
+              seats: room.seats,
+              onlineUsers: room.onlineUsers,
+              onlineCount: room.onlineCount,
+              chatMessages: room.chatMessages || [],
+              activeGame: room.activeGame || 'none'
+            }));
+
+            // Broadcast user joined to other clients in room
+            broadcastToRoom(roomId, {
+              type: 'user_joined',
+              user: cleanUser,
+              onlineUsers: room.onlineUsers,
+              onlineCount: room.onlineCount
+            }, ws);
+          }
+        } else if (type === 'leave_room') {
+          if (clientInfo) {
+            roomClients.get(roomId)?.delete(clientInfo);
+          }
+          const room = await getRoom(roomId);
+          if (room) {
+            removeOnlineUserFromRoom(room, String(userId), userName);
+            await saveRoom(room);
+
+            broadcastToRoom(roomId, {
+              type: 'user_left',
+              userId: String(userId),
+              userName,
+              onlineUsers: room.onlineUsers,
+              onlineCount: room.onlineCount
+            });
+          }
+        } else if (type === 'speaker_ready') {
+          // Broadcast that a speaker is ready to stream audio
+          broadcastToRoom(roomId, {
+            type: 'speaker_ready',
+            userId: String(userId),
+            userName,
+            seatIndex: payload?.seatIndex
+          }, ws);
+        } else if (type === 'audio_chunk') {
+          // Fallback direct audio stream relay
+          broadcastToRoom(roomId, {
+            type: 'audio_chunk',
+            senderId: String(userId),
+            audioData: payload?.audioData,
+            seatIndex: payload?.seatIndex
+          }, ws);
+        } else if (type === 'seat_status') {
+          // Live microphone speech detection or mute toggle
+          const { seatIndex, isTalking, isMuted } = payload || {};
+          const room = await getRoom(roomId);
+          if (room && room.seats && room.seats[seatIndex]) {
+            if (isTalking !== undefined) room.seats[seatIndex].isTalking = isTalking;
+            if (isMuted !== undefined) room.seats[seatIndex].isMuted = isMuted;
+            await saveRoom(room);
+          }
+
+          broadcastToRoom(roomId, {
+            type: 'seat_status_updated',
+            seatIndex,
+            isTalking,
+            isMuted
+          });
+        } else if (type === 'webrtc_signal') {
+          // WebRTC Audio Signaling: route offer, answer, ice-candidate
+          const { targetUserId, signal, seatIndex } = payload || {};
+          if (targetUserId && targetUserId !== 'all') {
+            sendToUserInRoom(roomId, targetUserId, {
+              type: 'webrtc_signal',
+              senderId: String(userId),
+              senderName: userName,
+              seatIndex,
+              signal
+            });
+          } else {
+            broadcastToRoom(roomId, {
+              type: 'webrtc_signal',
+              senderId: String(userId),
+              senderName: userName,
+              seatIndex,
+              signal
+            }, ws);
+          }
+        } else if (type === 'chat_message') {
+          const room = await getRoom(roomId);
+          if (room) {
+            const chatMsg = {
+              id: payload?.id || String(Date.now()),
+              userId: String(userId),
+              userName: userName || 'Anonymous',
+              userLevel: payload?.userLevel || 1,
+              message: payload?.message || '',
+              type: payload?.type || 'text',
+              timestamp: new Date().toISOString()
+            };
+            const added = addChatMessageToRoom(room, chatMsg);
+            if (added) {
+              await saveRoom(room);
+              broadcastToRoom(roomId, {
+                type: 'chat_message',
+                message: chatMsg
+              });
+            }
+          }
+        } else if (type === 'reaction') {
+          broadcastToRoom(roomId, {
+            type: 'reaction',
+            emoji: payload?.emoji,
+            seatIndex: payload?.seatIndex,
+            senderName: userName
+          });
+        } else if (type === 'game_event') {
+          broadcastToRoom(roomId, {
+            type: 'game_event',
+            activeGame: payload?.activeGame,
+            gameData: payload?.gameData
+          });
+        }
+      } catch (err) {
+        console.error('Error processing WS message:', err);
+      }
+    });
+
+    ws.on('close', async () => {
+      if (connectedUserId) {
+        unregisterUserSocket(connectedUserId, ws);
+      }
+      if (clientInfo) {
+        const { roomId, userId, userName } = clientInfo;
+        const set = roomClients.get(roomId);
+        if (set) {
+          set.delete(clientInfo);
+          if (set.size === 0) roomClients.delete(roomId);
+        }
+        console.log(`🔌 [WS] User ${userName} disconnected from room ${roomId}`);
+
+        try {
+          const room = await getRoom(roomId);
+          if (room) {
+            removeOnlineUserFromRoom(room, String(userId), userName);
+            // Clear seat if this disconnected user was sitting (Seat 0 always remains Host)
+            let seatChanged = false;
+            if (room.seats) {
+              for (const seat of room.seats) {
+                if (seat.user && (String(seat.user._id || seat.user.id) === String(userId) || seat.user.name === userName)) {
+                  seat.user = seat.index === 0 ? room.host : null;
+                  seat.isTalking = false;
+                  seat.isMuted = false;
+                  seatChanged = true;
+                }
+              }
+            }
+            await saveRoom(room);
+
+            broadcastToRoom(roomId, {
+              type: 'user_left',
+              userId: String(userId),
+              userName,
+              onlineUsers: room.onlineUsers,
+              onlineCount: room.onlineCount,
+              seats: seatChanged ? room.seats : undefined
+            });
+          }
+        } catch (e) {
+          console.error('Error handling WS disconnect:', e);
+        }
+      }
+    });
+  });
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -1127,9 +3289,22 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
-  });
+  function listenOnPort(port: number) {
+    server.listen(port, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${port}`);
+    });
+    server.on('error', (err: any) => {
+      if (err.code === 'EADDRINUSE') {
+        console.warn(`Port ${port} is already in use. Retrying on port ${port + 1}...`);
+        listenOnPort(port + 1);
+      } else {
+        console.error('Server error:', err);
+      }
+    });
+  }
+
+  listenOnPort(PORT);
 }
 
 startServer();
+

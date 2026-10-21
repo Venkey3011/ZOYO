@@ -2,6 +2,8 @@ export interface User {
   id: string;
   _id?: string;
   name: string;
+  username?: string;
+  nickname?: string;
   avatar: string;
   level: number;
   coins: number;
@@ -22,6 +24,8 @@ export interface User {
   visitorsCount?: number;
   family?: string;
   vipStatus?: 'None' | 'VIP' | 'SVIP';
+  bio?: string;
+  recentVisitors?: Array<{ id: string; name: string; avatar: string; yoyoId?: string; visitedAt?: string }>;
 }
 
 export interface Room {
@@ -33,9 +37,34 @@ export interface Room {
   theme: 'neon' | 'pink' | 'royal' | 'cosmic';
   category: 'chat' | 'games' | 'singing' | 'match';
   onlineCount: number;
-  activeGame: 'none' | 'ludo' | 'dice' | 'wheel';
+  activeGame: string;
   backgroundUrl: string;
+  roomImage?: string;
   seats?: Array<{ index: number; user: User | null; isMuted: boolean; isTalking: boolean }>;
+  onlineUsers?: User[];
+  chatMessages?: ChatMessage[];
+  isPrivate?: boolean;
+  roomPassword?: string;
+  invitedUsers?: string[];
+  roomId?: string;
+  isOfficialGame?: boolean;
+  gamePrizePool?: number;
+}
+
+export interface CustomGame {
+  _id?: string;
+  id: string;
+  name: string;
+  category: string;
+  icon: string;
+  minPlayers: number;
+  maxPlayers: number;
+  description: string;
+  status: 'active' | 'maintenance' | 'coming_soon' | string;
+  entryFee?: number;
+  prizePool?: number;
+  addedBy?: string;
+  createdAt?: string;
 }
 
 export interface Seat {
@@ -52,6 +81,7 @@ export interface ChatMessage {
   userLevel: number;
   message: string;
   type: 'text' | 'system' | 'gift' | 'roll';
+  timestamp?: string;
   giftName?: string;
   giftIcon?: string;
   giftCount?: number;
@@ -62,8 +92,21 @@ export interface Gift {
   name: string;
   coins: number;
   icon: string;
-  effect: 'rose' | 'car' | 'rocket' | 'crown';
+  effect: 'rose' | 'car' | 'rocket' | 'crown' | 'confetti' | 'fireworks' | 'hearts' | 'diamond' | string;
   description: string;
+  addedBy?: string;
+}
+
+export interface GameItem {
+  id: string;
+  name: string;
+  category: string;
+  icon: string;
+  minPlayers: number;
+  maxPlayers: number;
+  description: string;
+  status: 'active' | 'coming_soon';
+  addedBy?: string;
 }
 
 export interface DirectMessage {
@@ -76,7 +119,9 @@ export interface DirectMessage {
   isVoice?: boolean;
   voiceDuration?: number;
   unread?: boolean;
+  yoyoId?: string;
 }
+
 
 export interface ShopItem {
   id: string;
@@ -113,3 +158,18 @@ export interface DiceDuelState {
   winner: string | null;
   betAmount: number;
 }
+
+export interface FriendRequest {
+  _id: string;
+  senderId: string;
+  senderName: string;
+  senderAvatar: string;
+  senderYoyoId: string;
+  receiverId: string;
+  receiverName: string;
+  receiverYoyoId: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  createdAt: string;
+}
+
+

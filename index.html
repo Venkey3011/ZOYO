@@ -2,13 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>ZOYO - Voice Chat & Games</title>
     <meta name="description" content="Social voice chat rooms and real-time interactive games like Ludo, Dice Duel, and Lucky Wheel." />
     <meta property="og:title" content="ZOYO - Voice Chat & Games" />
     <meta property="og:description" content="Social voice chat rooms and real-time interactive games like Ludo, Dice Duel, and Lucky Wheel." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#f43f5e" />
+    <meta name="apple-mobile-web-app-title" content="ZOYO" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/jpeg" href="/logo.jpg" />
+    <link rel="apple-touch-icon" href="/logo.jpg" />
     <!-- Premium Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -17,6 +25,53 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Register Service Worker for Instant Updates & Mobile Installation
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js')
+            .then((registration) => {
+              console.log('✅ [PWA] Service Worker registered:', registration.scope);
+
+              // Check for updates on interval and whenever page gains focus
+              setInterval(() => {
+                registration.update().catch(() => {});
+              }, 60 * 1000); // Check every 60s
+
+              document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'visible') {
+                  registration.update().catch(() => {});
+                }
+              });
+
+              // When an update is found
+              registration.onupdatefound = () => {
+                const installingWorker = registration.installing;
+                if (!installingWorker) return;
+                installingWorker.onstatechange = () => {
+                  if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                    console.log('🚀 [PWA] New update installed! Dispatching event...');
+                    window.dispatchEvent(new CustomEvent('zoyo-update-available'));
+                  }
+                };
+              };
+            })
+            .catch((err) => {
+              console.warn('[PWA] Service Worker registration failed:', err);
+            });
+
+          // Listen for controlling service worker change to reload seamlessly
+          let refreshing = false;
+          navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (!refreshing) {
+              refreshing = true;
+              console.log('🔄 [PWA] Reloading with new version...');
+              window.location.reload();
+            }
+          });
+        });
+      }
+    </script>
   </body>
 </html>
 

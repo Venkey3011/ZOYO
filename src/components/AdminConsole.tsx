@@ -691,9 +691,10 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
           <div className="flex items-center gap-1.5">
             <span className={`w-2 h-2 rounded-full ${dbStatus.connected ? 'bg-emerald-500 animate-ping' : 'bg-amber-500'}`}></span>
             <span className="font-bold uppercase tracking-wider">Database Mode:</span>
-            <span className="font-black">{dbStatus.connected ? (dbStatus.mode || 'Supabase (PostgreSQL) Cloud Active') : (dbStatus.mode || 'Offline / Fallback')}</span>
+            <span className="font-black">{dbStatus.connected ? (dbStatus.mode || 'MongoDB Atlas Active') : (dbStatus.mode || 'Offline / Fallback')}</span>
           </div>
-          {dbStatus.connected && <span className="font-semibold text-emerald-700 font-mono text-[9px]">Supabase Connected ✓</span>}
+          {dbStatus.connected && <span className="font-semibold text-emerald-700 font-mono text-[9px]">MongoDB Atlas Connected ✓</span>}
+
         </div>
       )}
 

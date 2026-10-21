@@ -5,7 +5,7 @@ import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
 import mongoose from "mongoose";
-import { isSupabaseConfigured, supabaseDb } from "./src/lib/supabase";
+
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -19,7 +19,9 @@ const MONGODB_URI = process.env.MONGODB_URI;
 
 // User database schema
 const UserSchema = new mongoose.Schema({
-  name: { type: String, required: true, unique: true },
+  name: { type: String, required: true },
+  username: { type: String, default: '' },
+  nickname: { type: String, default: '' },
   password: { type: String, required: true },
   role: { type: String, enum: ['admin', 'manager', 'coin_seller', 'user'], default: 'user' },
   avatar: { type: String, default: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80' },
@@ -119,6 +121,7 @@ const RoomSchema = new mongoose.Schema({
   isOfficialGame: { type: Boolean, default: false },
   gamePrizePool: { type: Number, default: 0 },
   backgroundUrl: { type: String, default: '' },
+  roomImage: { type: String, default: '' },
   isActive: { type: Boolean, default: true },
   isPrivate: { type: Boolean, default: false },
   roomPassword: { type: String, default: '' },
@@ -244,6 +247,7 @@ interface InMemRoom {
   isOfficialGame?: boolean;
   gamePrizePool?: number;
   backgroundUrl: string;
+  roomImage?: string;
   isActive: boolean;
   isPrivate: boolean;
   roomPassword: string;
@@ -262,18 +266,16 @@ const activeRoomsCache = new Map<string, any>();
 const roomSaveDebounceTimers = new Map<string, NodeJS.Timeout>();
 
 async function logTransfer(logData: any) {
-  if (isSupabaseConfigured) {
-    await supabaseDb.logTransfer(logData).catch(err => console.warn('[Supabase] logTransfer warning:', err));
-  }
   if (isMongoConnected) {
     await TransferLogMongo.create(logData).catch(() => {});
-  } else if (!isSupabaseConfigured) {
+  } else {
     inMemoryTransfers.push({
       ...logData,
       timestamp: new Date().toISOString()
     });
   }
 }
+
 
 // In-memory fallback database
 interface InMemUser {
@@ -361,20 +363,15 @@ const inMemoryCustomGames: any[] = [
 ];
 
 async function connectToMongo() {
-  if (isSupabaseConfigured) {
-    console.log("⚡ Primary Database: Supabase PostgreSQL active.");
-  }
   if (!MONGODB_URI) {
-    if (!isSupabaseConfigured) {
-      console.warn("⚠️ MONGODB_URI environment variable is missing. Running in in-memory fallback mode.");
-    }
+    console.warn("⚠️ MONGODB_URI environment variable is missing. Running in in-memory fallback mode.");
     return;
   }
   try {
     mongoose.set('strictQuery', true);
     await mongoose.connect(MONGODB_URI);
     isMongoConnected = true;
-    console.log("🔌 Connected successfully to MongoDB Atlas (Secondary/Backup)!");
+    console.log("🔌 Connected successfully to MongoDB Atlas (Primary Database)!");
 
     // Seed Admin account in MongoDB Atlas if missing
     const adminExists = await UserMongo.findOne({ name: "Admin" });
@@ -406,27 +403,23 @@ async function connectToMongo() {
       console.log("✅ Seeded Admin user in MongoDB Atlas.");
     }
   } catch (err) {
-    if (!isSupabaseConfigured) {
-      console.error("❌ MongoDB Atlas connection error:", err);
-      console.warn("⚠️ Falling back to in-memory mode.");
-    }
+    console.error("❌ MongoDB Atlas connection error:", err);
+    console.warn("⚠️ Falling back to in-memory mode.");
   }
 }
+
 
 connectToMongo();
 
 // Helper to query database depending on status
 async function getUsers() {
-  if (isSupabaseConfigured) {
-    const supaUsers = await supabaseDb.getAllUsers();
-    if (supaUsers && supaUsers.length > 0) return supaUsers;
-  }
   if (isMongoConnected) {
     return await UserMongo.find({}, '-password');
   } else {
     return inMemoryDB.map(({ password, ...u }) => u);
   }
 }
+
 
 // High-performance In-Memory User Cache (< 0.1ms read time)
 const activeUsersCache = new Map<string, { user: any; expiresAt: number }>();
@@ -465,18 +458,6 @@ async function findUserById(id: string) {
   const cached = getCachedUser(cleanId);
   if (cached) return cached;
 
-  if (isSupabaseConfigured) {
-    const supaUser = await supabaseDb.getUserById(cleanId);
-    if (supaUser) {
-      setCachedUser(supaUser);
-      return supaUser;
-    }
-    const byIdentifier = await supabaseDb.getUserByNameOrId(cleanId);
-    if (byIdentifier) {
-      setCachedUser(byIdentifier);
-      return byIdentifier;
-    }
-  }
   if (isMongoConnected) {
     if (mongoose.Types.ObjectId.isValid(cleanId)) {
       const user = await UserMongo.findById(cleanId);
@@ -492,6 +473,7 @@ async function findUserById(id: string) {
   return memUser;
 }
 
+
 async function findUserByName(name: string) {
   const normalized = name.toLowerCase().trim();
 
@@ -499,13 +481,6 @@ async function findUserByName(name: string) {
   const cached = getCachedUser(normalized);
   if (cached) return cached;
 
-  if (isSupabaseConfigured) {
-    const supaUser = await supabaseDb.getUserByNameOrId(normalized);
-    if (supaUser) {
-      setCachedUser(supaUser);
-      return supaUser;
-    }
-  }
   if (isMongoConnected) {
     const user = await UserMongo.findOne({
       $or: [
@@ -522,13 +497,10 @@ async function findUserByName(name: string) {
   }
 }
 
+
 async function findUserByPhone(phone: string) {
   if (!phone) return null;
   const cleaned = phone.trim();
-  if (isSupabaseConfigured) {
-    const supaUser = await supabaseDb.getUserByNameOrId(cleaned);
-    if (supaUser) return supaUser;
-  }
   if (isMongoConnected) {
     return await UserMongo.findOne({ phoneNumber: cleaned });
   } else {
@@ -539,10 +511,6 @@ async function findUserByPhone(phone: string) {
 async function findUserByEmail(email: string) {
   if (!email) return null;
   const cleaned = email.trim().toLowerCase();
-  if (isSupabaseConfigured) {
-    const supaUser = await supabaseDb.getUserByEmail(cleaned);
-    if (supaUser) return supaUser;
-  }
   if (isMongoConnected) {
     return await UserMongo.findOne({ email: cleaned });
   } else {
@@ -552,16 +520,13 @@ async function findUserByEmail(email: string) {
 
 async function findUserBySocial(provider: string, socialId: string) {
   if (!provider || !socialId) return null;
-  if (isSupabaseConfigured) {
-    const supaUser = await supabaseDb.getUserByNameOrId(socialId);
-    if (supaUser) return supaUser;
-  }
   if (isMongoConnected) {
     return await UserMongo.findOne({ socialProvider: provider, socialId: socialId });
   } else {
     return inMemoryDB.find(u => u.socialProvider === provider && u.socialId === socialId);
   }
 }
+
 
 async function createUser(userData: any) {
   const generatedId = userData.yoyoId || Math.floor(100000 + Math.random() * 900000).toString();
@@ -580,11 +545,6 @@ async function createUser(userData: any) {
     family: family,
     vipStatus: vipStatus
   };
-
-  if (isSupabaseConfigured) {
-    const created = await supabaseDb.createUser(fullData);
-    if (created) return created;
-  }
 
   if (isMongoConnected) {
     return await UserMongo.create(fullData);
@@ -625,13 +585,6 @@ async function createUser(userData: any) {
 
 async function updateUser(id: string, updateData: any) {
   invalidateCachedUser(id);
-  if (isSupabaseConfigured) {
-    const supaUpdated = await supabaseDb.updateUser(id, updateData);
-    if (supaUpdated) {
-      setCachedUser(supaUpdated);
-      return supaUpdated;
-    }
-  }
   if (isMongoConnected) {
     const updated = await UserMongo.findByIdAndUpdate(id, { $set: updateData }, { new: true });
     if (updated) setCachedUser(updated);
@@ -646,6 +599,7 @@ async function updateUser(id: string, updateData: any) {
     return null;
   }
 }
+
 
 // --- API ENDPOINTS ---
 
@@ -664,12 +618,12 @@ app.get("/api/version", (req, res) => {
 // Server health / db status
 app.get("/api/db-status", (req, res) => {
   res.json({
-    connected: isSupabaseConfigured || isMongoConnected,
-    mode: isSupabaseConfigured ? "Supabase (PostgreSQL)" : (isMongoConnected ? "MongoDB Atlas" : "In-Memory Fallback"),
-    supabaseActive: isSupabaseConfigured,
+    connected: isMongoConnected,
+    mode: isMongoConnected ? "MongoDB Atlas" : "In-Memory Fallback",
     mongoActive: isMongoConnected
   });
 });
+
 
 // Active in-memory store for OTPs
 const activeOTPs = new Map<string, { code: string; expiresAt: number }>();
@@ -1053,24 +1007,19 @@ app.post("/api/users/create-sub-user", async (req: express.Request, res: express
 app.delete("/api/users/:id", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-    let deleted = false;
-    if (isSupabaseConfigured) {
-      deleted = await supabaseDb.deleteUser(id);
-    }
     if (isMongoConnected) {
       await UserMongo.findByIdAndDelete(id);
-      deleted = true;
     }
     const idx = inMemoryDB.findIndex(u => u._id === id || (u as any).id === id);
     if (idx !== -1) {
       inMemoryDB.splice(idx, 1);
-      deleted = true;
     }
     res.json({ success: true, message: "User deleted successfully" });
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
 
 // Get user status endpoint (to handle block/ban check dynamically)
 app.get("/api/users/:id/status", async (req: express.Request, res: express.Response) => {
@@ -1129,7 +1078,7 @@ app.post("/api/users/:id/coins", async (req: express.Request, res: express.Respo
     // Allow system / game sender IDs (e.g. wheel_carnival, dice_duel_win, etc.)
     const isSystemSender = senderId.startsWith('wheel_') || senderId.startsWith('dice_') || senderId.startsWith('ludo_') || senderId === 'system_game';
 
-    // Retrieve sender and receiver to execute deduction & credit via Supabase
+    // Retrieve sender and receiver to execute deduction & credit via MongoDB Atlas
     let senderUser: any = null;
     let targetUser: any = null;
 
@@ -1206,13 +1155,6 @@ app.post("/api/users/:id/coins", async (req: express.Request, res: express.Respo
 // Admin-Only Transfer Logs Ledger Endpoint
 app.get("/api/transfers", async (req: express.Request, res: express.Response) => {
   try {
-    if (isSupabaseConfigured) {
-      const logs = await supabaseDb.getTransfers(100);
-      if (logs && logs.length > 0) {
-        res.json({ success: true, transfers: logs });
-        return;
-      }
-    }
     if (isMongoConnected) {
       const logs = await TransferLogMongo.find({}).sort({ timestamp: -1 });
       res.json({ success: true, transfers: logs });
@@ -1224,15 +1166,14 @@ app.get("/api/transfers", async (req: express.Request, res: express.Response) =>
   }
 });
 
+
 // Personal transaction log for a specific user (sent + received)
 app.get("/api/users/:id/transactions", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
     const limit = Math.min(parseInt(String(req.query.limit || '50')), 100);
     let logs: any[] = [];
-    if (isSupabaseConfigured) {
-      logs = await supabaseDb.getTransfers(limit, id);
-    } else if (isMongoConnected) {
+    if (isMongoConnected) {
       logs = await TransferLogMongo.find({
         $or: [{ senderId: id }, { receiverId: id }]
       }).sort({ timestamp: -1 }).limit(limit).lean();
@@ -1255,16 +1196,13 @@ app.get("/api/users/:id/profile", async (req: express.Request, res: express.Resp
   try {
     const { id } = req.params;
     let user: any = null;
-    if (isSupabaseConfigured) {
-      user = await supabaseDb.getUserByNameOrId(id);
-    }
-    if (!user && isMongoConnected) {
+    if (isMongoConnected) {
       if (mongoose.Types.ObjectId.isValid(id)) {
         user = await UserMongo.findById(id, '-password').lean();
       } else {
         user = await UserMongo.findOne({ $or: [{ name: id }, { yoyoId: id }] }, '-password').lean();
       }
-    } else if (!user) {
+    } else {
       user = inMemoryDB.find(u => u._id === id || (u as any).id === id || u.name.toLowerCase() === id.toLowerCase() || u.yoyoId === id);
     }
 
@@ -1282,6 +1220,7 @@ app.get("/api/users/:id/profile", async (req: express.Request, res: express.Resp
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
 
 // Record a visit to a user's profile
 app.post("/api/users/:id/visit", async (req: express.Request, res: express.Response) => {
@@ -1350,14 +1289,6 @@ app.get("/api/catalog/gifts", async (req: express.Request, res: express.Response
       return;
     }
 
-    if (isSupabaseConfigured) {
-      const supaGifts = await supabaseDb.getGifts();
-      if (supaGifts && supaGifts.length > 0) {
-        cachedCatalogGifts = supaGifts;
-        res.json({ success: true, gifts: supaGifts });
-        return;
-      }
-    }
     if (isMongoConnected) {
       const dbGifts = await CustomGiftMongo.find({}).sort({ createdAt: -1 }).lean();
       const combined = [...dbGifts];
@@ -1372,6 +1303,7 @@ app.get("/api/catalog/gifts", async (req: express.Request, res: express.Response
       cachedCatalogGifts = inMemoryCustomGifts;
       res.json({ success: true, gifts: inMemoryCustomGifts });
     }
+
   } catch (error) {
     console.error('Error fetching catalog gifts:', error);
     res.status(500).json({ error: "Internal server error" });
@@ -1402,9 +1334,6 @@ app.post("/api/catalog/gifts", async (req: express.Request, res: express.Respons
       addedBy: addedBy || 'Staff'
     };
 
-    if (isSupabaseConfigured) {
-      await supabaseDb.createGift(newGift);
-    }
     if (isMongoConnected) {
       await CustomGiftMongo.create(newGift);
     }
@@ -1422,9 +1351,6 @@ app.post("/api/catalog/gifts", async (req: express.Request, res: express.Respons
 app.delete("/api/catalog/gifts/:id", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-    if (isSupabaseConfigured) {
-      await supabaseDb.deleteGift(id);
-    }
     if (isMongoConnected) {
       await CustomGiftMongo.deleteOne({ id });
     }
@@ -1437,6 +1363,7 @@ app.delete("/api/catalog/gifts/:id", async (req: express.Request, res: express.R
   }
 });
 
+
 // Get all frames (default + custom)
 app.get("/api/catalog/frames", async (req: express.Request, res: express.Response) => {
   try {
@@ -1446,14 +1373,6 @@ app.get("/api/catalog/frames", async (req: express.Request, res: express.Respons
       return;
     }
 
-    if (isSupabaseConfigured) {
-      const supaFrames = await supabaseDb.getFrames();
-      if (supaFrames && supaFrames.length > 0) {
-        cachedCatalogFrames = supaFrames;
-        res.json({ success: true, frames: supaFrames });
-        return;
-      }
-    }
     if (isMongoConnected) {
       const dbFrames = await CustomFrameMongo.find({}).sort({ createdAt: -1 }).lean();
       const combined = [...dbFrames];
@@ -1497,9 +1416,6 @@ app.post("/api/catalog/frames", async (req: express.Request, res: express.Respon
       addedBy: addedBy || 'Staff'
     };
 
-    if (isSupabaseConfigured) {
-      await supabaseDb.createFrame(newFrame);
-    }
     if (isMongoConnected) {
       await CustomFrameMongo.create(newFrame);
     }
@@ -1516,9 +1432,6 @@ app.post("/api/catalog/frames", async (req: express.Request, res: express.Respon
 app.delete("/api/catalog/frames/:id", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-    if (isSupabaseConfigured) {
-      await supabaseDb.deleteFrame(id);
-    }
     if (isMongoConnected) {
       await CustomFrameMongo.deleteOne({ id });
     }
@@ -1531,6 +1444,7 @@ app.delete("/api/catalog/frames/:id", async (req: express.Request, res: express.
   }
 });
 
+
 // Get all games (default + custom)
 app.get("/api/catalog/games", async (req: express.Request, res: express.Response) => {
   try {
@@ -1540,14 +1454,6 @@ app.get("/api/catalog/games", async (req: express.Request, res: express.Response
       return;
     }
 
-    if (isSupabaseConfigured) {
-      const supaGames = await supabaseDb.getGames();
-      if (supaGames && supaGames.length > 0) {
-        cachedCatalogGames = supaGames;
-        res.json({ success: true, games: supaGames });
-        return;
-      }
-    }
     if (isMongoConnected) {
       const dbGames = await CustomGameMongo.find({}).sort({ createdAt: -1 }).lean();
       const combined = [...dbGames];
@@ -1594,9 +1500,6 @@ app.post("/api/catalog/games", async (req: express.Request, res: express.Respons
       addedBy: addedBy || 'Staff'
     };
 
-    if (isSupabaseConfigured) {
-      await supabaseDb.createGame(newGame);
-    }
     if (isMongoConnected) {
       await CustomGameMongo.create(newGame);
     }
@@ -1613,9 +1516,6 @@ app.post("/api/catalog/games", async (req: express.Request, res: express.Respons
 app.delete("/api/catalog/games/:id", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-    if (isSupabaseConfigured) {
-      await supabaseDb.deleteGame(id);
-    }
     if (isMongoConnected) {
       await CustomGameMongo.deleteOne({ id });
     }
@@ -1757,21 +1657,7 @@ async function getRoom(id: string) {
     return sanitizeRoom(activeRoomsCache.get(cleanId));
   }
 
-  // 2. Check Supabase if configured
-  if (isSupabaseConfigured) {
-    try {
-      const supaRoom = await supabaseDb.getRoom(cleanId);
-      if (supaRoom) {
-        activeRoomsCache.set(cleanId, supaRoom);
-        if (supaRoom.id) activeRoomsCache.set(supaRoom.id, supaRoom);
-        return sanitizeRoom(supaRoom);
-      }
-    } catch (e) {
-      console.warn('[Supabase] getRoom lookup error:', e);
-    }
-  }
-
-  // 3. Fallback to MongoDB Atlas if connected
+  // 2. Query MongoDB Atlas if connected
   if (isMongoConnected) {
     let room = null;
     if (mongoose.Types.ObjectId.isValid(cleanId)) {
@@ -1789,7 +1675,7 @@ async function getRoom(id: string) {
     }
   }
 
-  // 4. Fallback to inMemoryRooms
+  // 3. Fallback to inMemoryRooms
   const room = inMemoryRooms.find(r => r.id === cleanId || r.roomId === cleanId);
   if (room) {
     activeRoomsCache.set(cleanId, room);
@@ -1815,7 +1701,7 @@ async function saveRoom(room: any) {
     inMemoryRooms[memIdx] = { ...room };
   }
 
-  // 2. Debounced asynchronous persist to database (Supabase / MongoDB Atlas)
+  // 2. Debounced asynchronous persist to database (MongoDB Atlas)
   // This shields database from high-frequency seat and chat traffic
   const existingTimer = roomSaveDebounceTimers.get(id);
   if (existingTimer) {
@@ -1825,9 +1711,7 @@ async function saveRoom(room: any) {
   const timer = setTimeout(async () => {
     roomSaveDebounceTimers.delete(id);
     try {
-      if (isSupabaseConfigured) {
-        await supabaseDb.saveRoom(room);
-      } else if (isMongoConnected) {
+      if (isMongoConnected) {
         const { _id, __v, ...update } = room;
         await RoomMongo.findByIdAndUpdate(id, { $set: update }, { new: false }).catch(() => {});
       }
@@ -2380,27 +2264,6 @@ app.get("/api/rooms", async (req: express.Request, res: express.Response) => {
       return;
     }
 
-    if (isSupabaseConfigured) {
-      const supaRooms = await supabaseDb.getAllRooms();
-      if (supaRooms && supaRooms.length > 0) {
-        // Pre-warm activeRoomsCache with every room for 0ms individual room lookups
-        for (const r of supaRooms) {
-          if (r.id) activeRoomsCache.set(String(r.id), r);
-          if (r._id) activeRoomsCache.set(String(r._id), r);
-          if (r.roomId) activeRoomsCache.set(String(r.roomId), r);
-        }
-
-        const sanitizedRooms = supaRooms.filter((r: any) => !r.isPrivate).map((r: any) => {
-          const clean = sanitizeRoom(r);
-          delete clean.roomPassword;
-          return clean;
-        });
-        cachedPublicRoomsList = sanitizedRooms;
-        cachedPublicRoomsTime = Date.now();
-        res.json({ success: true, rooms: sanitizedRooms });
-        return;
-      }
-    }
     if (isMongoConnected) {
       let rooms = await RoomMongo.find({ isActive: true, isPrivate: { $ne: true } }).sort({ createdAt: -1 });
       const sanitizedRooms = rooms.map(r => {
@@ -2464,40 +2327,7 @@ app.post("/api/rooms", async (req: express.Request, res: express.Response) => {
     const isOfficial = Boolean(isOfficialGame);
     const prize = Number(gamePrizePool) || 0;
 
-    const createdRoomData = {
-      id: `room_${Date.now()}`,
-      roomId: generatedRoomId,
-      title,
-      description: description || `Welcome to ${safeHost.name}'s voice room!`,
-      host: safeHost,
-      theme: theme || 'neon',
-      category: category || 'chat',
-      onlineCount: 1,
-      activeGame: game,
-      isOfficialGame: isOfficial,
-      gamePrizePool: prize,
-      backgroundUrl: backgroundUrl || '',
-      roomImage: roomImage || '',
-      isActive: true,
-      isPrivate: isPriv,
-      roomPassword: pwd,
-      invitedUsers: [],
-      seats: initialSeats,
-      onlineUsers: [safeHost],
-      chatMessages: [welcomeMsg],
-      createdAt: new Date().toISOString()
-    };
-
-    if (isSupabaseConfigured) {
-      const created = await supabaseDb.createRoom(createdRoomData);
-      if (created) {
-        cachedPublicRoomsList = null;
-        activeRoomsCache.set(created.id, created);
-        activeRoomsCache.set(generatedRoomId, created);
-        res.json({ success: true, room: sanitizeRoom(created) });
-        return;
-      }
-    }
+    cachedPublicRoomsList = null;
 
     if (isMongoConnected) {
       const newRoom = await RoomMongo.create({
@@ -2512,6 +2342,7 @@ app.post("/api/rooms", async (req: express.Request, res: express.Response) => {
         isOfficialGame: isOfficial,
         gamePrizePool: prize,
         backgroundUrl: backgroundUrl || '',
+        roomImage: roomImage || '',
         isActive: true,
         isPrivate: isPriv,
         roomPassword: pwd,
@@ -2520,7 +2351,10 @@ app.post("/api/rooms", async (req: express.Request, res: express.Response) => {
         onlineUsers: [safeHost],
         chatMessages: [welcomeMsg]
       });
-      res.json({ success: true, room: sanitizeRoom(newRoom) });
+      const roomObj = sanitizeRoom(newRoom.toObject ? newRoom.toObject() : newRoom);
+      activeRoomsCache.set(String(newRoom._id), roomObj);
+      activeRoomsCache.set(generatedRoomId, roomObj);
+      res.json({ success: true, room: roomObj });
     } else {
       const newRoom: InMemRoom = {
         id: `room_${Date.now()}`,
@@ -2535,6 +2369,7 @@ app.post("/api/rooms", async (req: express.Request, res: express.Response) => {
         isOfficialGame: isOfficial,
         gamePrizePool: prize,
         backgroundUrl: backgroundUrl || '',
+        roomImage: roomImage || '',
         isActive: true,
         isPrivate: isPriv,
         roomPassword: pwd,
@@ -2545,8 +2380,11 @@ app.post("/api/rooms", async (req: express.Request, res: express.Response) => {
         createdAt: new Date().toISOString()
       };
       inMemoryRooms.push(newRoom);
+      activeRoomsCache.set(newRoom.id, newRoom);
+      activeRoomsCache.set(generatedRoomId, newRoom);
       res.json({ success: true, room: sanitizeRoom(newRoom) });
     }
+
   } catch (error) {
     console.error('Error creating room:', error);
     res.status(500).json({ error: "Internal server error" });

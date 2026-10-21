@@ -475,18 +475,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
           </button>
         </div>
 
-        {/* Backdoor Help Information */}
-        {!isSignUp && (
-          <div className="bg-stone-50 p-2.5 rounded-2xl border border-zinc-200 flex flex-col gap-1 text-[9px] text-zinc-500">
-            <span className="font-extrabold text-zinc-700 flex items-center gap-1">
-              <Shield className="w-3.5 h-3.5 text-amber-600" /> Admin Default Credentials:
-            </span>
-            <div className="flex justify-between px-1">
-              <span>Username: <strong className="text-zinc-800 select-all font-mono font-bold">Admin</strong></span>
-              <span>Password: <strong className="text-zinc-800 select-all font-mono font-bold">Admin123</strong></span>
-            </div>
-          </div>
-        )}
 
       </div>
 

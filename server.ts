@@ -51,6 +51,12 @@ const UserSchema = new mongoose.Schema({
   recentVisitors: { type: Array, default: [] }
 }, { timestamps: true });
 
+UserSchema.index({ name: 1 });
+UserSchema.index({ username: 1 });
+UserSchema.index({ email: 1 });
+UserSchema.index({ phoneNumber: 1 });
+UserSchema.index({ yoyoId: 1 });
+
 const UserMongo: any = mongoose.models.User || mongoose.model('User', UserSchema);
 
 // Catalog Schemas for Admin & Manager dynamic content creation
@@ -281,6 +287,8 @@ async function logTransfer(logData: any) {
 interface InMemUser {
   _id: string;
   name: string;
+  username?: string;
+  nickname?: string;
   password?: string;
   role: 'admin' | 'manager' | 'coin_seller' | 'user';
   avatar: string;
@@ -314,6 +322,8 @@ const inMemoryDB: InMemUser[] = [
   {
     _id: "admin_static",
     name: "Admin",
+    username: "admin",
+    nickname: "Admin",
     password: "Admin123", // Preseeded static credentials for task requirements
     role: "admin",
     avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80",
@@ -362,6 +372,41 @@ const inMemoryCustomGames: any[] = [
   { id: 'wheel', name: 'Lucky Multiplier Wheel', category: 'Luck', icon: '🎡', minPlayers: 1, maxPlayers: 8, description: 'Spin the dynamic wheel to win 10x multiplier gifts', status: 'active', addedBy: 'System' }
 ];
 
+// High-performance In-Memory User Cache (< 0.1ms read time, 15-minute TTL)
+const activeUsersCache = new Map<string, { user: any; expiresAt: number }>();
+
+function getCachedUser(key: string) {
+  if (!key) return null;
+  const entry = activeUsersCache.get(String(key).toLowerCase().trim());
+  if (entry && entry.expiresAt > Date.now()) {
+    return entry.user;
+  }
+  return null;
+}
+
+function setCachedUser(user: any) {
+  if (!user) return;
+  const raw = user.toObject ? user.toObject() : user;
+  const expiresAt = Date.now() + 15 * 60 * 1000; // 15-minute TTL for fast logins
+  const entry = { user: raw, expiresAt };
+  if (raw.id) activeUsersCache.set(String(raw.id).toLowerCase(), entry);
+  if (raw._id) activeUsersCache.set(String(raw._id).toLowerCase(), entry);
+  if (raw.yoyoId) activeUsersCache.set(String(raw.yoyoId).toLowerCase(), entry);
+  if (raw.name) activeUsersCache.set(String(raw.name).toLowerCase().trim(), entry);
+  if (raw.username) activeUsersCache.set(String(raw.username).toLowerCase().trim(), entry);
+  if (raw.nickname) activeUsersCache.set(String(raw.nickname).toLowerCase().trim(), entry);
+  if (raw.email) activeUsersCache.set(String(raw.email).toLowerCase().trim(), entry);
+  if (raw.phoneNumber) activeUsersCache.set(String(raw.phoneNumber).toLowerCase().trim(), entry);
+}
+
+function invalidateCachedUser(idOrKey: string) {
+  if (!idOrKey) return;
+  activeUsersCache.delete(String(idOrKey).toLowerCase().trim());
+}
+
+// Pre-warm cache with in-memory users immediately
+inMemoryDB.forEach(u => setCachedUser(u));
+
 async function connectToMongo() {
   if (!MONGODB_URI) {
     console.warn("⚠️ MONGODB_URI environment variable is missing. Running in in-memory fallback mode.");
@@ -369,15 +414,20 @@ async function connectToMongo() {
   }
   try {
     mongoose.set('strictQuery', true);
-    await mongoose.connect(MONGODB_URI);
+    await mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 5000,
+    });
     isMongoConnected = true;
     console.log("🔌 Connected successfully to MongoDB Atlas (Primary Database)!");
 
     // Seed Admin account in MongoDB Atlas if missing
-    const adminExists = await UserMongo.findOne({ name: "Admin" });
+    const adminExists = await UserMongo.findOne({ name: "Admin" }).lean().maxTimeMS(2000).catch(() => null);
     if (!adminExists) {
-      await UserMongo.create({
+      const seeded = await UserMongo.create({
         name: "Admin",
+        username: "admin",
+        nickname: "Admin",
         password: "Admin123", // Preseeded credentials
         role: "admin",
         avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80",
@@ -400,54 +450,35 @@ async function connectToMongo() {
         family: "None",
         vipStatus: "None"
       });
+      setCachedUser(seeded);
       console.log("✅ Seeded Admin user in MongoDB Atlas.");
+    } else {
+      setCachedUser(adminExists);
     }
+
+    // ⚡ Pre-warm user cache from MongoDB Atlas in background for 0ms sub-millisecond logins
+    UserMongo.find({}).lean().limit(1000).then((users: any[]) => {
+      if (users && users.length > 0) {
+        users.forEach(u => setCachedUser(u));
+        console.log(`⚡ Pre-warmed ${users.length} users into in-memory cache for instant 0ms login.`);
+      }
+    }).catch((e: any) => console.warn('Cache pre-warm warning:', e));
+
   } catch (err) {
     console.error("❌ MongoDB Atlas connection error:", err);
     console.warn("⚠️ Falling back to in-memory mode.");
   }
 }
 
-
 connectToMongo();
 
 // Helper to query database depending on status
 async function getUsers() {
   if (isMongoConnected) {
-    return await UserMongo.find({}, '-password');
+    return await UserMongo.find({}, '-password').lean().maxTimeMS(3000).catch(() => inMemoryDB.map(({ password, ...u }) => u));
   } else {
     return inMemoryDB.map(({ password, ...u }) => u);
   }
-}
-
-
-// High-performance In-Memory User Cache (< 0.1ms read time)
-const activeUsersCache = new Map<string, { user: any; expiresAt: number }>();
-
-function getCachedUser(key: string) {
-  if (!key) return null;
-  const entry = activeUsersCache.get(String(key).toLowerCase().trim());
-  if (entry && entry.expiresAt > Date.now()) {
-    return entry.user;
-  }
-  return null;
-}
-
-function setCachedUser(user: any) {
-  if (!user) return;
-  const expiresAt = Date.now() + 4500; // 4.5-second TTL
-  const entry = { user, expiresAt };
-  if (user.id) activeUsersCache.set(String(user.id).toLowerCase(), entry);
-  if (user._id) activeUsersCache.set(String(user._id).toLowerCase(), entry);
-  if (user.yoyoId) activeUsersCache.set(String(user.yoyoId).toLowerCase(), entry);
-  if (user.name) activeUsersCache.set(String(user.name).toLowerCase(), entry);
-  if (user.username) activeUsersCache.set(String(user.username).toLowerCase(), entry);
-  if (user.email) activeUsersCache.set(String(user.email).toLowerCase(), entry);
-}
-
-function invalidateCachedUser(idOrKey: string) {
-  if (!idOrKey) return;
-  activeUsersCache.delete(String(idOrKey).toLowerCase().trim());
 }
 
 async function findUserById(id: string) {
@@ -458,74 +489,140 @@ async function findUserById(id: string) {
   const cached = getCachedUser(cleanId);
   if (cached) return cached;
 
+  const memUser = inMemoryDB.find(u => u._id === cleanId || (u as any).id === cleanId || u.yoyoId === cleanId || u.name.toLowerCase() === cleanId.toLowerCase());
+  if (memUser) {
+    setCachedUser(memUser);
+    return memUser;
+  }
+
   if (isMongoConnected) {
+    let user = null;
     if (mongoose.Types.ObjectId.isValid(cleanId)) {
-      const user = await UserMongo.findById(cleanId);
-      if (user) setCachedUser(user);
+      user = await UserMongo.findById(cleanId).lean().maxTimeMS(1500).catch(() => null);
+    }
+    if (!user) {
+      user = await UserMongo.findOne({ $or: [{ _id: cleanId }, { id: cleanId }, { yoyoId: cleanId }, { username: cleanId }, { name: cleanId }] }).lean().maxTimeMS(1500).catch(() => null);
+    }
+    if (user) {
+      setCachedUser(user);
       return user;
     }
-    const user = await UserMongo.findOne({ $or: [{ _id: cleanId }, { id: cleanId }, { yoyoId: cleanId }, { name: cleanId }] });
-    if (user) setCachedUser(user);
-    return user;
   }
-  const memUser = inMemoryDB.find(u => u._id === cleanId || (u as any).id === cleanId || u.yoyoId === cleanId || u.name.toLowerCase() === cleanId.toLowerCase());
-  if (memUser) setCachedUser(memUser);
-  return memUser;
+  return null;
 }
 
-
 async function findUserByName(name: string) {
-  const normalized = name.toLowerCase().trim();
+  if (!name) return null;
+  const normalized = String(name).toLowerCase().trim();
 
   // ⚡ 0ms Fast path: check in-memory cache
   const cached = getCachedUser(normalized);
   if (cached) return cached;
 
-  if (isMongoConnected) {
-    const user = await UserMongo.findOne({
-      $or: [
-        { name: new RegExp(`^${normalized}$`, 'i') },
-        { email: normalized }
-      ]
-    });
-    if (user) setCachedUser(user);
-    return user;
-  } else {
-    const memUser = inMemoryDB.find(u => u.name.toLowerCase() === normalized || u.email?.toLowerCase() === normalized);
-    if (memUser) setCachedUser(memUser);
+  // Check inMemoryDB fast
+  const memUser = inMemoryDB.find(u =>
+    u.name.toLowerCase() === normalized ||
+    (u.username && u.username.toLowerCase() === normalized) ||
+    (u.nickname && u.nickname.toLowerCase() === normalized) ||
+    (u.email && u.email.toLowerCase() === normalized) ||
+    (u.yoyoId && u.yoyoId === normalized)
+  );
+  if (memUser) {
+    setCachedUser(memUser);
     return memUser;
   }
-}
 
+  if (isMongoConnected) {
+    // 1. Fast indexed exact match (<2ms)
+    let user = await UserMongo.findOne({
+      $or: [
+        { username: normalized },
+        { name: normalized },
+        { email: normalized },
+        { yoyoId: normalized }
+      ]
+    }).lean().maxTimeMS(1500).catch(() => null);
+
+    // 2. Case-insensitive fallback
+    if (!user) {
+      user = await UserMongo.findOne({
+        $or: [
+          { username: new RegExp(`^${normalized}$`, 'i') },
+          { name: new RegExp(`^${normalized}$`, 'i') }
+        ]
+      }).lean().maxTimeMS(1500).catch(() => null);
+    }
+
+    if (user) {
+      setCachedUser(user);
+      return user;
+    }
+  }
+
+  return null;
+}
 
 async function findUserByPhone(phone: string) {
   if (!phone) return null;
   const cleaned = phone.trim();
-  if (isMongoConnected) {
-    return await UserMongo.findOne({ phoneNumber: cleaned });
-  } else {
-    return inMemoryDB.find(u => u.phoneNumber === cleaned);
+
+  const cached = getCachedUser(cleaned);
+  if (cached) return cached;
+
+  const memUser = inMemoryDB.find(u => u.phoneNumber === cleaned);
+  if (memUser) {
+    setCachedUser(memUser);
+    return memUser;
   }
+
+  if (isMongoConnected) {
+    const user = await UserMongo.findOne({ phoneNumber: cleaned }).lean().maxTimeMS(1500).catch(() => null);
+    if (user) {
+      setCachedUser(user);
+      return user;
+    }
+  }
+  return null;
 }
 
 async function findUserByEmail(email: string) {
   if (!email) return null;
   const cleaned = email.trim().toLowerCase();
-  if (isMongoConnected) {
-    return await UserMongo.findOne({ email: cleaned });
-  } else {
-    return inMemoryDB.find(u => u.email?.toLowerCase() === cleaned);
+
+  const cached = getCachedUser(cleaned);
+  if (cached) return cached;
+
+  const memUser = inMemoryDB.find(u => u.email?.toLowerCase() === cleaned);
+  if (memUser) {
+    setCachedUser(memUser);
+    return memUser;
   }
+
+  if (isMongoConnected) {
+    const user = await UserMongo.findOne({ email: cleaned }).lean().maxTimeMS(1500).catch(() => null);
+    if (user) {
+      setCachedUser(user);
+      return user;
+    }
+  }
+  return null;
 }
 
 async function findUserBySocial(provider: string, socialId: string) {
   if (!provider || !socialId) return null;
+  const cached = getCachedUser(socialId);
+  if (cached) return cached;
+
   if (isMongoConnected) {
-    return await UserMongo.findOne({ socialProvider: provider, socialId: socialId });
-  } else {
-    return inMemoryDB.find(u => u.socialProvider === provider && u.socialId === socialId);
+    const user = await UserMongo.findOne({ socialProvider: provider, socialId: socialId }).lean().maxTimeMS(1500).catch(() => null);
+    if (user) {
+      setCachedUser(user);
+      return user;
+    }
   }
+  return inMemoryDB.find(u => u.socialProvider === provider && u.socialId === socialId) || null;
 }
+
 
 
 async function createUser(userData: any) {
@@ -546,12 +643,15 @@ async function createUser(userData: any) {
     vipStatus: vipStatus
   };
 
+  let createdUser: any = null;
   if (isMongoConnected) {
-    return await UserMongo.create(fullData);
+    createdUser = await UserMongo.create(fullData);
   } else {
     const newUser: InMemUser = {
       _id: `user_${Date.now()}`,
       name: fullData.name,
+      username: fullData.username || fullData.name,
+      nickname: fullData.nickname || fullData.name,
       password: fullData.password,
       role: fullData.role || 'user',
       avatar: fullData.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
@@ -579,9 +679,14 @@ async function createUser(userData: any) {
       vipStatus: vipStatus
     };
     inMemoryDB.push(newUser);
-    return newUser;
+    createdUser = newUser;
   }
+  if (createdUser) {
+    setCachedUser(createdUser);
+  }
+  return createdUser;
 }
+
 
 async function updateUser(id: string, updateData: any) {
   invalidateCachedUser(id);
@@ -753,17 +858,20 @@ app.post("/api/auth/login", async (req: express.Request, res: express.Response) 
       return;
     }
 
-    // Search by name/username OR email
-    let user = await findUserByName(username);
-    if (!user && username.includes('@')) {
-      user = await findUserByEmail(username);
+    const trimmedInput = String(username).trim();
+    const trimmedPassword = String(password).trim();
+
+    // ⚡ 0ms Fast path: Search by name/username/email in cache & DB
+    let user = await findUserByName(trimmedInput);
+    if (!user && trimmedInput.includes('@')) {
+      user = await findUserByEmail(trimmedInput);
     }
     if (!user) {
       res.status(401).json({ error: "User not found. Check your username or email." });
       return;
     }
 
-    if (user.password !== password) {
+    if (user.password !== trimmedPassword) {
       res.status(401).json({ error: "Invalid password" });
       return;
     }
@@ -773,6 +881,9 @@ app.post("/api/auth/login", async (req: express.Request, res: express.Response) 
       return;
     }
 
+    // Refresh user cache on login for fast subsequent requests
+    setCachedUser(user);
+
     // Success
     const { password: _, ...safeUser } = (user as any).toObject ? (user as any).toObject() : user;
     res.json({ success: true, user: safeUser });
@@ -780,6 +891,7 @@ app.post("/api/auth/login", async (req: express.Request, res: express.Response) 
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
 
 // Signup endpoint (With mandatory profile & email/phone fields)
 app.post("/api/auth/signup", async (req: express.Request, res: express.Response) => {

@@ -4,6 +4,7 @@ import { PRESET_AVATARS } from '../data';
 import { Search, Inbox, Users, Copy, X, UserPlus, Check, Sparkles, UserCheck, Eye } from 'lucide-react';
 import { toast } from './Toast';
 import UserProfileModal from './UserProfileModal';
+import { registerBackHandler } from '../lib/navigation';
 
 interface FriendSystemProps {
   currentUser: User;
@@ -24,6 +25,16 @@ export default function FriendSystem({ currentUser, onClose, onOpenChat }: Frien
   const [tab, setTab] = useState<Tab>('search');
   const [inspectedFriend, setInspectedFriend] = useState<User | null>(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
+
+  // Handle hardware / gesture back button to close inspected profile modal
+  useEffect(() => {
+    if (showProfileModal) {
+      return registerBackHandler(() => {
+        setShowProfileModal(false);
+        return true;
+      });
+    }
+  }, [showProfileModal]);
 
   // Search
   const [searchYoyoId, setSearchYoyoId] = useState('');

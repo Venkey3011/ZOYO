@@ -10,6 +10,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from './Toast';
 import UserProfileModal from './UserProfileModal';
+import { registerBackHandler } from '../lib/navigation';
 import {
   Room as LiveKitRoom,
   RoomEvent,
@@ -199,6 +200,35 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
   // Floating reactions list
   const [reactions, setReactions] = useState<{ id: string; emoji: string; seatIndex: number }[]>([]);
+
+  // Intercept hardware / gesture back button to close any open modal or drawer in VoiceRoom
+  useEffect(() => {
+    if (showGiftDrawer || showAudienceModal || showSeatModal || showUserProfileModal || showInvitePanel) {
+      return registerBackHandler(() => {
+        if (showGiftDrawer) {
+          setShowGiftDrawer(false);
+          return true;
+        }
+        if (showAudienceModal) {
+          setShowAudienceModal(false);
+          return true;
+        }
+        if (showSeatModal) {
+          setShowSeatModal(false);
+          return true;
+        }
+        if (showUserProfileModal) {
+          setShowUserProfileModal(false);
+          return true;
+        }
+        if (showInvitePanel) {
+          setShowInvitePanel(false);
+          return true;
+        }
+        return false;
+      });
+    }
+  }, [showGiftDrawer, showAudienceModal, showSeatModal, showUserProfileModal, showInvitePanel]);
 
   // Sound Synthesizer (AudioContext)
   const audioContextRef = useRef<AudioContext | null>(null);

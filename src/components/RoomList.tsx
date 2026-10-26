@@ -1,7 +1,8 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Room, User } from '../types';
 import { PRESET_AVATARS } from '../data';
 import { Search, Plus, Sparkles, Trophy, Users, Flame, Globe, Dices, MessageSquare, Music, Mic, Lock, Eye, EyeOff, Hash, ImagePlus, X } from 'lucide-react';
+import { registerBackHandler } from '../lib/navigation';
 
 interface RoomListProps {
   rooms: Room[];
@@ -49,6 +50,27 @@ export default function RoomList({ rooms, onJoinRoom, onCreateRoom, currentUser 
   const [lookupLoading, setLookupLoading] = useState<boolean>(false);
 
   const [searchedPrivateRoom, setSearchedPrivateRoom] = useState<Room | null>(null);
+
+  // Handle hardware / gesture back button to close any open modal
+  useEffect(() => {
+    if (showCreateModal || passwordModal || showCodeLookup) {
+      return registerBackHandler(() => {
+        if (showCreateModal) {
+          setShowCreateModal(false);
+          return true;
+        }
+        if (passwordModal) {
+          setPasswordModal(null);
+          return true;
+        }
+        if (showCodeLookup) {
+          setShowCodeLookup(false);
+          return true;
+        }
+        return false;
+      });
+    }
+  }, [showCreateModal, passwordModal, showCodeLookup]);
 
   // Debounced search for private rooms by 6-digit room code
   React.useEffect(() => {

@@ -7,6 +7,7 @@ import {
   Chrome, Facebook, Twitter, ArrowRight, ExternalLink, AtSign, Star
 } from 'lucide-react';
 import YoYoLogo from './YoYoLogo';
+import { registerBackHandler } from '../lib/navigation';
 
 interface LoginScreenProps {
   onLoginSuccess: (user: User) => void;
@@ -32,6 +33,23 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     isOpen: false,
     provider: null
   });
+
+  // Handle hardware / gesture back button to go back from sign-up or modal to login view
+  React.useEffect(() => {
+    if (isSignUp || socialModal.isOpen) {
+      return registerBackHandler(() => {
+        if (socialModal.isOpen) {
+          setSocialModal({ isOpen: false, provider: null });
+          return true;
+        }
+        if (isSignUp) {
+          setIsSignUp(false);
+          return true;
+        }
+        return false;
+      });
+    }
+  }, [isSignUp, socialModal.isOpen]);
 
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');

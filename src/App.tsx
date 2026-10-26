@@ -14,11 +14,22 @@ import { Room, User } from './types';
 import { PRESET_AVATARS } from './data';
 import { Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import {
+  getStoredUser,
+  saveStoredUser,
+  clearStoredUser,
+  getStoredActiveTab,
+  saveStoredActiveTab,
+  executeBackHandler,
+} from './lib/navigation';
 
 export default function App() {
   const { toasts, removeToast } = useToastSetup();
-  const [activeTab, setActiveTab] = useState<string>('home');
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(false);
+
+  // Restore session from localStorage across page refreshes
+  const storedUser = React.useMemo(() => getStoredUser(), []);
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => Boolean(storedUser));
+  const [activeTab, setActiveTab] = useState<string>(() => getStoredActiveTab());
   const [showSplash, setShowSplash] = useState<boolean>(() => {
     try {
       return !sessionStorage.getItem('zoyo_intro_seen');
@@ -26,20 +37,49 @@ export default function App() {
       return true;
     }
   });
-  const [currentUser, setCurrentUser] = useState<User>({
-    id: 'me',
-    name: '',
-    avatar: PRESET_AVATARS[0],
-    level: 1,
-    coins: 0,
-    frameId: 'none',
-    bubbleId: 'none',
-    badge: '🐣 Beginner',
+  const [currentUser, setCurrentUser] = useState<User>(() => {
+    return (
+      storedUser || {
+        id: 'me',
+        name: '',
+        avatar: PRESET_AVATARS[0],
+        level: 1,
+        coins: 0,
+        frameId: 'none',
+        bubbleId: 'none',
+        badge: '🐣 Beginner',
+      }
+    );
   });
   
   const [rooms, setRooms] = useState<Room[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [activeRoomOverride, setActiveRoomOverride] = useState<Room | null>(null);
+
+  // Unlocked style shop privileges — initialized from stored user
+  const [unlockedFrames, setUnlockedFrames] = useState<string[]>(['none']);
+  const [unlockedBubbles, setUnlockedBubbles] = useState<string[]>(['none']);
+  const [equippedFrame, setEquippedFrame] = useState<string>(() => storedUser?.frameId || 'none');
+  const [equippedBubble, setEquippedBubble] = useState<string>(() => storedUser?.bubbleId || 'none');
+  const [isBanned, setIsBanned] = useState(false);
+
+  // Persistent update helper that guarantees localStorage always mirrors currentUser
+  const updateCurrentUserAndPersist = React.useCallback((updater: User | ((prev: User) => User)) => {
+    setCurrentUser((prev) => {
+      const updated = typeof updater === 'function' ? updater(prev) : updater;
+      saveStoredUser(updated);
+      return updated;
+    });
+  }, []);
+
+  // Track navigation state in refs for back button handling without stale closures
+  const activeTabRef = React.useRef(activeTab);
+  activeTabRef.current = activeTab;
+  const activeRoomIdRef = React.useRef(activeRoomId);
+  activeRoomIdRef.current = activeRoomId;
+  const isLoggedInRef = React.useRef(isLoggedIn);
+  isLoggedInRef.current = isLoggedIn;
+  const lastBackPressRef = React.useRef<number>(0);
 
   // Auto-dismiss intro splash after 3 seconds with smooth exit
   useEffect(() => {
@@ -83,13 +123,6 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isLoggedIn, activeRoomId]);
 
-  // Unlocked style shop privileges
-  const [unlockedFrames, setUnlockedFrames] = useState<string[]>(['none']);
-  const [unlockedBubbles, setUnlockedBubbles] = useState<string[]>(['none']);
-  const [equippedFrame, setEquippedFrame] = useState<string>('none');
-  const [equippedBubble, setEquippedBubble] = useState<string>('none');
-  const [isBanned, setIsBanned] = useState(false);
-
   // Offline detection
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   useEffect(() => {
@@ -120,7 +153,7 @@ export default function App() {
           if (data.success && data.isBlocked) {
             setIsBanned(true);
           } else if (data.success) {
-            setCurrentUser(prev => {
+            updateCurrentUserAndPersist(prev => {
               let changed = false;
               const next = { ...prev };
               if (data.coins !== undefined && data.coins !== prev.coins) {
@@ -141,7 +174,33 @@ export default function App() {
     }, 4500);
 
     return () => clearInterval(interval);
-  }, [isLoggedIn, currentUser._id, currentUser.id]);
+  }, [isLoggedIn, currentUser._id, currentUser.id, updateCurrentUserAndPersist]);
+
+  // Initial mount verification if user was restored from stored session
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    const uId = currentUser._id || currentUser.id;
+    if (!uId || uId === 'me') return;
+
+    fetch(`/api/users/${uId}/status`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success) {
+          if (data.isBlocked) {
+            setIsBanned(true);
+          } else {
+            updateCurrentUserAndPersist((prev) => ({
+              ...prev,
+              ...(data.coins !== undefined ? { coins: data.coins } : {}),
+              ...(data.role ? { role: data.role } : {}),
+            }));
+          }
+        } else if (data.error === 'User not found') {
+          handleLogout();
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Poll friend request inbox badge count every 30 seconds
   useEffect(() => {
@@ -179,7 +238,7 @@ export default function App() {
 
   // Handle coins update
   const handleUpdateCoins = (newCoins: number) => {
-    setCurrentUser((prev) => {
+    updateCurrentUserAndPersist((prev) => {
       const updated = { ...prev, coins: newCoins };
       syncUserWithDb({ coins: newCoins });
       return updated;
@@ -199,7 +258,7 @@ export default function App() {
   // Handle equip frames
   const handleEquipFrame = (frameId: string) => {
     setEquippedFrame(frameId);
-    setCurrentUser((prev) => {
+    updateCurrentUserAndPersist((prev) => {
       const updated = { ...prev, frameId };
       syncUserWithDb({ frameId });
       return updated;
@@ -209,7 +268,7 @@ export default function App() {
   // Handle equip bubbles
   const handleEquipBubble = (bubbleId: string) => {
     setEquippedBubble(bubbleId);
-    setCurrentUser((prev) => {
+    updateCurrentUserAndPersist((prev) => {
       const updated = { ...prev, bubbleId };
       syncUserWithDb({ bubbleId });
       return updated;
@@ -295,6 +354,11 @@ export default function App() {
     setActiveRoomId(tempId);
     setRooms((prev) => [optimisticRoom, ...prev]);
 
+    // Push history state so back button leaves room instead of exiting app
+    try {
+      window.history.pushState({ zoyo: true, root: false, tab: activeTabRef.current, roomId: tempId }, '');
+    } catch {}
+
     // Asynchronously persist to backend — update room with real MongoDB _id when done
     fetch('/api/rooms', {
       method: 'POST',
@@ -309,6 +373,9 @@ export default function App() {
           // ⚡ Swap to real ID — VoiceRoom's useEffect will reconnect WS with proper MongoDB ID
           setActiveRoomOverride(serverRoom);
           setActiveRoomId(realId);
+          try {
+            window.history.replaceState({ zoyo: true, root: false, tab: activeTabRef.current, roomId: realId }, '');
+          } catch {}
           setRooms((prev) => prev.map(r => ((r as any)._id === tempId || r.id === tempId ? serverRoom : r)));
           if (serverRoom.isPrivate) {
             toast(`🔒 Private Room Created! Code: #${serverRoom.roomId || ''}`, 'success');
@@ -336,6 +403,11 @@ export default function App() {
       if (local) setActiveRoomOverride(local);
     }
     setActiveRoomId(roomId);
+
+    // Push history state so back button leaves room cleanly
+    try {
+      window.history.pushState({ zoyo: true, root: false, tab: activeTabRef.current, roomId }, '');
+    } catch {}
 
     // Refresh room details silently in background (non-blocking)
     (async () => {
@@ -367,13 +439,35 @@ export default function App() {
 
   // Handle leaving voice room
   const handleLeaveRoom = () => {
-    setActiveRoomId(null);
-    setActiveRoomOverride(null);
+    if (activeRoomIdRef.current !== null) {
+      setActiveRoomId(null);
+      setActiveRoomOverride(null);
+      if (window.history.state && window.history.state.roomId) {
+        try {
+          window.history.back();
+        } catch {}
+      }
+    }
+  };
+
+  // Handle tab navigation with history push so device back button navigates back
+  const handleTabChange = (newTab: string) => {
+    if (activeRoomIdRef.current !== null) {
+      setActiveRoomId(null);
+      setActiveRoomOverride(null);
+    }
+    if (newTab !== activeTabRef.current) {
+      setActiveTab(newTab);
+      saveStoredActiveTab(newTab);
+      try {
+        window.history.pushState({ zoyo: true, root: false, tab: newTab, roomId: null }, '');
+      } catch {}
+    }
   };
 
   // Profile customisation handlers
   const handleUpdateNickname = (newName: string) => {
-    setCurrentUser((prev) => {
+    updateCurrentUserAndPersist((prev) => {
       const updated = { ...prev, name: newName };
       syncUserWithDb({ name: newName });
       return updated;
@@ -381,7 +475,7 @@ export default function App() {
   };
 
   const handleUpdateAvatar = (newAvatar: string) => {
-    setCurrentUser((prev) => {
+    updateCurrentUserAndPersist((prev) => {
       const updated = { ...prev, avatar: newAvatar };
       syncUserWithDb({ avatar: newAvatar });
       return updated;
@@ -389,6 +483,7 @@ export default function App() {
   };
 
   const handleLoginSuccess = (user: User) => {
+    saveStoredUser(user);
     setCurrentUser(user);
     setIsLoggedIn(true);
     // Equip settings from database if available
@@ -401,8 +496,11 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    clearStoredUser();
     setIsLoggedIn(false);
     setActiveTab('home');
+    setActiveRoomId(null);
+    setActiveRoomOverride(null);
     setCurrentUser({
       id: 'me',
       name: '',
@@ -414,6 +512,69 @@ export default function App() {
       badge: '🐣 Beginner',
     });
   };
+
+  // Hardware / Gesture / Browser Back Button Management
+  useEffect(() => {
+    if (!isLoggedIn) return;
+
+    // Seed history stack so first back tap on home screen doesn't exit instantly
+    try {
+      if (!window.history.state || !window.history.state.zoyo) {
+        window.history.replaceState({ zoyo: true, root: true, tab: activeTabRef.current, roomId: null }, '');
+        window.history.pushState({ zoyo: true, root: false, tab: activeTabRef.current, roomId: null }, '');
+      }
+    } catch {}
+
+    const handlePopState = (event: PopStateEvent) => {
+      // 1. Check if any active modal / drawer / sub-view consumes the back action
+      if (executeBackHandler()) {
+        try {
+          window.history.pushState(
+            { zoyo: true, root: false, tab: activeTabRef.current, roomId: activeRoomIdRef.current },
+            ''
+          );
+        } catch {}
+        return;
+      }
+
+      // 2. If user is inside a room, leave the room!
+      if (activeRoomIdRef.current !== null) {
+        setActiveRoomId(null);
+        setActiveRoomOverride(null);
+        return;
+      }
+
+      // 3. If user is on a sub-tab (not 'home'), navigate back to 'home' or previous tab!
+      if (activeTabRef.current !== 'home') {
+        const targetTab = event.state && event.state.tab && event.state.tab !== activeTabRef.current 
+          ? event.state.tab 
+          : 'home';
+        setActiveTab(targetTab);
+        saveStoredActiveTab(targetTab);
+        return;
+      }
+
+      // 4. User is on 'home' tab with no room and no modal open.
+      // Mobile standard double-back to exit mechanism:
+      const now = Date.now();
+      if (now - lastBackPressRef.current < 2000) {
+        // User tapped back twice within 2 seconds: allow app to close/exit
+        return;
+      }
+
+      // First tap: warn user with toast and retain trap state
+      lastBackPressRef.current = now;
+      toast('Press back again to exit ZOYO', 'info');
+      try {
+        window.history.pushState({ zoyo: true, root: false, tab: 'home', roomId: null }, '');
+      } catch {}
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [isLoggedIn]);
 
   const activeRoom = activeRoomOverride || rooms.find((r) => {
     const rId = String((r as any)._id || r.id || '');
@@ -452,7 +613,7 @@ export default function App() {
   return (
     <MobileFrame
       activeTab={activeTab}
-      onTabChange={setActiveTab}
+      onTabChange={handleTabChange}
       inRoom={activeRoomId !== null}
       onBackToHome={handleLeaveRoom}
       coins={currentUser.coins}

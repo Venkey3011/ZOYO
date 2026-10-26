@@ -6,6 +6,7 @@ import {
   Settings, Trash2, Eye, Award, Zap, HelpCircle, X, ChevronRight
 } from 'lucide-react';
 import { toast } from './Toast';
+import { registerBackHandler } from '../lib/navigation';
 
 interface GamesHubProps {
   currentUser: User;
@@ -87,6 +88,23 @@ export default function GamesHub({
   const [showAddGameModal, setShowAddGameModal] = useState(false);
   const [showHostModal, setShowHostModal] = useState(false);
   const [selectedGameForHost, setSelectedGameForHost] = useState<CustomGame | null>(null);
+
+  // Handle hardware / gesture back button to close any open modal
+  useEffect(() => {
+    if (showAddGameModal || showHostModal) {
+      return registerBackHandler(() => {
+        if (showAddGameModal) {
+          setShowAddGameModal(false);
+          return true;
+        }
+        if (showHostModal) {
+          setShowHostModal(false);
+          return true;
+        }
+        return false;
+      });
+    }
+  }, [showAddGameModal, showHostModal]);
 
   // New Game Form (Admin/Manager)
   const [newGameName, setNewGameName] = useState('');

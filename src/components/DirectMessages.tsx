@@ -3,6 +3,7 @@ import { DirectMessage, User } from '../types';
 import { Search, ChevronLeft, Send, Play, Pause, MessageSquare, Plus, Trash2, X, MoreVertical, Users, Eye } from 'lucide-react';
 import { toast } from './Toast';
 import UserProfileModal from './UserProfileModal';
+import { registerBackHandler } from '../lib/navigation';
 
 interface DirectMessagesProps {
   currentUser: User;
@@ -51,6 +52,28 @@ export default function DirectMessages({ currentUser }: DirectMessagesProps) {
   const [searchedUser, setSearchedUser] = useState<User | null>(null);
   const [searchingUser, setSearchingUser] = useState(false);
   const [showPartnerProfile, setShowPartnerProfile] = useState(false);
+
+  // Handle hardware / gesture back button to close active chat conversation or modal
+  useEffect(() => {
+    if (activeDm || showFriendsPicker || showPartnerProfile) {
+      return registerBackHandler(() => {
+        if (showPartnerProfile) {
+          setShowPartnerProfile(false);
+          return true;
+        }
+        if (showFriendsPicker) {
+          setShowFriendsPicker(false);
+          return true;
+        }
+        if (activeDm) {
+          setActiveDm(null);
+          activeDmRef.current = null;
+          return true;
+        }
+        return false;
+      });
+    }
+  }, [activeDm, showFriendsPicker, showPartnerProfile]);
 
   // Search user globally by ZOYO ID when typing in the modal
   useEffect(() => {

@@ -290,12 +290,12 @@ export default function App() {
       }]
     };
 
-    // ⚡ INSTANT 0ms OPTIMISTIC SWITCH:
+    // ⚡ INSTANT 0ms OPTIMISTIC SWITCH — show room UI immediately:
     setActiveRoomOverride(optimisticRoom);
     setActiveRoomId(tempId);
     setRooms((prev) => [optimisticRoom, ...prev]);
 
-    // Asynchronously persist to backend without blocking user
+    // Asynchronously persist to backend — update room with real MongoDB _id when done
     fetch('/api/rooms', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -306,6 +306,7 @@ export default function App() {
         if (data.success && data.room) {
           const serverRoom = data.room;
           const realId = serverRoom._id || serverRoom.id;
+          // ⚡ Swap to real ID — VoiceRoom's useEffect will reconnect WS with proper MongoDB ID
           setActiveRoomOverride(serverRoom);
           setActiveRoomId(realId);
           setRooms((prev) => prev.map(r => ((r as any)._id === tempId || r.id === tempId ? serverRoom : r)));
@@ -393,6 +394,10 @@ export default function App() {
     // Equip settings from database if available
     if (user.frameId) setEquippedFrame(user.frameId);
     if (user.bubbleId) setEquippedBubble(user.bubbleId);
+    // ⚡ Immediately fetch rooms so they appear in <50ms instead of waiting for useEffect cycle
+    fetch('/api/rooms').then(r => r.json()).then(d => {
+      if (d.success && Array.isArray(d.rooms)) setRooms(d.rooms);
+    }).catch(() => {});
   };
 
   const handleLogout = () => {

@@ -5,8 +5,7 @@ import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
 import mongoose from "mongoose";
-
-
+import { AccessToken } from "livekit-server-sdk";
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
@@ -154,6 +153,9 @@ const RoomSchema = new mongoose.Schema({
     timestamp: { type: String }
   }]
 });
+
+RoomSchema.index({ roomId: 1 });
+RoomSchema.index({ isActive: 1, isPrivate: 1, createdAt: -1 });
 
 const RoomMongo: any = mongoose.models.Room || mongoose.model('Room', RoomSchema);
 
@@ -464,6 +466,21 @@ async function connectToMongo() {
       }
     }).catch((e: any) => console.warn('Cache pre-warm warning:', e));
 
+    // ⚡ Pre-warm public rooms cache so /api/rooms returns in <1ms after first login
+    RoomMongo.find({ isActive: true }).lean().limit(100).then((rooms: any[]) => {
+      if (rooms && rooms.length > 0) {
+        rooms.forEach((r: any) => {
+          activeRoomsCache.set(String(r._id), r);
+          if (r.roomId) activeRoomsCache.set(r.roomId, r);
+        });
+        const publicRooms = rooms.filter((r: any) => !r.isPrivate).map((r: any) => sanitizeRoom({ ...r, id: String(r._id) }));
+        publicRooms.forEach((r: any) => { delete r.roomPassword; });
+        cachedPublicRoomsList = publicRooms;
+        cachedPublicRoomsTime = Date.now();
+        console.log(`⚡ Pre-warmed ${publicRooms.length} public rooms into cache for instant 0ms load.`);
+      }
+    }).catch((e: any) => console.warn('Room pre-warm warning:', e));
+
   } catch (err) {
     console.error("❌ MongoDB Atlas connection error:", err);
     console.warn("⚠️ Falling back to in-memory mode.");
@@ -727,6 +744,31 @@ app.get("/api/db-status", (req, res) => {
     mode: isMongoConnected ? "MongoDB Atlas" : "In-Memory Fallback",
     mongoActive: isMongoConnected
   });
+});
+
+// LiveKit token endpoint for seamless voice chat
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || 'devkey';
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || 'devsecret00000000000000000000000';
+const LIVEKIT_URL = process.env.LIVEKIT_URL || 'ws://localhost:7880';
+
+app.post("/api/livekit/token", async (req: express.Request, res: express.Response) => {
+  try {
+    const { userId, userName, roomId } = req.body;
+    if (!userId || !roomId) {
+      return res.status(400).json({ error: "userId and roomId required" });
+    }
+    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+      identity: String(userId),
+      name: String(userName || userId),
+      ttl: '4h'
+    });
+    at.addGrant({ roomJoin: true, room: String(roomId), canPublish: true, canSubscribe: true });
+    const token = await at.toJwt();
+    res.json({ success: true, token, url: LIVEKIT_URL });
+  } catch (err) {
+    console.error('LiveKit token error:', err);
+    res.status(500).json({ error: "Failed to generate LiveKit token" });
+  }
 });
 
 
@@ -2377,7 +2419,7 @@ app.get("/api/rooms", async (req: express.Request, res: express.Response) => {
     }
 
     if (isMongoConnected) {
-      let rooms = await RoomMongo.find({ isActive: true, isPrivate: { $ne: true } }).sort({ createdAt: -1 });
+      let rooms = await RoomMongo.find({ isActive: true, isPrivate: { $ne: true } }).sort({ createdAt: -1 }).lean().maxTimeMS(1500).limit(50);
       const sanitizedRooms = rooms.map(r => {
         const clean = sanitizeRoom(r.toObject ? r.toObject() : r);
         delete clean.roomPassword;

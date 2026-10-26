@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Room, User, Seat, ChatMessage, Gift, LudoState, DiceDuelState } from '../types';
 import { GIFTS, AUDIO_TRACKS, PRESET_AVATARS } from '../data';
 import { 
@@ -10,6 +10,18 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from './Toast';
 import UserProfileModal from './UserProfileModal';
+import {
+  Room as LiveKitRoom,
+  RoomEvent,
+  Track,
+  Participant,
+  LocalParticipant,
+  RemoteParticipant,
+  RemoteTrack,
+  RemoteTrackPublication,
+  createLocalAudioTrack,
+  ConnectionState
+} from 'livekit-client';
 
 interface VoiceRoomProps {
   room: Room;
@@ -137,11 +149,12 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   // WebSocket reference
   const wsRef = useRef<WebSocket | null>(null);
 
-  // WebRTC Peer Connections & Audio Elements
-  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const remoteAudiosRef = useRef<Map<string, HTMLAudioElement>>(new Map());
-  const localStreamRef = useRef<MediaStream | null>(null);
+  // LiveKit Room ref (replaces raw WebRTC peer connections)
+  const lkRoomRef = useRef<LiveKitRoom | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null); // kept for mic enable/disable
+  const remoteAudiosRef = useRef<Map<string, HTMLAudioElement>>(new Map()); // kept for autoplay unblock
   const isSpeakingRef = useRef<boolean>(false);
+  const [lkConnected, setLkConnected] = useState(false);
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     { id: '1', userId: 'system', userName: 'System', userLevel: 99, message: `Welcome to ${safeRoom.host.name}'s voice room! Grab a mic seat to talk live or chat with everyone! 🎙️✨`, type: 'system' }
@@ -306,144 +319,89 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     }
   };
 
-  // --- WEBRTC REAL VOICE AUDIO SYSTEM ---
+  // --- LIVEKIT VOICE AUDIO SYSTEM (replaces raw WebRTC P2P) ---
 
-  const closePeerConnection = (peerId: string) => {
-    const pc = peerConnectionsRef.current.get(peerId);
-    if (pc) {
-      pc.close();
-      peerConnectionsRef.current.delete(peerId);
+  /** Connect the current user to LiveKit room for voice. Called when user takes a mic seat. */
+  const connectLiveKit = useCallback(async () => {
+    if (lkRoomRef.current && lkRoomRef.current.state === ConnectionState.Connected) return;
+    // Skip if roomId is still a temp optimistic ID — wait for real MongoDB ID
+    if (!roomId || roomId.startsWith('room_')) {
+      console.log('⏳ [LiveKit] Waiting for real room ID before connecting...');
+      return;
     }
-    const audio = remoteAudiosRef.current.get(peerId);
-    if (audio) {
-      audio.pause();
-      audio.srcObject = null;
-      remoteAudiosRef.current.delete(peerId);
-    }
-    setRemoteStreams(prev => {
-      const next = { ...prev };
-      delete next[peerId];
-      return next;
-    });
-  };
+    try {
+      console.log('🎙️ [LiveKit] Fetching voice token...');
+      const res = await fetch('/api/livekit/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUserId, userName: currentUser.name, roomId })
+      });
+      const data = await res.json();
+      if (!data.success || !data.token) {
+        console.warn('[LiveKit] No token returned — voice unavailable');
+        return;
+      }
 
-  const playRemoteAudio = (peerId: string, stream: MediaStream) => {
-    console.log(`🔊 [Voice] Connecting remote audio stream from peer ${peerId}`);
-    let audio = remoteAudiosRef.current.get(peerId);
-    if (!audio) {
-      audio = new Audio();
-      audio.autoplay = true;
-      (audio as any).playsInline = true;
-      remoteAudiosRef.current.set(peerId, audio);
-    }
-    audio.srcObject = stream;
-    audio.play().catch(e => {
-      console.warn(`Autoplay restriction for peer ${peerId}, user interaction will resume:`, e);
-      setAudioAutoplayBlocked(true);
-    });
-  };
+      const lkRoom = new LiveKitRoom({
+        adaptiveStream: true,
+        dynacast: true,
+        audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
+      lkRoomRef.current = lkRoom;
 
-  const createPeerConnection = (peerId: string, isInitiator: boolean): RTCPeerConnection => {
-    if (peerConnectionsRef.current.has(peerId)) {
-      return peerConnectionsRef.current.get(peerId)!;
-    }
-
-    console.log(`🔗 [WebRTC] Creating peer connection with ${peerId} (initiator: ${isInitiator})`);
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-      ]
-    });
-
-    peerConnectionsRef.current.set(peerId, pc);
-
-    // If local microphone stream is active, attach its audio tracks
-    if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach(track => {
-        try {
-          pc.addTrack(track, localStreamRef.current!);
-        } catch (e) {
-          console.warn('Track addition notice:', e);
+      // Handle remote audio tracks from other speakers
+      lkRoom.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub: RemoteTrackPublication, participant: RemoteParticipant) => {
+        if (track.kind === Track.Kind.Audio) {
+          const audioEl = track.attach() as HTMLAudioElement;
+          audioEl.autoplay = true;
+          document.body.appendChild(audioEl);
+          remoteAudiosRef.current.set(participant.identity, audioEl);
+          audioEl.play().catch(() => setAudioAutoplayBlocked(true));
+          console.log(`🔊 [LiveKit] Audio from ${participant.identity}`);
         }
       });
-    }
 
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        sendWs('webrtc_signal', {
-          targetUserId: peerId,
-          signal: { candidate: event.candidate },
-          seatIndex: mySeatIndex
-        });
-      }
-    };
+      lkRoom.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack, _pub: RemoteTrackPublication, participant: RemoteParticipant) => {
+        track.detach().forEach(el => el.remove());
+        remoteAudiosRef.current.delete(participant.identity);
+      });
 
-    pc.ontrack = (event) => {
-      console.log(`🎧 [WebRTC] Remote audio track received from ${peerId}`);
-      if (event.streams && event.streams[0]) {
-        playRemoteAudio(peerId, event.streams[0]);
-        setRemoteStreams(prev => ({ ...prev, [peerId]: event.streams[0] }));
-      }
-    };
+      lkRoom.on(RoomEvent.Connected, () => {
+        console.log('✅ [LiveKit] Room connected');
+        setLkConnected(true);
+      });
 
-    pc.onconnectionstatechange = () => {
-      console.log(`📶 [WebRTC] Peer ${peerId} connection state: ${pc.connectionState}`);
-      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-        closePeerConnection(peerId);
-      }
-    };
+      lkRoom.on(RoomEvent.Disconnected, () => {
+        console.log('🔌 [LiveKit] Room disconnected');
+        setLkConnected(false);
+      });
 
-    if (isInitiator) {
-      pc.createOffer({ offerToReceiveAudio: true })
-        .then(offer => pc.setLocalDescription(offer))
-        .then(() => {
-          sendWs('webrtc_signal', {
-            targetUserId: peerId,
-            signal: { sdp: pc.localDescription },
-            seatIndex: mySeatIndex
-          });
-        })
-        .catch(err => console.error('Error creating WebRTC offer:', err));
-    }
+      lkRoom.on(RoomEvent.Reconnecting, () => {
+        console.log('🔄 [LiveKit] Reconnecting...');
+      });
 
-    return pc;
-  };
+      lkRoom.on(RoomEvent.Reconnected, () => {
+        console.log('✅ [LiveKit] Reconnected!');
+        setLkConnected(true);
+      });
 
-  const handleWebRTCSignal = async (senderId: string, signal: any) => {
-    if (!signal) return;
-    try {
-      if (signal.sdp) {
-        const pc = createPeerConnection(senderId, false);
-        await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-        if (signal.sdp.type === 'offer') {
-          if (localStreamRef.current) {
-            localStreamRef.current.getAudioTracks().forEach(track => {
-              try {
-                pc.addTrack(track, localStreamRef.current!);
-              } catch (e) {}
-            });
-          }
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          sendWs('webrtc_signal', {
-            targetUserId: senderId,
-            signal: { sdp: pc.localDescription },
-            seatIndex: mySeatIndex
-          });
-        }
-      } else if (signal.candidate) {
-        const pc = peerConnectionsRef.current.get(senderId);
-        if (pc) {
-          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
-        }
-      }
+      await lkRoom.connect(data.url, data.token);
     } catch (err) {
-      console.error('Error handling WebRTC signal:', err);
+      console.warn('[LiveKit] Connection error:', err);
     }
-  };
+  }, [roomId, currentUserId, currentUser.name]);
 
-  // Microphone capture, WebRTC streaming & real-time speaking detection
+  /** Disconnect from LiveKit room (called on mic seat leave or room exit) */
+  const disconnectLiveKit = useCallback(() => {
+    if (lkRoomRef.current) {
+      lkRoomRef.current.disconnect();
+      lkRoomRef.current = null;
+      setLkConnected(false);
+      console.log('👋 [LiveKit] Disconnected from voice room');
+    }
+  }, []);
+
+  // Microphone capture & real-time speaking detection via LiveKit
   const enableMicrophone = async () => {
     try {
       console.log('🎤 Requesting microphone access...');
@@ -451,27 +409,14 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       micStreamRef.current = stream;
       localStreamRef.current = stream;
 
-      // Broadcast audio track to all active peer connections
-      peerConnectionsRef.current.forEach((pc) => {
-        stream.getAudioTracks().forEach(track => {
-          const senders = pc.getSenders();
-          const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
-          if (audioSender) {
-            audioSender.replaceTrack(track);
-          } else {
-            try { pc.addTrack(track, stream); } catch (e) {}
-          }
-        });
-      });
+      // Connect to LiveKit voice room and publish audio
+      await connectLiveKit();
+      if (lkRoomRef.current && lkRoomRef.current.state === ConnectionState.Connected) {
+        await lkRoomRef.current.localParticipant.setMicrophoneEnabled(true);
+        console.log('✅ [LiveKit] Microphone published to room');
+      }
 
-      // Initiate WebRTC connection with all online room peers
-      onlineUsers.forEach(u => {
-        const uid = String(u._id || u.id);
-        if (uid !== currentUserId && !peerConnectionsRef.current.has(uid)) {
-          createPeerConnection(uid, true);
-        }
-      });
-
+      // Voice activity detection for speaking ring animation
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       const ctx = new AudioCtx();
       audioContextRef.current = ctx;
@@ -512,7 +457,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         micRafIdRef.current = requestAnimationFrame(updateAmplitude);
       };
       updateAmplitude();
-      console.log('✅ Microphone activated & streaming live!');
+      console.log('✅ Microphone activated & streaming live via LiveKit!');
     } catch (err) {
       console.warn("Microphone access unavailable or denied:", err);
     }
@@ -532,180 +477,177 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       setSeats(prev => prev.map(s => s.index === mySeatIndex ? { ...s, isTalking: false } : s));
       sendWs('seat_status', { seatIndex: mySeatIndex, isTalking: false });
     }
+    // Disable mic in LiveKit (but stay connected to hear others)
+    if (lkRoomRef.current && lkRoomRef.current.state === ConnectionState.Connected) {
+      lkRoomRef.current.localParticipant.setMicrophoneEnabled(false).catch(() => {});
+    }
   };
 
   // --- REAL-TIME WEBSOCKET ROOM SYNC ---
   useEffect(() => {
-    if (!roomId) return;
+    // ⚡ Skip temp optimistic IDs — wait for real MongoDB _id from server
+    if (!roomId || roomId.startsWith('room_')) return;
 
     let isMounted = true;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-    console.log(`🔌 [WS] Connecting to ${wsUrl} for room ${roomId}`);
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempts = 0;
 
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      console.log(`✅ [WS] Connected to room ${roomId}`);
-      ws.send(JSON.stringify({
-        type: 'join_room',
-        roomId,
-        userId: currentUserId,
-        userName: currentUser.name,
-        payload: {
-          avatar: currentUser.avatar,
-          level: currentUser.level
-        }
-      }));
-    };
-
-    ws.onmessage = (event) => {
+    const connect = () => {
       if (!isMounted) return;
-      try {
-        const data = JSON.parse(event.data);
-        console.log(`📥 [WS Event]`, data.type);
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      console.log(`🔌 [WS] Connecting to ${wsUrl} for room ${roomId}`);
 
-        if (data.type === 'room_init') {
-          if (data.seats && Array.isArray(data.seats)) {
-            const sanitizedSeats = data.seats.map((s: any) => {
-              if (s.index === 0 && !s.user) {
-                return { ...s, user: safeRoom.host };
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log(`✅ [WS] Connected to room ${roomId}`);
+        reconnectAttempts = 0; // reset on successful connect
+        ws.send(JSON.stringify({
+          type: 'join_room',
+          roomId,
+          userId: currentUserId,
+          userName: currentUser.name,
+          payload: {
+            avatar: currentUser.avatar,
+            level: currentUser.level
+          }
+        }));
+      };
+
+      ws.onmessage = (event) => {
+        if (!isMounted) return;
+        try {
+          const data = JSON.parse(event.data);
+          console.log(`📥 [WS Event]`, data.type);
+
+          if (data.type === 'room_init') {
+            if (data.seats && Array.isArray(data.seats)) {
+              const sanitizedSeats = data.seats.map((s: any) => {
+                if (s.index === 0 && !s.user) {
+                  return { ...s, user: safeRoom.host };
+                }
+                return s;
+              });
+              setSeats(sanitizedSeats);
+              const found = sanitizedSeats.find((s: any) => s.user && String(s.user._id || s.user.id) === currentUserId);
+              if (found) setMySeatIndex(found.index);
+            }
+            if (data.onlineUsers && Array.isArray(data.onlineUsers)) {
+              setOnlineUsers(data.onlineUsers);
+            }
+            if (data.chatMessages && Array.isArray(data.chatMessages)) {
+              setChatMessages(data.chatMessages);
+            }
+            if (data.activeGame) {
+              setActiveGame(data.activeGame);
+            }
+          } else if (data.type === 'user_joined') {
+            if (data.onlineUsers) setOnlineUsers(data.onlineUsers);
+            if (data.user) {
+              const joinText = `${data.user.name} joined the room! 👋`;
+              setChatMessages(prev => {
+                const hasRecent = prev.slice(-3).some(m => m.type === 'system' && m.message === joinText);
+                if (hasRecent) return prev;
+                return [...prev, {
+                  id: `join_${data.user._id || data.user.id || data.user.name}_${Date.now()}`,
+                  userId: 'system',
+                  userName: 'System',
+                  userLevel: 0,
+                  message: joinText,
+                  type: 'system'
+                }];
+              });
+            }
+          } else if (data.type === 'user_left') {
+            if (data.onlineUsers) setOnlineUsers(data.onlineUsers);
+            if (data.seats) setSeats(data.seats);
+          } else if (data.type === 'seats_updated') {
+            if (data.seats && Array.isArray(data.seats)) {
+              setSeats(data.seats);
+              const found = data.seats.find((s: any) => s.user && String(s.user._id || s.user.id) === currentUserId);
+              setMySeatIndex(found ? found.index : null);
+            }
+          } else if (data.type === 'speaker_ready') {
+            // LiveKit handles audio routing — no WebRTC P2P needed
+            console.log(`🎙️ Speaker ${data.userName} ready on seat ${data.seatIndex} (LiveKit audio)`);
+          } else if (data.type === 'seat_status_updated') {
+            const { seatIndex, isTalking, isMuted } = data;
+            setSeats(prev => prev.map(s => {
+              if (s.index === seatIndex) {
+                return {
+                  ...s,
+                  ...(isTalking !== undefined ? { isTalking } : {}),
+                  ...(isMuted !== undefined ? { isMuted } : {})
+                };
               }
               return s;
-            });
-            setSeats(sanitizedSeats);
-            const found = sanitizedSeats.find((s: any) => s.user && String(s.user._id || s.user.id) === currentUserId);
-            if (found) setMySeatIndex(found.index);
-          }
-          if (data.onlineUsers && Array.isArray(data.onlineUsers)) {
-            setOnlineUsers(data.onlineUsers);
-          }
-          if (data.chatMessages && Array.isArray(data.chatMessages)) {
-            setChatMessages(data.chatMessages);
-          }
-          if (data.activeGame) {
-            setActiveGame(data.activeGame);
-          }
-        } else if (data.type === 'user_joined') {
-          if (data.onlineUsers) setOnlineUsers(data.onlineUsers);
-          if (data.user) {
-            const joinText = `${data.user.name} joined the room! 👋`;
-            setChatMessages(prev => {
-              // Deduplicate if the same user has joined announcement within the last 3 messages
-              const hasRecent = prev.slice(-3).some(m => m.type === 'system' && m.message === joinText);
-              if (hasRecent) return prev;
-              return [...prev, {
-                id: `join_${data.user._id || data.user.id || data.user.name}_${Date.now()}`,
-                userId: 'system',
-                userName: 'System',
-                userLevel: 0,
-                message: joinText,
-                type: 'system'
-              }];
-            });
-            // If we are currently seated and streaming audio, initiate WebRTC with new peer
-            if (localStreamRef.current && mySeatIndex !== null) {
-              const peerId = String(data.user._id || data.user.id);
-              if (peerId !== currentUserId) {
-                createPeerConnection(peerId, true);
+            }));
+          } else if (data.type === 'chat_message') {
+            if (data.message) {
+              setChatMessages(prev => {
+                if (prev.some(m => String(m.id) === String(data.message.id))) return prev;
+                return [...prev, data.message];
+              });
+              if (data.message.userId !== currentUserId) {
+                playSynthSound('tap');
               }
             }
-          }
-        } else if (data.type === 'user_left') {
-          if (data.onlineUsers) setOnlineUsers(data.onlineUsers);
-          if (data.seats) setSeats(data.seats);
-          if (data.userId) closePeerConnection(data.userId);
-        } else if (data.type === 'seats_updated') {
-          if (data.seats && Array.isArray(data.seats)) {
-            setSeats(data.seats);
-            const found = data.seats.find((s: any) => s.user && String(s.user._id || s.user.id) === currentUserId);
-            setMySeatIndex(found ? found.index : null);
-
-            // Connect to any seated speaker in the room so we receive their live voice audio
-            data.seats.forEach((s: any) => {
-              if (s.user) {
-                const otherId = String(s.user._id || s.user.id);
-                if (otherId !== currentUserId && !peerConnectionsRef.current.has(otherId)) {
-                  console.log(`📡 Connecting to receive voice from seated speaker: ${s.user.name}`);
-                  createPeerConnection(otherId, true);
-                }
+          } else if (data.type === 'gift_event') {
+            if (data.gift) {
+              setActiveGiftEffect(data.gift);
+              playSynthSound('gift');
+              setTimeout(() => setActiveGiftEffect(null), 4000);
+            }
+            if (data.message) {
+              setChatMessages(prev => {
+                if (prev.some(m => m.id === data.message.id)) return prev;
+                return [...prev, data.message];
+              });
+            }
+          } else if (data.type === 'game_event') {
+            if (data.activeGame) setActiveGame(data.activeGame);
+            if (data.gameData) {
+              if (data.gameData.ludo) setLudo(data.gameData.ludo);
+              if (data.gameData.diceDuel) setDiceDuel(data.gameData.diceDuel);
+              if (data.gameData.wheel) {
+                setWheelDegree(data.gameData.wheel.degree);
+                setWheelResult(data.gameData.wheel.result);
               }
-            });
-          }
-        } else if (data.type === 'speaker_ready') {
-          const speakerId = String(data.userId);
-          if (speakerId !== currentUserId && !peerConnectionsRef.current.has(speakerId)) {
-            console.log(`🎙️ Speaker ${data.userName} ready on seat ${data.seatIndex}, connecting WebRTC audio...`);
-            createPeerConnection(speakerId, true);
-          }
-        } else if (data.type === 'seat_status_updated') {
-          const { seatIndex, isTalking, isMuted } = data;
-          setSeats(prev => prev.map(s => {
-            if (s.index === seatIndex) {
-              return {
-                ...s,
-                ...(isTalking !== undefined ? { isTalking } : {}),
-                ...(isMuted !== undefined ? { isMuted } : {})
-              };
             }
-            return s;
-          }));
-        } else if (data.type === 'chat_message') {
-          if (data.message) {
-            setChatMessages(prev => {
-              if (prev.some(m => String(m.id) === String(data.message.id))) return prev;
-              return [...prev, data.message];
-            });
-            if (data.message.userId !== currentUserId) {
-              playSynthSound('tap');
+          } else if (data.type === 'reaction') {
+            if (data.emoji !== undefined && data.seatIndex !== undefined) {
+              const id = Math.random().toString();
+              setReactions(prev => [...prev, { id, emoji: data.emoji, seatIndex: data.seatIndex }]);
+              setTimeout(() => {
+                setReactions(prev => prev.filter(r => r.id !== id));
+              }, 2000);
             }
           }
-        } else if (data.type === 'gift_event') {
-          if (data.gift) {
-            setActiveGiftEffect(data.gift);
-            playSynthSound('gift');
-            setTimeout(() => setActiveGiftEffect(null), 4000);
-          }
-          if (data.message) {
-            setChatMessages(prev => {
-              if (prev.some(m => m.id === data.message.id)) return prev;
-              return [...prev, data.message];
-            });
-          }
-        } else if (data.type === 'game_event') {
-          if (data.activeGame) setActiveGame(data.activeGame);
-          if (data.gameData) {
-            if (data.gameData.ludo) setLudo(data.gameData.ludo);
-            if (data.gameData.diceDuel) setDiceDuel(data.gameData.diceDuel);
-            if (data.gameData.wheel) {
-              setWheelDegree(data.gameData.wheel.degree);
-              setWheelResult(data.gameData.wheel.result);
-            }
-          }
-        } else if (data.type === 'reaction') {
-          if (data.emoji !== undefined && data.seatIndex !== undefined) {
-            const id = Math.random().toString();
-            setReactions(prev => [...prev, { id, emoji: data.emoji, seatIndex: data.seatIndex }]);
-            setTimeout(() => {
-              setReactions(prev => prev.filter(r => r.id !== id));
-            }, 2000);
-          }
-        } else if (data.type === 'webrtc_signal') {
-          handleWebRTCSignal(data.senderId, data.signal);
+          // webrtc_signal events are intentionally ignored — LiveKit handles audio
+        } catch (err) {
+          console.error('Failed to parse WS message:', err);
         }
-      } catch (err) {
-        console.error('Failed to parse WS message:', err);
-      }
+      };
+
+      ws.onclose = () => {
+        console.log(`🔌 [WS] Disconnected from room ${roomId}`);
+        if (isMounted) {
+          // Auto-reconnect with exponential backoff (max 8s)
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 8000);
+          reconnectAttempts++;
+          console.log(`🔄 [WS] Reconnecting in ${delay}ms (attempt ${reconnectAttempts})...`);
+          reconnectTimeout = setTimeout(connect, delay);
+        }
+      };
     };
 
-    ws.onclose = () => {
-      console.log(`🔌 [WS] Disconnected from room ${roomId}`);
-    };
+    connect();
 
-    // Polling fallback only if WebSocket is disconnected or recovering
+    // Polling fallback only if WebSocket is disconnected
     const pollInterval = setInterval(async () => {
-      if (ws.readyState === WebSocket.OPEN) return;
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
       try {
         const res = await fetch(`/api/rooms/${roomId}/seats`);
         if (res.ok) {
@@ -729,9 +671,11 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     return () => {
       isMounted = false;
       clearInterval(pollInterval);
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
 
       // Notify WebSocket and close
-      if (ws.readyState === WebSocket.OPEN) {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
         try {
           ws.send(JSON.stringify({
             type: 'leave_room',
@@ -743,14 +687,8 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         ws.close();
       }
 
-      // Close all WebRTC peer connections and audio
-      peerConnectionsRef.current.forEach(pc => pc.close());
-      peerConnectionsRef.current.clear();
-      remoteAudiosRef.current.forEach(audio => {
-        audio.pause();
-        audio.srcObject = null;
-      });
-      remoteAudiosRef.current.clear();
+      // Disconnect LiveKit voice room
+      disconnectLiveKit();
       disableMicrophone();
 
       // Backup HTTP leave call

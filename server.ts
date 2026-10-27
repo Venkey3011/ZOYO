@@ -4,177 +4,184 @@ import path from "path";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
-import mongoose from "mongoose";
 import { AccessToken } from "livekit-server-sdk";
+import { createClient } from "@supabase/supabase-js";
+
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-// MongoDB connection with Graceful Fallback
-let isMongoConnected = false;
-const MONGODB_URI = process.env.MONGODB_URI;
+// ⚡ SUPABASE REALTIME & HIGH-CONCURRENCY DATABASE (The ONLY Database)
+const SUPABASE_URL = process.env.SUPABASE_URL || "https://efiiphktyjafxcoudvfj.supabase.co";
+const SUPABASE_KEY = process.env.SUPABASE_KEY || "sb_secret_ERMVM91RFJGm7udbqXrRGw_rrDy4drF";
 
-// User database schema
-const UserSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  username: { type: String, default: '' },
-  nickname: { type: String, default: '' },
-  password: { type: String, required: true },
-  role: { type: String, enum: ['admin', 'manager', 'coin_seller', 'user'], default: 'user' },
-  avatar: { type: String, default: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80' },
-  level: { type: Number, default: 1 },
-  coins: { type: Number, default: 0 }, // Defaults to 0 since standard users cannot buy/add coins directly
-  frameId: { type: String, default: 'none' },
-  bubbleId: { type: String, default: 'none' },
-  badge: { type: String, default: '🐣 Beginner' },
-  createdBy: { type: String, default: 'self' },
-  managerId: { type: String, default: 'none' },
-  isBlocked: { type: Boolean, default: false },
-  yoyoId: { type: String },
-  gender: { type: String, default: 'Other' },
-  dateOfBirth: { type: String, default: '2005-01-01' },
-  country: { type: String, default: 'Global' },
-  phoneNumber: { type: String, default: '' },
-  email: { type: String, default: '' },
-  socialId: { type: String, default: '' },
-  socialProvider: { type: String, default: '' },
-  followersCount: { type: Number, default: 0 },
-  followingCount: { type: Number, default: 0 },
-  giftsCount: { type: Number, default: 0 },
-  visitorsCount: { type: Number, default: 0 },
-  family: { type: String, default: 'None' },
-  vipStatus: { type: String, default: 'None' },
-  bio: { type: String, default: 'Living life on ZOYO! 🌟' },
-  recentVisitors: { type: Array, default: [] }
-}, { timestamps: true });
-
-UserSchema.index({ name: 1 });
-UserSchema.index({ username: 1 });
-UserSchema.index({ email: 1 });
-UserSchema.index({ phoneNumber: 1 });
-UserSchema.index({ yoyoId: 1 });
-
-const UserMongo: any = mongoose.models.User || mongoose.model('User', UserSchema);
-
-// Catalog Schemas for Admin & Manager dynamic content creation
-const CustomGiftSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  name: { type: String, required: true },
-  coins: { type: Number, required: true },
-  icon: { type: String, required: true },
-  effect: { type: String, default: 'confetti' },
-  description: { type: String, default: '' },
-  addedBy: { type: String, default: 'Admin' },
-  createdAt: { type: Date, default: Date.now }
-});
-const CustomGiftMongo: any = mongoose.models.CustomGift || mongoose.model('CustomGift', CustomGiftSchema);
-
-const CustomFrameSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  name: { type: String, required: true },
-  price: { type: Number, required: true },
-  value: { type: String, required: true },
-  icon: { type: String, default: '✨' },
-  addedBy: { type: String, default: 'Admin' },
-  createdAt: { type: Date, default: Date.now }
-});
-const CustomFrameMongo: any = mongoose.models.CustomFrame || mongoose.model('CustomFrame', CustomFrameSchema);
-
-const CustomGameSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  name: { type: String, required: true },
-  category: { type: String, default: 'Party' },
-  icon: { type: String, default: '🎮' },
-  minPlayers: { type: Number, default: 2 },
-  maxPlayers: { type: Number, default: 4 },
-  description: { type: String, default: '' },
-  status: { type: String, default: 'active' }, // 'active', 'maintenance', 'coming_soon'
-  entryFee: { type: Number, default: 0 },
-  prizePool: { type: Number, default: 0 },
-  addedBy: { type: String, default: 'Admin' },
-  createdAt: { type: Date, default: Date.now }
-});
-const CustomGameMongo: any = mongoose.models.CustomGame || mongoose.model('CustomGame', CustomGameSchema);
-
-// Coin transfer transaction log schema
-const TransferLogSchema = new mongoose.Schema({
-  senderId: { type: String, required: true },
-  senderName: { type: String, required: true },
-  senderRole: { type: String, required: true },
-  receiverId: { type: String, required: true },
-  receiverName: { type: String, required: true },
-  amount: { type: Number, required: true },
-  type: { type: String, default: 'transfer' }, // 'transfer' | 'gift' | 'game_spend' | 'game_win' | 'recharge'
-  details: { type: String, default: '' },
-  icon: { type: String, default: '🪙' },
-  timestamp: { type: Date, default: Date.now }
+export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: false },
+  db: { schema: 'public' }
 });
 
-const TransferLogMongo: any = mongoose.models.TransferLog || mongoose.model('TransferLog', TransferLogSchema);
+let isSupabaseConnected = false;
 
-// Room schema for voice chat rooms
-const RoomSchema = new mongoose.Schema({
-  title: { type: String, required: true },
-  description: { type: String, default: '' },
-  host: { type: Object, required: true },
-  theme: { type: String, enum: ['neon', 'pink', 'royal', 'cosmic'], default: 'neon' },
-  category: { type: String, enum: ['chat', 'games', 'singing', 'match'], default: 'chat' },
-  onlineCount: { type: Number, default: 1 },
-  activeGame: { type: String, default: 'none' },
-  isOfficialGame: { type: Boolean, default: false },
-  gamePrizePool: { type: Number, default: 0 },
-  backgroundUrl: { type: String, default: '' },
-  roomImage: { type: String, default: '' },
-  isActive: { type: Boolean, default: true },
-  isPrivate: { type: Boolean, default: false },
-  roomPassword: { type: String, default: '' },
-  invitedUsers: { type: Array, default: [] },
-  roomId: { type: String, default: '' },
-  createdAt: { type: Date, default: Date.now },
-  seats: [{
-    index: { type: Number, required: true },
-    user: { type: Object, default: null },
-    isMuted: { type: Boolean, default: false },
-    isTalking: { type: Boolean, default: false }
-  }],
-  onlineUsers: { type: Array, default: [] },
-  chatMessages: [{
-    id: { type: String },
-    userId: { type: String },
-    userName: { type: String },
-    userLevel: { type: Number, default: 1 },
-    message: { type: String },
-    type: { type: String, default: 'text' },
-    giftName: { type: String },
-    giftIcon: { type: String },
-    giftCount: { type: Number },
-    timestamp: { type: String }
-  }]
-});
+// In-Memory cache for public rooms list to serve requests in <1ms
+let cachedPublicRoomsList: any[] | null = null;
+let cachedPublicRoomsTime = 0;
 
-RoomSchema.index({ roomId: 1 });
-RoomSchema.index({ isActive: 1, isPrivate: 1, createdAt: -1 });
+// ─── Data Mappers: Supabase <-> ZOYO Models ──────────────────────────────
+function supabaseToUser(row: any): any {
+  if (!row) return null;
+  return {
+    ...row,
+    id: String(row.id),
+    _id: String(row.id),
+    userId: String(row.id),
+    name: row.name || 'User',
+    username: row.username || (row.name ? row.name.toLowerCase().replace(/\s+/g, '') : ''),
+    nickname: row.nickname || row.name || '',
+    password: row.password || '',
+    role: row.role || 'user',
+    avatar: row.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
+    level: Number(row.level || 1),
+    coins: Number(row.coins !== undefined ? row.coins : 0),
+    frameId: row.frame_id || row.frameId || 'none',
+    bubbleId: row.bubble_id || row.bubbleId || 'none',
+    badge: row.badge || '🐣 Beginner',
+    yoyoId: String(row.yoyo_id || row.yoyoId || ''),
+    bio: row.bio || 'Living life on ZOYO! 🌟',
+    country: row.country || 'Global',
+    gender: row.gender || 'Other',
+    dateOfBirth: row.date_of_birth || row.dateOfBirth || '2005-01-01',
+    isBlocked: row.is_blocked !== undefined ? Boolean(row.is_blocked) : Boolean(row.isBlocked),
+    recentVisitors: Array.isArray(row.recent_visitors) ? row.recent_visitors : (Array.isArray(row.recentVisitors) ? row.recentVisitors : []),
+    followersCount: Number(row.followers_count || row.followersCount || 0),
+    followingCount: Number(row.following_count || row.followingCount || 0),
+    giftsCount: Number(row.gifts_count || row.giftsCount || 0),
+    visitorsCount: Number(row.visitors_count || row.visitorsCount || 0),
+    family: row.family || 'None',
+    vipStatus: row.vip_status || row.vipStatus || 'None',
+    createdBy: row.created_by || row.createdBy || 'system',
+    managerId: row.manager_id || row.managerId || 'none',
+    phoneNumber: row.phone_number || row.phoneNumber || '',
+    email: row.email || ''
+  };
+}
 
-const RoomMongo: any = mongoose.models.Room || mongoose.model('Room', RoomSchema);
+function userToSupabase(user: any): any {
+  if (!user) return null;
+  const supa: any = {
+    name: user.name,
+    password: user.password || '',
+    role: user.role || 'user',
+    avatar: user.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
+    level: Number(user.level || 1),
+    coins: Number(user.coins !== undefined ? user.coins : 0),
+    frame_id: user.frameId || user.frame_id || 'none',
+    bubble_id: user.bubbleId || user.bubble_id || 'none',
+    badge: user.badge || '🐣 Beginner',
+    bio: user.bio || 'Living life on ZOYO! 🌟',
+    country: user.country || 'Global',
+    gender: user.gender || 'Other',
+    date_of_birth: user.dateOfBirth || user.dateOfBirth || '2005-01-01',
+    is_blocked: Boolean(user.isBlocked ?? user.is_blocked),
+    recent_visitors: user.recentVisitors || user.recent_visitors || []
+  };
+  if (user.id || user._id) {
+    supa.id = String(user.id || user._id);
+  }
+  if (user.yoyoId || user.yoyo_id) {
+    supa.yoyo_id = String(user.yoyoId || user.yoyo_id);
+  }
+  if (user.email) supa.email = user.email;
+  return supa;
+}
 
-// Friend Request schema
-const FriendRequestSchema = new mongoose.Schema({
-  senderId: { type: String, required: true },
-  senderName: { type: String, required: true },
-  senderAvatar: { type: String, default: '' },
-  senderYoyoId: { type: String, default: '' },
-  receiverId: { type: String, required: true },
-  receiverName: { type: String, default: '' },
-  receiverYoyoId: { type: String, default: '' },
-  status: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending' },
-  createdAt: { type: Date, default: Date.now }
-});
+function supabaseToRoom(row: any): any {
+  if (!row) return null;
+  return {
+    ...row,
+    id: String(row.id),
+    _id: String(row.id),
+    roomId: String(row.id),
+    title: row.title || 'Voice Room',
+    description: row.description || '',
+    host: row.host || { id: 'host', name: 'Host', level: 1, coins: 0 },
+    theme: row.theme || 'neon',
+    category: row.category || 'chat',
+    onlineCount: Number(row.online_count || row.onlineCount || 1),
+    activeGame: row.active_game || row.activeGame || 'none',
+    isOfficialGame: Boolean(row.is_official_game ?? row.isOfficialGame),
+    gamePrizePool: Number(row.game_prize_pool || row.gamePrizePool || 0),
+    backgroundUrl: row.background_url || row.backgroundUrl || '',
+    roomImage: row.room_image || row.roomImage || '',
+    isActive: row.is_active !== undefined ? Boolean(row.is_active) : (row.isActive !== undefined ? Boolean(row.isActive) : true),
+    isPrivate: row.is_private !== undefined ? Boolean(row.is_private) : Boolean(row.isPrivate),
+    roomPassword: row.room_password || row.roomPassword || '',
+    invitedUsers: Array.isArray(row.invited_users) ? row.invited_users : (Array.isArray(row.invitedUsers) ? row.invitedUsers : []),
+    seats: Array.isArray(row.seats) ? row.seats : [],
+    onlineUsers: Array.isArray(row.online_users) ? row.online_users : (Array.isArray(row.onlineUsers) ? row.onlineUsers : []),
+    chatMessages: Array.isArray(row.chat_messages) ? row.chat_messages : (Array.isArray(row.chatMessages) ? row.chatMessages : []),
+    createdAt: row.created_at || row.createdAt || new Date().toISOString()
+  };
+}
 
-const FriendRequestMongo: any = mongoose.models.FriendRequest || mongoose.model('FriendRequest', FriendRequestSchema);
+function roomToSupabase(room: any): any {
+  if (!room) return null;
+  const id = String(room.id || room._id || room.roomId || 'room_' + Date.now());
+  return {
+    id,
+    title: room.title || 'Voice Room',
+    description: room.description || '',
+    host: room.host || {},
+    theme: room.theme || 'neon',
+    category: room.category || 'chat',
+    online_count: Number(room.onlineCount || (room.onlineUsers ? room.onlineUsers.length : 1)),
+    active_game: room.activeGame || 'none',
+    is_official_game: Boolean(room.isOfficialGame),
+    game_prize_pool: Number(room.gamePrizePool || 0),
+    background_url: room.backgroundUrl || '',
+    is_active: room.isActive !== undefined ? Boolean(room.isActive) : true,
+    is_private: Boolean(room.isPrivate),
+    room_password: room.roomPassword || '',
+    invited_users: room.invitedUsers || [],
+    seats: room.seats || [],
+    online_users: room.onlineUsers || [],
+    chat_messages: room.chatMessages ? room.chatMessages.slice(-60) : []
+  };
+}
 
-// In-memory friend requests
+function sanitizeRoom(room: any) {
+  if (!room) return room;
+  if (room.onlineUsers && Array.isArray(room.onlineUsers)) {
+    const seen = new Set<string>();
+    room.onlineUsers = room.onlineUsers.filter((u: any) => {
+      const idKey = String(u.userId || u._id || u.id || '').trim();
+      const nameKey = (u.name || '').toLowerCase().trim();
+      const dedupeKey = nameKey || idKey;
+      if (!dedupeKey || seen.has(dedupeKey)) return false;
+      seen.add(dedupeKey);
+      return true;
+    });
+    room.onlineCount = Math.max(room.onlineUsers.length, room.seats?.filter((s: any) => s.user).length || 1);
+  }
+  if (room.chatMessages && Array.isArray(room.chatMessages)) {
+    const seenMsg = new Set<string>();
+    room.chatMessages = room.chatMessages.filter((m: any) => {
+      const key = String(m.id || '');
+      if (key && seenMsg.has(key)) return false;
+      if (key) seenMsg.add(key);
+      return true;
+    });
+  }
+  if (room.seats && Array.isArray(room.seats) && room.seats[0]) {
+    if (!room.seats[0].user && room.host) {
+      room.seats[0].user = room.host;
+    }
+  }
+  return room;
+}
+
+// In-memory types
 interface InMemFriendRequest {
   _id: string;
   senderId: string;
@@ -189,24 +196,6 @@ interface InMemFriendRequest {
   createdAt: string;
 }
 const inMemoryFriendRequests: InMemFriendRequest[] = [];
-
-// Direct Message schema for 1-on-1 private chat
-const DirectMessageSchema = new mongoose.Schema({
-  senderId: { type: String, required: true },
-  senderName: { type: String, required: true },
-  senderAvatar: { type: String, default: '' },
-  senderYoyoId: { type: String, default: '' },
-  receiverId: { type: String, required: true },
-  receiverName: { type: String, required: true },
-  receiverAvatar: { type: String, default: '' },
-  receiverYoyoId: { type: String, default: '' },
-  text: { type: String, required: true },
-  voice: { type: Boolean, default: false },
-  duration: { type: Number, default: 0 },
-  createdAt: { type: Date, default: Date.now }
-});
-
-const DirectMessageMongo: any = mongoose.models.DirectMessage || mongoose.model('DirectMessage', DirectMessageSchema);
 
 interface InMemDirectMessage {
   _id: string;
@@ -225,8 +214,6 @@ interface InMemDirectMessage {
 }
 const inMemoryDirectMessages: InMemDirectMessage[] = [];
 
-
-
 interface InMemTransferLog {
   senderId: string;
   senderName: string;
@@ -239,10 +226,8 @@ interface InMemTransferLog {
   icon?: string;
   timestamp: string;
 }
-
 const inMemoryTransfers: InMemTransferLog[] = [];
 
-// In-memory rooms storage
 interface InMemRoom {
   id: string;
   title: string;
@@ -266,24 +251,35 @@ interface InMemRoom {
   chatMessages: any[];
   createdAt: string;
 }
-
 const inMemoryRooms: InMemRoom[] = [];
 
-// High-concurrency In-Memory Active Room Cache for Sub-Millisecond Room Operations & Seating
 const activeRoomsCache = new Map<string, any>();
 const roomSaveDebounceTimers = new Map<string, NodeJS.Timeout>();
 
 async function logTransfer(logData: any) {
-  if (isMongoConnected) {
-    await TransferLogMongo.create(logData).catch(() => {});
-  } else {
-    inMemoryTransfers.push({
-      ...logData,
-      timestamp: new Date().toISOString()
-    });
+  if (isSupabaseConnected) {
+    const supaLog = {
+      sender_id: String(logData.senderId),
+      sender_name: logData.senderName,
+      sender_role: logData.senderRole,
+      receiver_id: String(logData.receiverId),
+      receiver_name: logData.receiverName,
+      amount: Number(logData.amount),
+      type: logData.type || 'transfer',
+      details: logData.details || '',
+      icon: logData.icon || '🪙'
+    };
+    try {
+      await supabase.from('transfer_logs').insert(supaLog);
+    } catch (e: any) {
+      console.warn('Supabase logTransfer error:', e.message || e);
+    }
   }
+  inMemoryTransfers.push({
+    ...logData,
+    timestamp: new Date().toISOString()
+  });
 }
-
 
 // In-memory fallback database
 interface InMemUser {
@@ -409,103 +405,97 @@ function invalidateCachedUser(idOrKey: string) {
 // Pre-warm cache with in-memory users immediately
 inMemoryDB.forEach(u => setCachedUser(u));
 
-async function connectToMongo() {
-  if (!MONGODB_URI) {
-    console.warn("⚠️ MONGODB_URI environment variable is missing. Running in in-memory fallback mode.");
-    return;
-  }
+async function connectToSupabase() {
   try {
-    mongoose.set('strictQuery', true);
-    await mongoose.connect(MONGODB_URI, {
-      maxPoolSize: 50,          // Maintain pool of up to 50 concurrent sockets for instant parallel requests
-      minPoolSize: 10,          // Keep 10 idle sockets open at all times to eliminate cold connection handshakes
-      maxIdleTimeMS: 30000,     // Close idle connections after 30s
-      serverSelectionTimeoutMS: 5000,
-      connectTimeoutMS: 5000,
-      socketTimeoutMS: 20000,
-      retryWrites: true,
-      retryReads: true
-    });
-    isMongoConnected = true;
-    console.log("🔌 Connected successfully to MongoDB Atlas (High-Speed Pool, Low ms)!");
+    console.log("⚡ Connecting to Supabase as primary database...");
+    const { data: users, error } = await supabase.from('users').select('*').limit(500);
+    if (error) {
+      console.warn("⚠️ Supabase connection test returned error:", error.message);
+      console.warn("⚠️ Running in in-memory fallback mode.");
+      isSupabaseConnected = false;
+      return;
+    }
+    isSupabaseConnected = true;
+    console.log("🚀 Supabase connected successfully as the ONLY primary database!");
 
-    // Seed Admin account in MongoDB Atlas if missing
-    UserMongo.findOne({ name: "Admin" }).lean().maxTimeMS(2500).then(async (adminExists: any) => {
-      if (!adminExists) {
-        const seeded = await UserMongo.create({
-          name: "Admin",
-          username: "admin",
-          nickname: "Admin",
-          password: "Admin123", // Preseeded credentials
-          role: "admin",
-          avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80",
-          level: 99,
-          coins: 999999999,
-          frameId: "frame_royal",
-          bubbleId: "bubble_royal",
-          badge: "👑 Owner",
-          createdBy: "system",
-          managerId: "none",
-          isBlocked: false,
-          yoyoId: "888888",
-          gender: "Male",
-          dateOfBirth: "1995-10-24",
-          country: "Global",
-          followersCount: 0,
-          followingCount: 0,
-          giftsCount: 0,
-          visitorsCount: 0,
-          family: "None",
-          vipStatus: "None"
-        });
-        setCachedUser(seeded);
-        console.log("✅ Seeded Admin user in MongoDB Atlas.");
-      } else {
-        setCachedUser(adminExists);
+    // ⚡ Pre-warm user cache into RAM for 0ms sub-millisecond logins & queries
+    if (users && users.length > 0) {
+      users.forEach((u: any) => {
+        const parsed = supabaseToUser(u);
+        setCachedUser(parsed);
+        const idx = inMemoryDB.findIndex(m => (m as any).id === parsed.id || m._id === parsed.id || m.name === parsed.name);
+        if (idx !== -1) inMemoryDB[idx] = parsed;
+        else inMemoryDB.push(parsed);
+      });
+      console.log(`⚡ Pre-warmed ${users.length} users from Supabase into memory cache for instant 0ms access.`);
+    }
+
+    // Check / Seed Admin user in Supabase if missing
+    const hasAdmin = users?.some((u: any) => u.name === 'Admin' || u.yoyo_id === '888888');
+    if (!hasAdmin) {
+      const adminPayload = userToSupabase({
+        id: 'user_admin',
+        name: "Admin",
+        username: "admin",
+        nickname: "Admin",
+        password: "Admin123",
+        role: "admin",
+        avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80",
+        level: 99,
+        coins: 999999999,
+        frameId: "frame_royal",
+        bubbleId: "bubble_royal",
+        badge: "👑 Owner",
+        createdBy: "system",
+        managerId: "none",
+        isBlocked: false,
+        yoyoId: "888888",
+        gender: "Male",
+        dateOfBirth: "1995-10-24",
+        country: "Global"
+      });
+      const { data: seededAdmin } = await supabase.from('users').insert(adminPayload).select().maybeSingle();
+      if (seededAdmin) {
+        setCachedUser(supabaseToUser(seededAdmin));
+        console.log("✅ Seeded Admin user in Supabase.");
       }
-    }).catch((e: any) => console.warn('Admin seed check error:', e));
+    }
 
-    // ⚡ Pre-warm user cache from MongoDB Atlas in background for 0ms sub-millisecond logins
-    UserMongo.find({}).lean().limit(1000).then((users: any[]) => {
-      if (users && users.length > 0) {
-        users.forEach(u => setCachedUser(u));
-        console.log(`⚡ Pre-warmed ${users.length} users into in-memory cache for instant 0ms login.`);
-      }
-    }).catch((e: any) => console.warn('Cache pre-warm warning:', e));
+    // ⚡ Pre-warm active rooms cache from Supabase
+    const { data: rooms } = await supabase.from('rooms').select('*').limit(200);
+    if (rooms && rooms.length > 0) {
+      rooms.forEach((r: any) => {
+        const parsed = supabaseToRoom(r);
+        activeRoomsCache.set(String(parsed.id), parsed);
+        const idx = inMemoryRooms.findIndex(m => m.id === parsed.id);
+        if (idx !== -1) inMemoryRooms[idx] = parsed;
+        else inMemoryRooms.push(parsed);
+      });
+      const publicRooms = rooms.filter((r: any) => !r.is_private && r.is_active !== false).map((r: any) => sanitizeRoom(supabaseToRoom(r)));
+      publicRooms.forEach((r: any) => { delete r.roomPassword; });
+      cachedPublicRoomsList = publicRooms;
+      cachedPublicRoomsTime = Date.now();
+      console.log(`⚡ Pre-warmed ${publicRooms.length} public rooms from Supabase into cache for instant 0ms load.`);
+    }
 
-    // ⚡ Pre-warm public rooms cache so /api/rooms returns in <1ms after first login
-    // Use $ne: false to also catch rooms where isActive field is missing/null (legacy documents)
-    RoomMongo.find({ isActive: { $ne: false } }).lean().limit(200).then((rooms: any[]) => {
-      if (rooms && rooms.length > 0) {
-        rooms.forEach((r: any) => {
-          activeRoomsCache.set(String(r._id), r);
-          if (r.roomId) activeRoomsCache.set(r.roomId, r);
-        });
-        const publicRooms = rooms.filter((r: any) => !r.isPrivate).map((r: any) => sanitizeRoom({ ...r, id: String(r._id) }));
-        publicRooms.forEach((r: any) => { delete r.roomPassword; });
-        cachedPublicRoomsList = publicRooms;
-        cachedPublicRoomsTime = Date.now();
-        console.log(`⚡ Pre-warmed ${publicRooms.length} public rooms into cache for instant 0ms load.`);
-      } else {
-        console.log(`⚡ Pre-warmed 0 public rooms (no active rooms in DB yet).`);
-      }
-    }).catch((e: any) => console.warn('Room pre-warm warning:', e));
-
-  } catch (err) {
-    console.error("❌ MongoDB Atlas connection error:", err);
+  } catch (err: any) {
+    console.error("❌ Supabase initialization error:", err.message || err);
     console.warn("⚠️ Falling back to in-memory mode.");
+    isSupabaseConnected = false;
   }
 }
 
-connectToMongo();
+connectToSupabase();
 
-// Helper to query database depending on status
+// Helper to query all users
 async function getUsers() {
-  if (isMongoConnected) {
-    return await UserMongo.find({}, '-password').lean().maxTimeMS(3000).catch(() => inMemoryDB.map(({ password, ...u }) => u));
-  } else {
-    return inMemoryDB.map(({ password, ...u }) => u);
+  if (isSupabaseConnected) {
+    const { data, error } = await supabase.from('users').select('*');
+    if (data && !error) {
+      return data.map(supabaseToUser);
+    }
   }
+  return inMemoryDB.map(({ password, ...u }) => u);
 }
 
 async function findUserById(id: string) {
@@ -522,17 +512,18 @@ async function findUserById(id: string) {
     return memUser;
   }
 
-  if (isMongoConnected) {
-    let user = null;
-    if (mongoose.Types.ObjectId.isValid(cleanId)) {
-      user = await UserMongo.findById(cleanId).lean().maxTimeMS(1500).catch(() => null);
-    }
-    if (!user) {
-      user = await UserMongo.findOne({ $or: [{ _id: cleanId }, { id: cleanId }, { yoyoId: cleanId }, { username: cleanId }, { name: cleanId }] }).lean().maxTimeMS(1500).catch(() => null);
-    }
-    if (user) {
-      setCachedUser(user);
-      return user;
+  if (isSupabaseConnected) {
+    const { data } = await supabase
+      .from('users')
+      .select('*')
+      .or(`id.eq.${cleanId},yoyo_id.eq.${cleanId},name.ilike.${cleanId}`)
+      .limit(1)
+      .maybeSingle();
+
+    if (data) {
+      const u = supabaseToUser(data);
+      setCachedUser(u);
+      return u;
     }
   }
   return null;
@@ -546,7 +537,6 @@ async function findUserByName(name: string) {
   const cached = getCachedUser(normalized);
   if (cached) return cached;
 
-  // Check inMemoryDB fast
   const memUser = inMemoryDB.find(u =>
     u.name.toLowerCase() === normalized ||
     (u.username && u.username.toLowerCase() === normalized) ||
@@ -559,30 +549,18 @@ async function findUserByName(name: string) {
     return memUser;
   }
 
-  if (isMongoConnected) {
-    // 1. Fast indexed exact match (<2ms)
-    let user = await UserMongo.findOne({
-      $or: [
-        { username: normalized },
-        { name: normalized },
-        { email: normalized },
-        { yoyoId: normalized }
-      ]
-    }).lean().maxTimeMS(1500).catch(() => null);
+  if (isSupabaseConnected) {
+    const { data } = await supabase
+      .from('users')
+      .select('*')
+      .or(`name.ilike.${normalized},email.ilike.${normalized},yoyo_id.eq.${normalized}`)
+      .limit(1)
+      .maybeSingle();
 
-    // 2. Case-insensitive fallback
-    if (!user) {
-      user = await UserMongo.findOne({
-        $or: [
-          { username: new RegExp(`^${normalized}$`, 'i') },
-          { name: new RegExp(`^${normalized}$`, 'i') }
-        ]
-      }).lean().maxTimeMS(1500).catch(() => null);
-    }
-
-    if (user) {
-      setCachedUser(user);
-      return user;
+    if (data) {
+      const u = supabaseToUser(data);
+      setCachedUser(u);
+      return u;
     }
   }
 
@@ -602,140 +580,157 @@ async function findUserByPhone(phone: string) {
     return memUser;
   }
 
-  if (isMongoConnected) {
-    const user = await UserMongo.findOne({ phoneNumber: cleaned }).lean().maxTimeMS(1500).catch(() => null);
-    if (user) {
-      setCachedUser(user);
-      return user;
+  if (isSupabaseConnected) {
+    const { data } = await supabase
+      .from('users')
+      .select('*')
+      .eq('phone_number', cleaned)
+      .limit(1)
+      .maybeSingle();
+
+    if (data) {
+      const u = supabaseToUser(data);
+      setCachedUser(u);
+      return u;
     }
   }
+
   return null;
 }
 
 async function findUserByEmail(email: string) {
   if (!email) return null;
-  const cleaned = email.trim().toLowerCase();
+  const cleaned = email.toLowerCase().trim();
 
   const cached = getCachedUser(cleaned);
   if (cached) return cached;
 
-  const memUser = inMemoryDB.find(u => u.email?.toLowerCase() === cleaned);
+  const memUser = inMemoryDB.find(u => (u.email && u.email.toLowerCase() === cleaned));
   if (memUser) {
     setCachedUser(memUser);
     return memUser;
   }
 
-  if (isMongoConnected) {
-    const user = await UserMongo.findOne({ email: cleaned }).lean().maxTimeMS(1500).catch(() => null);
-    if (user) {
-      setCachedUser(user);
-      return user;
+  if (isSupabaseConnected) {
+    const { data } = await supabase
+      .from('users')
+      .select('*')
+      .ilike('email', cleaned)
+      .limit(1)
+      .maybeSingle();
+
+    if (data) {
+      const u = supabaseToUser(data);
+      setCachedUser(u);
+      return u;
     }
   }
+
   return null;
 }
 
 async function findUserBySocial(provider: string, socialId: string) {
   if (!provider || !socialId) return null;
-  const cached = getCachedUser(socialId);
-  if (cached) return cached;
 
-  if (isMongoConnected) {
-    const user = await UserMongo.findOne({ socialProvider: provider, socialId: socialId }).lean().maxTimeMS(1500).catch(() => null);
-    if (user) {
-      setCachedUser(user);
-      return user;
+  const memUser = inMemoryDB.find(u => u.socialProvider === provider && u.socialId === socialId);
+  if (memUser) {
+    setCachedUser(memUser);
+    return memUser;
+  }
+
+  if (isSupabaseConnected) {
+    const { data } = await supabase
+      .from('users')
+      .select('*')
+      .or(`id.eq.${socialId},email.ilike.${socialId}`)
+      .limit(1)
+      .maybeSingle();
+
+    if (data) {
+      const u = supabaseToUser(data);
+      setCachedUser(u);
+      return u;
     }
   }
-  return inMemoryDB.find(u => u.socialProvider === provider && u.socialId === socialId) || null;
+
+  return null;
 }
 
-
-
-async function createUser(userData: any) {
-  const generatedId = userData.yoyoId || Math.floor(100000 + Math.random() * 900000).toString();
-  const followers = userData.followersCount !== undefined ? userData.followersCount : 0;
-  const following = userData.followingCount !== undefined ? userData.followingCount : 0;
-  const visitors = userData.visitorsCount !== undefined ? userData.visitorsCount : 0;
-  const family = userData.family || "None";
-  const vipStatus = userData.vipStatus || "None";
-
-  const fullData = {
-    ...userData,
-    yoyoId: generatedId,
-    followersCount: followers,
-    followingCount: following,
-    visitorsCount: visitors,
-    family: family,
-    vipStatus: vipStatus
+async function createUser(fullData: any) {
+  let createdUser = null;
+  const newUserId = fullData.id || fullData._id || 'user_' + Date.now();
+  const userObj = {
+    ...fullData,
+    id: newUserId,
+    _id: newUserId,
+    userId: newUserId
   };
 
-  let createdUser: any = null;
-  if (isMongoConnected) {
-    createdUser = await UserMongo.create(fullData);
-  } else {
-    const newUser: InMemUser = {
-      _id: `user_${Date.now()}`,
-      name: fullData.name,
-      username: fullData.username || fullData.name,
-      nickname: fullData.nickname || fullData.name,
-      password: fullData.password,
-      role: fullData.role || 'user',
-      avatar: fullData.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
-      level: 1,
-      coins: fullData.coins || 0,
-      frameId: 'none',
-      bubbleId: 'none',
-      badge: '🐣 Beginner',
-      createdBy: fullData.createdBy || 'self',
-      managerId: fullData.managerId || 'none',
-      isBlocked: fullData.isBlocked || false,
-      yoyoId: generatedId,
-      gender: fullData.gender || 'Other',
-      dateOfBirth: fullData.dateOfBirth || '2005-01-01',
-      country: fullData.country || 'Global',
-      phoneNumber: fullData.phoneNumber || '',
-      email: fullData.email || '',
-      socialId: fullData.socialId || '',
-      socialProvider: fullData.socialProvider || '',
-      followersCount: followers,
-      followingCount: following,
-      giftsCount: fullData.giftsCount || 0,
-      visitorsCount: visitors,
-      family: family,
-      vipStatus: vipStatus
-    };
-    inMemoryDB.push(newUser);
-    createdUser = newUser;
+  if (isSupabaseConnected) {
+    try {
+      const supaPayload = userToSupabase(userObj);
+      const { data, error } = await supabase.from('users').insert(supaPayload).select().maybeSingle();
+      if (data && !error) {
+        createdUser = supabaseToUser(data);
+      } else if (error) {
+        console.warn('Supabase createUser warning:', error.message);
+      }
+    } catch (e) {
+      console.warn('Supabase createUser exception:', e);
+    }
   }
+
+  if (!createdUser) {
+    inMemoryDB.push(userObj);
+    createdUser = userObj;
+  }
+
   if (createdUser) {
     setCachedUser(createdUser);
   }
   return createdUser;
 }
 
-
 async function updateUser(id: string, updateData: any) {
   invalidateCachedUser(id);
-  if (isMongoConnected) {
+  const cleanId = String(id);
+  
+  if (isSupabaseConnected) {
     try {
-      let updated = null;
-      if (mongoose.Types.ObjectId.isValid(id)) {
-        updated = await UserMongo.findByIdAndUpdate(id, { $set: updateData }, { returnDocument: 'after' }).lean().maxTimeMS(2000);
-      } else {
-        updated = await UserMongo.findOneAndUpdate(
-          { $or: [{ username: id }, { name: id }, { yoyoId: id }] },
-          { $set: updateData },
-          { returnDocument: 'after' }
-        ).lean().maxTimeMS(2000);
+      const supaData: any = {};
+      if (updateData.name !== undefined) supaData.name = updateData.name;
+      if (updateData.coins !== undefined) supaData.coins = updateData.coins;
+      if (updateData.level !== undefined) supaData.level = updateData.level;
+      if (updateData.role !== undefined) supaData.role = updateData.role;
+      if (updateData.avatar !== undefined) supaData.avatar = updateData.avatar;
+      if (updateData.frameId !== undefined) supaData.frame_id = updateData.frameId;
+      if (updateData.bubbleId !== undefined) supaData.bubble_id = updateData.bubbleId;
+      if (updateData.badge !== undefined) supaData.badge = updateData.badge;
+      if (updateData.bio !== undefined) supaData.bio = updateData.bio;
+      if (updateData.country !== undefined) supaData.country = updateData.country;
+      if (updateData.gender !== undefined) supaData.gender = updateData.gender;
+      if (updateData.dateOfBirth !== undefined) supaData.date_of_birth = updateData.dateOfBirth;
+      if (updateData.isBlocked !== undefined) supaData.is_blocked = Boolean(updateData.isBlocked);
+      if (updateData.recentVisitors !== undefined) supaData.recent_visitors = updateData.recentVisitors;
+
+      const { data, error } = await supabase
+        .from('users')
+        .update(supaData)
+        .or(`id.eq.${cleanId},yoyo_id.eq.${cleanId},name.eq.${cleanId}`)
+        .select()
+        .maybeSingle();
+
+      if (data && !error) {
+        const u = supabaseToUser(data);
+        setCachedUser(u);
+        return u;
       }
-      if (updated) setCachedUser(updated);
-      return updated;
     } catch (err) {
-      console.warn(`[updateUser] Error updating user ${id}:`, err);
+      console.warn(`[updateUser] Error updating user ${id} in Supabase:`, err);
     }
   }
-  const index = inMemoryDB.findIndex(u => u._id === id || (u as any).id === id || u.name === id);
+
+  const index = inMemoryDB.findIndex(u => u._id === cleanId || (u as any).id === cleanId || u.name === cleanId);
   if (index !== -1) {
     inMemoryDB[index] = { ...inMemoryDB[index], ...updateData };
     setCachedUser(inMemoryDB[index]);
@@ -744,10 +739,8 @@ async function updateUser(id: string, updateData: any) {
   return null;
 }
 
-
 // --- API ENDPOINTS ---
 
-// App version & build information for instant mobile auto-update
 const APP_VERSION = '1.0.0';
 const APP_BUILD_TIME = Date.now();
 
@@ -759,325 +752,18 @@ app.get("/api/version", (req, res) => {
   });
 });
 
-// Server health / db status
-app.get("/api/db-status", (req, res) => {
+app.get("/api/health", (req, res) => {
   res.json({
-    connected: isMongoConnected,
-    mode: isMongoConnected ? "MongoDB Atlas" : "In-Memory Fallback",
-    mongoActive: isMongoConnected
+    status: "ok",
+    database: "Supabase",
+    connected: isSupabaseConnected,
+    mode: isSupabaseConnected ? "Supabase (High-Concurrency Realtime)" : "In-Memory Fallback",
+    supabaseActive: isSupabaseConnected,
+    cachedUsers: activeUsersCache.size,
+    activeRooms: activeRoomsCache.size
   });
 });
 
-// LiveKit token endpoint for seamless voice chat
-const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || 'devkey';
-const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || 'devsecret00000000000000000000000';
-const LIVEKIT_URL = process.env.LIVEKIT_URL || 'ws://localhost:7880';
-
-app.post("/api/livekit/token", async (req: express.Request, res: express.Response) => {
-  try {
-    const { userId, userName, roomId } = req.body;
-    if (!userId || !roomId) {
-      return res.status(400).json({ error: "userId and roomId required" });
-    }
-    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
-      identity: String(userId),
-      name: String(userName || userId),
-      ttl: '4h'
-    });
-    at.addGrant({ roomJoin: true, room: String(roomId), canPublish: true, canSubscribe: true });
-    const token = await at.toJwt();
-    res.json({ success: true, token, url: LIVEKIT_URL });
-  } catch (err) {
-    console.error('LiveKit token error:', err);
-    res.status(500).json({ error: "Failed to generate LiveKit token" });
-  }
-});
-
-
-// Active in-memory store for OTPs
-const activeOTPs = new Map<string, { code: string; expiresAt: number }>();
-
-// Send OTP endpoint
-app.post("/api/auth/send-otp", async (req: express.Request, res: express.Response) => {
-  try {
-    const { phoneNumber, purpose } = req.body;
-    if (!phoneNumber) {
-      res.status(400).json({ error: "Phone number is required." });
-      return;
-    }
-
-    const cleanedPhone = phoneNumber.trim();
-
-    // If purpose is login, ensure the user exists
-    if (purpose === 'login') {
-      const user = await findUserByPhone(cleanedPhone);
-      if (!user) {
-        res.status(400).json({ error: "No user is registered with this phone number. Please sign up first!" });
-        return;
-      }
-    }
-
-    // Generate a beautiful random 6-digit OTP code
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes validity
-
-    activeOTPs.set(cleanedPhone, { code, expiresAt });
-
-    console.log(`[SMS OTP SIMULATION] Code sent to ${cleanedPhone}: ${code}`);
-
-    res.json({
-      success: true,
-      message: `OTP sent successfully to ${cleanedPhone}`,
-      otp: code // Returned for easy simulation and user experience
-    });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to send OTP code." });
-  }
-});
-
-// Verify OTP endpoint
-app.post("/api/auth/verify-otp", async (req: express.Request, res: express.Response) => {
-  try {
-    const { phoneNumber, otp } = req.body;
-    if (!phoneNumber || !otp) {
-      res.status(400).json({ error: "Phone number and OTP code are required." });
-      return;
-    }
-
-    const cleanedPhone = phoneNumber.trim();
-    const active = activeOTPs.get(cleanedPhone);
-
-    if (!active) {
-      res.status(400).json({ error: "No OTP code was sent to this number." });
-      return;
-    }
-
-    if (Date.now() > active.expiresAt) {
-      activeOTPs.delete(cleanedPhone);
-      res.status(400).json({ error: "OTP code has expired. Please send a new code." });
-      return;
-    }
-
-    if (active.code !== otp.trim()) {
-      res.status(400).json({ error: "Invalid OTP code." });
-      return;
-    }
-
-    res.json({ success: true, message: "OTP code verified successfully!" });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to verify OTP." });
-  }
-});
-
-// Login via OTP endpoint
-app.post("/api/auth/login-otp", async (req: express.Request, res: express.Response) => {
-  try {
-    const { phoneNumber, otp } = req.body;
-    if (!phoneNumber || !otp) {
-      res.status(400).json({ error: "Phone number and OTP code are required." });
-      return;
-    }
-
-    const cleanedPhone = phoneNumber.trim();
-    const active = activeOTPs.get(cleanedPhone);
-
-    if (!active || active.code !== otp.trim()) {
-      res.status(400).json({ error: "Invalid or expired OTP code." });
-      return;
-    }
-
-    if (Date.now() > active.expiresAt) {
-      res.status(400).json({ error: "OTP code has expired." });
-      return;
-    }
-
-    // Find registered user
-    const user = await findUserByPhone(cleanedPhone);
-    if (!user) {
-      res.status(400).json({ error: "No user found with this phone number. Please register first." });
-      return;
-    }
-
-    if (user.isBlocked) {
-      res.status(403).json({ error: "Your account is blocked. Please contact your administrator." });
-      return;
-    }
-
-    // Clear active OTP
-    activeOTPs.delete(cleanedPhone);
-
-    const { password: _, ...safeUser } = (user as any).toObject ? (user as any).toObject() : user;
-    res.json({ success: true, user: safeUser });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to log in with OTP." });
-  }
-});
-
-// Login endpoint (Standard with username/password)
-app.post("/api/auth/login", async (req: express.Request, res: express.Response) => {
-  try {
-    const { username, password } = req.body;
-    if (!username || !password) {
-      res.status(400).json({ error: "Username and password are required" });
-      return;
-    }
-
-    const trimmedInput = String(username).trim();
-    const trimmedPassword = String(password).trim();
-
-    // ⚡ 0ms Fast path: Search by name/username/email in cache & DB
-    let user = await findUserByName(trimmedInput);
-    if (!user && trimmedInput.includes('@')) {
-      user = await findUserByEmail(trimmedInput);
-    }
-    if (!user) {
-      res.status(401).json({ error: "User not found. Check your username or email." });
-      return;
-    }
-
-    if (user.password !== trimmedPassword) {
-      res.status(401).json({ error: "Invalid password" });
-      return;
-    }
-
-    if (user.isBlocked) {
-      res.status(403).json({ error: "Your account is blocked. Please contact your administrator or manager." });
-      return;
-    }
-
-    // Refresh user cache on login for fast subsequent requests
-    setCachedUser(user);
-
-    // Success
-    const { password: _, ...safeUser } = (user as any).toObject ? (user as any).toObject() : user;
-    res.json({ success: true, user: safeUser });
-  } catch (error) {
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-
-// Signup endpoint (With mandatory profile & email/phone fields)
-app.post("/api/auth/signup", async (req: express.Request, res: express.Response) => {
-  try {
-    const { username, nickname, password, avatar, coins, gender, dateOfBirth, country, phoneNumber, email } = req.body;
-    
-    if (!username || !password || !gender || !dateOfBirth || !country || (!phoneNumber && !email)) {
-      res.status(400).json({ error: "All details (Username, Nickname, Password, Email/Phone, Gender, Date of Birth, and Country) are mandatory." });
-      return;
-    }
-
-    // Validate username is alphanumeric/underscores only
-    if (!/^[a-z0-9_]{3,24}$/.test(username)) {
-      res.status(400).json({ error: "Username must be 3-24 characters (letters, numbers, underscore only)." });
-      return;
-    }
-
-    // Enforce unique username (handle)
-    const existingName = await findUserByName(username);
-    if (existingName) {
-      res.status(400).json({ error: "This username is already taken. Try another @handle." });
-      return;
-    }
-
-    // Enforce unique email
-    if (email) {
-      const existingEmail = await findUserByEmail(email);
-      if (existingEmail) {
-        res.status(400).json({ error: "This email address is already registered. Please login instead." });
-        return;
-      }
-    }
-
-    if (phoneNumber) {
-      const existingPhone = await findUserByPhone(phoneNumber);
-      if (existingPhone) {
-        res.status(400).json({ error: "This phone number is already registered. Please login instead." });
-        return;
-      }
-    }
-
-    // Display name = nickname if provided, else fall back to username
-    const displayName = (nickname || username).trim();
-
-    const newUser = await createUser({
-      name: displayName,
-      username: username.trim().toLowerCase(),
-      nickname: displayName,
-      password: password.trim(),
-      role: 'user',
-      avatar: avatar,
-      coins: Number(coins) || 0,
-      gender: gender,
-      dateOfBirth: dateOfBirth,
-      country: country,
-      phoneNumber: phoneNumber ? phoneNumber.trim() : '',
-      email: email ? email.trim().toLowerCase() : ''
-    });
-
-    const { password: _, ...safeUser } = (newUser as any).toObject ? (newUser as any).toObject() : newUser;
-    res.json({ success: true, user: safeUser });
-  } catch (error) {
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// Social Login or Signup fallback
-app.post("/api/auth/social-login", async (req: express.Request, res: express.Response) => {
-  try {
-    const { email, name, avatar, provider, socialId } = req.body;
-    if (!email || !provider || !socialId) {
-      res.status(400).json({ error: "Missing mandatory social attributes (email, provider, socialId)" });
-      return;
-    }
-
-    // Check if user is blocked or exists
-    let user = await findUserBySocial(provider, socialId);
-    if (!user) {
-      // Also try to find by email to prevent duplicate registration
-      user = await findUserByEmail(email);
-    }
-
-    if (user) {
-      if (user.isBlocked) {
-        res.status(403).json({ error: "Your account is blocked. Please contact your administrator." });
-        return;
-      }
-      const { password: _, ...safeUser } = (user as any).toObject ? (user as any).toObject() : user;
-      res.json({ success: true, user: safeUser, isNewUser: false });
-      return;
-    }
-
-    // Automatically create a new user profile upon social sign-in
-    let finalUsername = name ? name.trim() : `zoyo_${provider}_${Math.floor(1000 + Math.random() * 9000)}`;
-    const nameExists = await findUserByName(finalUsername);
-    if (nameExists) {
-      finalUsername = `${finalUsername}_${Math.floor(100 + Math.random() * 900)}`;
-    }
-
-    const newUser = await createUser({
-      name: finalUsername,
-      password: `oauth_${Math.floor(100000 + Math.random() * 900000)}`, // Social accounts do not require manual password entry
-      email: email.trim().toLowerCase(),
-      avatar: avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
-      role: 'user',
-      coins: 0,
-      gender: 'Other',
-      dateOfBirth: '2005-01-01',
-      country: 'Global',
-      socialId: socialId,
-      socialProvider: provider
-    });
-
-    const { password: _, ...safeUser } = (newUser as any).toObject ? (newUser as any).toObject() : newUser;
-    res.json({ success: true, user: safeUser, isNewUser: true });
-  } catch (err) {
-    console.error("Social login failure:", err);
-    res.status(500).json({ error: "Failed to authenticate via social partner." });
-  }
-});
-
-// Get all users (for Admin and Managers)
 app.get("/api/users", async (req: express.Request, res: express.Response) => {
   try {
     const users = await getUsers();
@@ -1183,8 +869,8 @@ app.post("/api/users/create-sub-user", async (req: express.Request, res: express
 app.delete("/api/users/:id", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-    if (isMongoConnected) {
-      await UserMongo.findByIdAndDelete(id);
+    if (isSupabaseConnected) {
+      await supabase.from('users').delete().or(`id.eq.${id},yoyo_id.eq.${id}`);
     }
     const idx = inMemoryDB.findIndex(u => u._id === id || (u as any).id === id);
     if (idx !== -1) {
@@ -1331,10 +1017,14 @@ app.post("/api/users/:id/coins", async (req: express.Request, res: express.Respo
 // Admin-Only Transfer Logs Ledger Endpoint
 app.get("/api/transfers", async (req: express.Request, res: express.Response) => {
   try {
-    if (isMongoConnected) {
-      const logs = await TransferLogMongo.find({}).sort({ timestamp: -1 });
-      res.json({ success: true, transfers: logs });
-    } else {
+    if (isSupabaseConnected) {
+      const { data } = await supabase.from('transfer_logs').select('*').order('created_at', { ascending: false }).limit(200);
+      if (data) {
+        const mapped = data.map((d: any) => ({ id: d.id, senderId: d.sender_id, senderName: d.sender_name, senderRole: d.sender_role, receiverId: d.receiver_id, receiverName: d.receiver_name, amount: d.amount, type: d.type, details: d.details, icon: d.icon, timestamp: d.created_at }));
+        return res.json({ success: true, transfers: mapped });
+      }
+    }
+    if (true) {
       res.json({ success: true, transfers: [...inMemoryTransfers].reverse() });
     }
   } catch (error) {
@@ -1349,11 +1039,13 @@ app.get("/api/users/:id/transactions", async (req: express.Request, res: express
     const { id } = req.params;
     const limit = Math.min(parseInt(String(req.query.limit || '50')), 100);
     let logs: any[] = [];
-    if (isMongoConnected) {
-      logs = await TransferLogMongo.find({
-        $or: [{ senderId: id }, { receiverId: id }]
-      }).sort({ timestamp: -1 }).limit(limit).lean();
-    } else {
+    if (isSupabaseConnected) {
+      const { data } = await supabase.from('transfer_logs').select('*').or(`sender_id.eq.${id},receiver_id.eq.${id}`).order('created_at', { ascending: false }).limit(limit);
+      if (data) {
+        logs = data.map((d: any) => ({ id: d.id, senderId: d.sender_id, senderName: d.sender_name, senderRole: d.sender_role, receiverId: d.receiver_id, receiverName: d.receiver_name, amount: d.amount, type: d.type, details: d.details, icon: d.icon, timestamp: d.created_at }));
+      }
+    }
+    if (!logs || logs.length === 0) {
       logs = inMemoryTransfers
         .filter((t: any) => t.senderId === id || t.receiverId === id)
         .slice(0, limit)
@@ -1372,15 +1064,8 @@ app.get("/api/users/:id/profile", async (req: express.Request, res: express.Resp
   try {
     const { id } = req.params;
     let user: any = null;
-    if (isMongoConnected) {
-      if (mongoose.Types.ObjectId.isValid(id)) {
-        user = await UserMongo.findById(id, '-password').lean();
-      } else {
-        user = await UserMongo.findOne({ $or: [{ name: id }, { yoyoId: id }] }, '-password').lean();
-      }
-    } else {
-      user = inMemoryDB.find(u => u._id === id || (u as any).id === id || u.name.toLowerCase() === id.toLowerCase() || u.yoyoId === id);
-    }
+    user = await findUserById(id);
+    if (!user) user = await findUserByName(id);
 
     if (!user) {
       res.status(404).json({ error: "User not found" });
@@ -1465,17 +1150,7 @@ app.get("/api/catalog/gifts", async (req: express.Request, res: express.Response
       return;
     }
 
-    if (isMongoConnected) {
-      const dbGifts = await CustomGiftMongo.find({}).sort({ createdAt: -1 }).lean();
-      const combined = [...dbGifts];
-      for (const def of inMemoryCustomGifts) {
-        if (!combined.some(g => g.id === def.id)) {
-          combined.push(def);
-        }
-      }
-      cachedCatalogGifts = combined;
-      res.json({ success: true, gifts: combined });
-    } else {
+    if (true) {
       cachedCatalogGifts = inMemoryCustomGifts;
       res.json({ success: true, gifts: inMemoryCustomGifts });
     }
@@ -1510,9 +1185,7 @@ app.post("/api/catalog/gifts", async (req: express.Request, res: express.Respons
       addedBy: addedBy || 'Staff'
     };
 
-    if (isMongoConnected) {
-      await CustomGiftMongo.create(newGift);
-    }
+    // Gift saved in memory
     inMemoryCustomGifts.unshift(newGift);
 
     cachedCatalogGifts = null;
@@ -1527,9 +1200,7 @@ app.post("/api/catalog/gifts", async (req: express.Request, res: express.Respons
 app.delete("/api/catalog/gifts/:id", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-    if (isMongoConnected) {
-      await CustomGiftMongo.deleteOne({ id });
-    }
+    // Gift deleted from memory
     const idx = inMemoryCustomGifts.findIndex(g => g.id === id);
     if (idx !== -1) inMemoryCustomGifts.splice(idx, 1);
     cachedCatalogGifts = null;
@@ -1549,17 +1220,7 @@ app.get("/api/catalog/frames", async (req: express.Request, res: express.Respons
       return;
     }
 
-    if (isMongoConnected) {
-      const dbFrames = await CustomFrameMongo.find({}).sort({ createdAt: -1 }).lean();
-      const combined = [...dbFrames];
-      for (const def of inMemoryCustomFrames) {
-        if (!combined.some(f => f.id === def.id)) {
-          combined.push(def);
-        }
-      }
-      cachedCatalogFrames = combined;
-      res.json({ success: true, frames: combined });
-    } else {
+    if (true) {
       cachedCatalogFrames = inMemoryCustomFrames;
       res.json({ success: true, frames: inMemoryCustomFrames });
     }
@@ -1592,9 +1253,7 @@ app.post("/api/catalog/frames", async (req: express.Request, res: express.Respon
       addedBy: addedBy || 'Staff'
     };
 
-    if (isMongoConnected) {
-      await CustomFrameMongo.create(newFrame);
-    }
+    // Frame saved in memory
     inMemoryCustomFrames.unshift(newFrame);
     cachedCatalogFrames = null;
     res.json({ success: true, frame: newFrame });
@@ -1608,9 +1267,7 @@ app.post("/api/catalog/frames", async (req: express.Request, res: express.Respon
 app.delete("/api/catalog/frames/:id", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-    if (isMongoConnected) {
-      await CustomFrameMongo.deleteOne({ id });
-    }
+    // Frame deleted from memory
     const idx = inMemoryCustomFrames.findIndex(f => f.id === id);
     if (idx !== -1) inMemoryCustomFrames.splice(idx, 1);
     cachedCatalogFrames = null;
@@ -1630,8 +1287,19 @@ app.get("/api/catalog/games", async (req: express.Request, res: express.Response
       return;
     }
 
-    if (isMongoConnected) {
-      const dbGames = await CustomGameMongo.find({}).sort({ createdAt: -1 }).lean();
+    if (isSupabaseConnected) {
+      const { data } = await supabase.from('custom_games').select('*').order('created_at', { ascending: false });
+      const dbGames = (data || []).map((g: any) => ({
+        id: g.id,
+        name: g.name,
+        category: g.category,
+        icon: g.icon,
+        minPlayers: g.min_players,
+        maxPlayers: g.max_players,
+        description: g.description,
+        addedBy: g.added_by,
+        status: 'active'
+      }));
       const combined = [...dbGames];
       for (const def of inMemoryCustomGames) {
         if (!combined.some(g => g.id === def.id)) {
@@ -1639,8 +1307,9 @@ app.get("/api/catalog/games", async (req: express.Request, res: express.Response
         }
       }
       cachedCatalogGames = combined;
-      res.json({ success: true, games: combined });
-    } else {
+      return res.json({ success: true, games: combined });
+    }
+    if (true) {
       cachedCatalogGames = inMemoryCustomGames;
       res.json({ success: true, games: inMemoryCustomGames });
     }
@@ -1676,8 +1345,17 @@ app.post("/api/catalog/games", async (req: express.Request, res: express.Respons
       addedBy: addedBy || 'Staff'
     };
 
-    if (isMongoConnected) {
-      await CustomGameMongo.create(newGame);
+    if (isSupabaseConnected) {
+      await supabase.from('custom_games').insert({
+        id: newGame.id,
+        name: newGame.name,
+        category: newGame.category,
+        icon: newGame.icon,
+        min_players: newGame.minPlayers,
+        max_players: newGame.maxPlayers,
+        description: newGame.description,
+        added_by: newGame.addedBy
+      });
     }
     inMemoryCustomGames.unshift(newGame);
     cachedCatalogGames = null;
@@ -1692,8 +1370,8 @@ app.post("/api/catalog/games", async (req: express.Request, res: express.Respons
 app.delete("/api/catalog/games/:id", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-    if (isMongoConnected) {
-      await CustomGameMongo.deleteOne({ id });
+    if (isSupabaseConnected) {
+      await supabase.from('custom_games').delete().eq('id', id);
     }
     const idx = inMemoryCustomGames.findIndex(g => g.id === id);
     if (idx !== -1) inMemoryCustomGames.splice(idx, 1);
@@ -1724,8 +1402,14 @@ app.patch("/api/catalog/games/:id", async (req: express.Request, res: express.Re
     if (entryFee !== undefined) updates.entryFee = Number(entryFee);
     if (prizePool !== undefined) updates.prizePool = Number(prizePool);
 
-    if (isMongoConnected) {
-      await CustomGameMongo.findOneAndUpdate({ id }, { $set: updates }, { returnDocument: 'after' });
+    if (isSupabaseConnected) {
+      const supaUpdates: any = {};
+      if (updates.name) supaUpdates.name = updates.name;
+      if (updates.category) supaUpdates.category = updates.category;
+      if (updates.minPlayers) supaUpdates.min_players = updates.minPlayers;
+      if (updates.maxPlayers) supaUpdates.max_players = updates.maxPlayers;
+      if (updates.description) supaUpdates.description = updates.description;
+      await supabase.from('custom_games').update(supaUpdates).eq('id', id);
     }
     cachedCatalogGames = null;
     const inMem = inMemoryCustomGames.find(g => g.id === id);
@@ -1833,36 +1517,32 @@ async function getRoom(id: string) {
     return sanitizeRoom(activeRoomsCache.get(cleanId));
   }
 
-  // 2. Query MongoDB Atlas if connected
-  if (isMongoConnected) {
+  // 2. Query Supabase
+  if (isSupabaseConnected) {
     try {
-      let room = null;
-      if (mongoose.Types.ObjectId.isValid(cleanId)) {
-        room = await RoomMongo.findById(cleanId).lean().maxTimeMS(2000);
-      }
-      if (!room) {
-        room = await RoomMongo.findOne({ $or: [{ roomId: cleanId }, { id: cleanId }] }).lean().maxTimeMS(2000);
-      }
-      if (room) {
-        // lean() returns plain object; normalise _id to string id
-        (room as any).id = String((room as any)._id);
+      const { data, error } = await supabase
+        .from('rooms')
+        .select('*')
+        .or(`id.eq.${cleanId},title.ilike.${cleanId}`)
+        .limit(1)
+        .maybeSingle();
+
+      if (data && !error) {
+        const room = supabaseToRoom(data);
         activeRoomsCache.set(cleanId, room);
-        activeRoomsCache.set(String(room._id), room);
-        if (room.roomId) activeRoomsCache.set(String(room.roomId), room);
-        if ((room as any).id) activeRoomsCache.set(String((room as any).id), room);
+        activeRoomsCache.set(String(room.id), room);
         return sanitizeRoom(room);
       }
     } catch (err) {
-      console.warn(`[getRoom] MongoDB query error for ${cleanId}:`, err);
+      console.warn(`[getRoom] Supabase query error for ${cleanId}:`, err);
     }
   }
 
   // 3. Fallback to inMemoryRooms
-  const room = inMemoryRooms.find(r => r.id === cleanId || r.roomId === cleanId || (r as any)._id === cleanId);
+  const room = inMemoryRooms.find(r => r.id === cleanId || r.roomId === cleanId);
   if (room) {
     activeRoomsCache.set(cleanId, room);
     if (room.id) activeRoomsCache.set(String(room.id), room);
-    if (room.roomId) activeRoomsCache.set(String(room.roomId), room);
     return sanitizeRoom(room);
   }
 
@@ -1871,23 +1551,20 @@ async function getRoom(id: string) {
 
 async function saveRoom(room: any) {
   if (!room) return;
-  const id = String(room._id || room.id || room.roomId || '');
+  const id = String(room.id || room._id || room.roomId || '');
   if (!id) return;
 
-  // 1. Instant update in activeRoomsCache for sub-millisecond response
+  // 1. Instant update in activeRoomsCache for sub-millisecond response (<0.1ms)
   activeRoomsCache.set(id, room);
-  if (room._id) activeRoomsCache.set(String(room._id), room);
   if (room.id) activeRoomsCache.set(String(room.id), room);
-  if (room.roomId) activeRoomsCache.set(String(room.roomId), room);
+  if (room._id) activeRoomsCache.set(String(room._id), room);
 
-  // Also keep inMemoryRooms in sync if present
-  const memIdx = inMemoryRooms.findIndex(r => r.id === id || r.roomId === id || (r as any)._id === id);
+  const memIdx = inMemoryRooms.findIndex(r => r.id === id || r.roomId === id);
   if (memIdx !== -1) {
     inMemoryRooms[memIdx] = { ...room };
   }
 
-  // 2. Debounced asynchronous persist to database (MongoDB Atlas)
-  // This shields database from high-frequency seat and chat traffic
+  // 2. Debounced asynchronous persist to Supabase
   const existingTimer = roomSaveDebounceTimers.get(id);
   if (existingTimer) {
     clearTimeout(existingTimer);
@@ -1896,63 +1573,18 @@ async function saveRoom(room: any) {
   const timer = setTimeout(async () => {
     roomSaveDebounceTimers.delete(id);
     try {
-      if (isMongoConnected) {
-        const { _id, __v, ...update } = room;
-        const targetId = String(_id || room.id || id);
-        if (mongoose.Types.ObjectId.isValid(targetId)) {
-          await RoomMongo.updateOne({ _id: targetId }, { $set: update }).maxTimeMS(2500);
-        } else if (room.roomId) {
-          await RoomMongo.updateOne({ roomId: room.roomId }, { $set: update }).maxTimeMS(2500);
-        } else {
-          await RoomMongo.updateOne({ id: targetId }, { $set: update }).maxTimeMS(2500);
-        }
+      if (isSupabaseConnected) {
+        const supaRow = roomToSupabase(room);
+        await supabase.from('rooms').upsert(supaRow);
       }
     } catch (err) {
-      console.warn(`[RoomPersistence] Failed to persist room ${id}:`, err);
+      console.warn(`[saveRoom] Failed to persist room ${id} to Supabase:`, err);
     }
-  }, 250);
+  }, 200);
 
   roomSaveDebounceTimers.set(id, timer);
 }
 
-// Strict Room Sanitization Helper to eliminate all duplicate users and messages
-function sanitizeRoom(room: any) {
-  if (!room) return room;
-
-  // Deduplicate online users by username or userId
-  if (room.onlineUsers && Array.isArray(room.onlineUsers)) {
-    const seen = new Set<string>();
-    room.onlineUsers = room.onlineUsers.filter((u: any) => {
-      const idKey = String(u.userId || u._id || u.id || '').trim();
-      const nameKey = (u.name || '').toLowerCase().trim();
-      const dedupeKey = nameKey || idKey;
-      if (!dedupeKey || seen.has(dedupeKey)) return false;
-      seen.add(dedupeKey);
-      return true;
-    });
-    room.onlineCount = Math.max(room.onlineUsers.length, room.seats?.filter((s: any) => s.user).length || 1);
-  }
-
-  // Deduplicate chat messages by message id
-  if (room.chatMessages && Array.isArray(room.chatMessages)) {
-    const seenMsg = new Set<string>();
-    room.chatMessages = room.chatMessages.filter((m: any) => {
-      const key = String(m.id || '');
-      if (key && seenMsg.has(key)) return false;
-      if (key) seenMsg.add(key);
-      return true;
-    });
-  }
-
-  // Ensure seat 0 is permanently anchored with the room host
-  if (room.seats && Array.isArray(room.seats) && room.seats[0]) {
-    if (!room.seats[0].user && room.host) {
-      room.seats[0].user = room.host;
-    }
-  }
-
-  return room;
-}
 
 function addOnlineUserToRoom(room: any, user: any) {
   if (!room.onlineUsers) room.onlineUsers = [];
@@ -2040,41 +1672,46 @@ app.post("/api/friend-requests", async (req: express.Request, res: express.Respo
     if (!senderId || !receiverId) { res.status(400).json({ error: "senderId and receiverId are required" }); return; }
     if (senderId === receiverId) { res.status(400).json({ error: "You cannot send a friend request to yourself" }); return; }
 
-    if (isMongoConnected) {
-      // Check for existing pending or accepted request
-      const existing = await FriendRequestMongo.findOne({
-        $or: [
-          { senderId, receiverId, status: { $in: ['pending', 'accepted'] } },
-          { senderId: receiverId, receiverId: senderId, status: { $in: ['pending', 'accepted'] } }
-        ]
-      });
+    if (isSupabaseConnected) {
+      const { data: existing } = await supabase
+        .from('friend_requests')
+        .select('*')
+        .or(`and(sender_id.eq.${senderId},receiver_id.eq.${receiverId}),and(sender_id.eq.${receiverId},receiver_id.eq.${senderId})`)
+        .in('status', ['pending', 'accepted'])
+        .limit(1)
+        .maybeSingle();
+
       if (existing) {
         const msg = existing.status === 'accepted' ? "You are already friends!" : "Friend request already sent";
         res.status(409).json({ error: msg });
         return;
       }
-      const fr = await FriendRequestMongo.create({ senderId, senderName: senderName || '', senderAvatar: senderAvatar || '', senderYoyoId: senderYoyoId || '', receiverId, receiverName: receiverName || '', receiverYoyoId: receiverYoyoId || '', status: 'pending' });
-      res.json({ success: true, friendRequest: fr });
-    } else {
-      const existing = inMemoryFriendRequests.find(fr =>
-        ((fr.senderId === senderId && fr.receiverId === receiverId) ||
-         (fr.senderId === receiverId && fr.receiverId === senderId)) &&
-        (fr.status === 'pending' || fr.status === 'accepted')
-      );
-      if (existing) {
-        const msg = existing.status === 'accepted' ? "You are already friends!" : "Friend request already sent";
-        res.status(409).json({ error: msg });
+
+      const { data: fr, error } = await supabase.from('friend_requests').insert({
+        sender_id: String(senderId),
+        sender_name: senderName || '',
+        sender_avatar: senderAvatar || '',
+        sender_yoyo_id: senderYoyoId || '',
+        receiver_id: String(receiverId),
+        receiver_name: receiverName || '',
+        receiver_yoyo_id: receiverYoyoId || '',
+        status: 'pending'
+      }).select().maybeSingle();
+
+      if (fr && !error) {
+        res.json({ success: true, friendRequest: fr });
         return;
       }
-      const fr: InMemFriendRequest = {
-        _id: String(Date.now()),
-        senderId, senderName: senderName || '', senderAvatar: senderAvatar || '',
-        senderYoyoId: senderYoyoId || '', receiverId, receiverName: receiverName || '',
-        receiverYoyoId: receiverYoyoId || '', status: 'pending', createdAt: new Date().toISOString()
-      };
-      inMemoryFriendRequests.push(fr);
-      res.json({ success: true, friendRequest: fr });
     }
+
+    const fr: InMemFriendRequest = {
+      _id: String(Date.now()),
+      senderId, senderName: senderName || '', senderAvatar: senderAvatar || '',
+      senderYoyoId: senderYoyoId || '', receiverId, receiverName: receiverName || '',
+      receiverYoyoId: receiverYoyoId || '', status: 'pending', createdAt: new Date().toISOString()
+    };
+    inMemoryFriendRequests.push(fr);
+    res.json({ success: true, friendRequest: fr });
   } catch (error) {
     console.error('Send friend request error:', error);
     res.status(500).json({ error: "Server error" });
@@ -2085,14 +1722,32 @@ app.post("/api/friend-requests", async (req: express.Request, res: express.Respo
 app.get("/api/friend-requests/:userId/inbox", async (req: express.Request, res: express.Response) => {
   try {
     const { userId } = req.params;
-    if (isMongoConnected) {
-      const requests = await FriendRequestMongo.find({ receiverId: userId, status: 'pending' }).sort({ createdAt: -1 });
-      res.json({ success: true, requests });
-    } else {
-      const requests = inMemoryFriendRequests.filter(fr => fr.receiverId === userId && fr.status === 'pending')
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      res.json({ success: true, requests });
+    if (isSupabaseConnected) {
+      const { data, error } = await supabase
+        .from('friend_requests')
+        .select('*')
+        .eq('receiver_id', String(userId))
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false });
+
+      if (data && !error) {
+        const mapped = data.map((d: any) => ({
+          _id: d.id,
+          senderId: d.sender_id,
+          senderName: d.sender_name,
+          senderAvatar: d.sender_avatar,
+          senderYoyoId: d.sender_yoyo_id,
+          receiverId: d.receiver_id,
+          receiverName: d.receiver_name,
+          status: d.status,
+          createdAt: d.created_at
+        }));
+        return res.json({ success: true, requests: mapped });
+      }
     }
+    const requests = inMemoryFriendRequests.filter(fr => fr.receiverId === userId && fr.status === 'pending')
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    res.json({ success: true, requests });
   } catch (error) {
     console.error('Get inbox error:', error);
     res.status(500).json({ error: "Server error" });
@@ -2103,19 +1758,27 @@ app.get("/api/friend-requests/:userId/inbox", async (req: express.Request, res: 
 app.post("/api/friend-requests/:requestId/respond", async (req: express.Request, res: express.Response) => {
   try {
     const { requestId } = req.params;
-    const { action } = req.body; // 'accept' | 'reject'
+    const { action } = req.body;
     if (!['accept', 'reject'].includes(action)) { res.status(400).json({ error: "action must be 'accept' or 'reject'" }); return; }
     const newStatus = action === 'accept' ? 'accepted' : 'rejected';
-    if (isMongoConnected) {
-      const fr = await FriendRequestMongo.findByIdAndUpdate(requestId, { $set: { status: newStatus } }, { returnDocument: 'after' }).maxTimeMS(2000);
-      if (!fr) { res.status(404).json({ error: "Friend request not found" }); return; }
-      res.json({ success: true, friendRequest: fr });
-    } else {
-      const fr = inMemoryFriendRequests.find(r => r._id === requestId);
-      if (!fr) { res.status(404).json({ error: "Friend request not found" }); return; }
-      fr.status = newStatus;
-      res.json({ success: true, friendRequest: fr });
+
+    if (isSupabaseConnected) {
+      const { data, error } = await supabase
+        .from('friend_requests')
+        .update({ status: newStatus })
+        .eq('id', requestId)
+        .select()
+        .maybeSingle();
+
+      if (data && !error) {
+        return res.json({ success: true, friendRequest: data });
+      }
     }
+
+    const fr = inMemoryFriendRequests.find(r => r._id === requestId);
+    if (!fr) { res.status(404).json({ error: "Friend request not found" }); return; }
+    fr.status = newStatus;
+    res.json({ success: true, friendRequest: fr });
   } catch (error) {
     console.error('Respond to friend request error:', error);
     res.status(500).json({ error: "Server error" });
@@ -2126,53 +1789,52 @@ app.post("/api/friend-requests/:requestId/respond", async (req: express.Request,
 app.get("/api/friends/:userId", async (req: express.Request, res: express.Response) => {
   try {
     const { userId } = req.params;
-    if (isMongoConnected) {
-      const requests = await FriendRequestMongo.find({
-        status: 'accepted',
-        $or: [{ senderId: userId }, { receiverId: userId }]
-      });
-      // Map to list of friend objects with avatars
-      const friends = await Promise.all(requests.map(async (fr: any) => {
-        const isSender = String(fr.senderId) === String(userId);
-        const fId = isSender ? fr.receiverId : fr.senderId;
-        const fName = isSender ? fr.receiverName : fr.senderName;
-        const fYoyoId = isSender ? fr.receiverYoyoId : fr.senderYoyoId;
-        let avatar = isSender ? fr.receiverAvatar : fr.senderAvatar;
-        if (!avatar) {
-          try {
-            const u = await UserMongo.findById(fId);
+    const uid = String(userId);
+
+    if (isSupabaseConnected) {
+      const { data } = await supabase
+        .from('friend_requests')
+        .select('*')
+        .eq('status', 'accepted')
+        .or(`sender_id.eq.${uid},receiver_id.eq.${uid}`);
+
+      if (data) {
+        const friends = await Promise.all(data.map(async (fr: any) => {
+          const isSender = String(fr.sender_id) === uid;
+          const fId = isSender ? fr.receiver_id : fr.sender_id;
+          const fName = isSender ? fr.receiver_name : fr.sender_name;
+          const fYoyoId = isSender ? fr.receiver_yoyo_id : fr.sender_yoyo_id;
+          let avatar = isSender ? fr.receiver_avatar : fr.sender_avatar;
+          if (!avatar) {
+            const u = await findUserById(fId);
             if (u) avatar = u.avatar;
-          } catch {}
-        }
-        return {
-          id: fId,
-          name: fName,
-          avatar: avatar || `https://api.dicebear.com/7.x/thumbs/svg?seed=${fId}`,
-          yoyoId: fYoyoId
-        };
-      }));
-      res.json({ success: true, friends });
-    } else {
-      const requests = inMemoryFriendRequests.filter(fr =>
-        fr.status === 'accepted' && (fr.senderId === userId || fr.receiverId === userId)
-      );
-      const friends = requests.map(fr => {
-        const isSender = fr.senderId === userId;
-        const fId = isSender ? fr.receiverId : fr.senderId;
-        const fName = isSender ? fr.receiverName : fr.senderName;
-        const fYoyoId = isSender ? fr.receiverYoyoId : fr.senderYoyoId;
-        const avatar = isSender ? fr.receiverAvatar : fr.senderAvatar;
-        return {
-          id: fId,
-          name: fName,
-          avatar: avatar || `https://api.dicebear.com/7.x/thumbs/svg?seed=${fId}`,
-          yoyoId: fYoyoId
-        };
-      });
-      res.json({ success: true, friends });
+          }
+          return {
+            id: fId,
+            name: fName,
+            avatar: avatar || `https://api.dicebear.com/7.x/thumbs/svg?seed=${fId}`,
+            yoyoId: fYoyoId
+          };
+        }));
+        return res.json({ success: true, friends });
+      }
     }
+
+    const requests = inMemoryFriendRequests.filter(fr =>
+      fr.status === 'accepted' && (fr.senderId === userId || fr.receiverId === userId)
+    );
+    const friends = requests.map(fr => {
+      const isSender = fr.senderId === userId;
+      return {
+        id: isSender ? fr.receiverId : fr.senderId,
+        name: isSender ? fr.receiverName : fr.senderName,
+        avatar: (isSender ? fr.receiverAvatar : fr.senderAvatar) || `https://api.dicebear.com/7.x/thumbs/svg?seed=${fr.senderId}`,
+        yoyoId: isSender ? fr.receiverYoyoId : fr.senderYoyoId
+      };
+    });
+    res.json({ success: true, friends });
   } catch (error) {
-    console.error('Get friends error:', error);
+    console.error('Error fetching friends:', error);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -2186,39 +1848,47 @@ app.get("/api/dm/conversations/:userId", async (req: express.Request, res: expre
     const uid = String(userId);
 
     let messages: any[] = [];
-    if (isMongoConnected) {
-      messages = await DirectMessageMongo.find({
-        $or: [{ senderId: uid }, { receiverId: uid }]
-      }).sort({ createdAt: -1 });
+    if (isSupabaseConnected) {
+      const { data } = await supabase
+        .from('direct_messages')
+        .select('*')
+        .or(`sender_id.eq.${uid},receiver_id.eq.${uid}`)
+        .order('created_at', { ascending: false });
+
+      if (data) {
+        messages = data.map((d: any) => ({
+          _id: d.id,
+          senderId: d.sender_id,
+          receiverId: d.receiver_id,
+          text: d.text,
+          voice: d.media_type === 'voice',
+          duration: d.duration || 0,
+          createdAt: d.created_at
+        }));
+      }
     } else {
       messages = inMemoryDirectMessages
         .filter(m => String(m.senderId) === uid || String(m.receiverId) === uid)
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     }
 
-    // Group by other participant
     const conversationMap = new Map<string, any>();
     for (const m of messages) {
       const isSender = String(m.senderId) === uid;
       const partnerId = isSender ? String(m.receiverId) : String(m.senderId);
 
       if (!conversationMap.has(partnerId)) {
-        const partnerName = isSender ? m.receiverName : m.senderName;
-        const partnerAvatar = isSender ? m.receiverAvatar : m.senderAvatar;
-        let partnerYoyoId = isSender ? m.receiverYoyoId : m.senderYoyoId;
-        if (!partnerYoyoId && isMongoConnected) {
-          try {
-            const u = await UserMongo.findById(partnerId);
-            if (u) partnerYoyoId = u.yoyoId;
-          } catch {}
-        }
+        const partnerUser = await findUserById(partnerId);
+        const partnerName = partnerUser ? partnerUser.name : 'Friend';
+        const partnerAvatar = partnerUser ? partnerUser.avatar : `https://api.dicebear.com/7.x/thumbs/svg?seed=${partnerId}`;
+        const partnerYoyoId = partnerUser ? partnerUser.yoyoId : '';
 
         conversationMap.set(partnerId, {
           id: partnerId,
           senderId: partnerId,
           senderName: partnerName,
-          senderAvatar: partnerAvatar || `https://api.dicebear.com/7.x/thumbs/svg?seed=${partnerId}`,
-          yoyoId: partnerYoyoId || '',
+          senderAvatar: partnerAvatar,
+          yoyoId: partnerYoyoId,
           message: m.voice ? `🎤 Voice note (${m.duration || 0}s)` : m.text,
           timestamp: new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           isVoice: !!m.voice,
@@ -2245,32 +1915,43 @@ app.get("/api/dm/messages/:userId/:friendId", async (req: express.Request, res: 
     const fid = String(friendId);
 
     let messages: any[] = [];
-    if (isMongoConnected) {
-      messages = await DirectMessageMongo.find({
-        $or: [
-          { senderId: uid, receiverId: fid },
-          { senderId: fid, receiverId: uid }
-        ]
-      }).sort({ createdAt: 1 });
-    } else {
-      messages = inMemoryDirectMessages
-        .filter(m => (String(m.senderId) === uid && String(m.receiverId) === fid) ||
-                     (String(m.senderId) === fid && String(m.receiverId) === uid))
-        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    if (isSupabaseConnected) {
+      const { data } = await supabase
+        .from('direct_messages')
+        .select('*')
+        .or(`and(sender_id.eq.${uid},receiver_id.eq.${fid}),and(sender_id.eq.${fid},receiver_id.eq.${uid})`)
+        .order('created_at', { ascending: true });
+
+      if (data) {
+        messages = data.map((d: any) => ({
+          id: String(d.id),
+          senderId: String(d.sender_id),
+          receiverId: String(d.receiver_id),
+          text: d.text,
+          voice: d.media_type === 'voice',
+          duration: d.duration || 0,
+          timestamp: new Date(d.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        }));
+        return res.json({ success: true, messages });
+      }
     }
 
-    const formattedMessages = messages.map(m => ({
-      id: String(m._id || m.id),
-      sender: m.senderName,
-      senderId: String(m.senderId),
-      receiverId: String(m.receiverId),
-      text: m.text,
-      voice: !!m.voice,
-      duration: m.duration,
-      timestamp: new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    }));
+    messages = inMemoryDirectMessages
+      .filter(m => (String(m.senderId) === uid && String(m.receiverId) === fid) ||
+                   (String(m.senderId) === fid && String(m.receiverId) === uid))
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+      .map(m => ({
+        id: String(m._id),
+        sender: m.senderName,
+        senderId: String(m.senderId),
+        receiverId: String(m.receiverId),
+        text: m.text,
+        voice: !!m.voice,
+        duration: m.duration,
+        timestamp: new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }));
 
-    res.json({ success: true, messages: formattedMessages });
+    res.json({ success: true, messages });
   } catch (error) {
     console.error('Error fetching DM messages:', error);
     res.status(500).json({ error: "Failed to fetch messages" });
@@ -2280,50 +1961,55 @@ app.get("/api/dm/messages/:userId/:friendId", async (req: express.Request, res: 
 // Send a DM message
 app.post("/api/dm/send", async (req: express.Request, res: express.Response) => {
   try {
-    const { senderId, senderName, senderAvatar, senderYoyoId, receiverId, receiverName, receiverAvatar, receiverYoyoId, text, voice, duration } = req.body;
+    const { senderId, senderName, senderAvatar, receiverId, receiverName, receiverAvatar, text, voice, duration } = req.body;
 
     if (!senderId || !receiverId || !text?.trim()) {
       res.status(400).json({ error: "senderId, receiverId, and text are required" });
       return;
     }
 
-    const msgData = {
-      senderId: String(senderId),
-      senderName: senderName || 'User',
-      senderAvatar: senderAvatar || '',
-      senderYoyoId: senderYoyoId || '',
-      receiverId: String(receiverId),
-      receiverName: receiverName || 'Friend',
-      receiverAvatar: receiverAvatar || '',
-      receiverYoyoId: receiverYoyoId || '',
-      text: text.trim(),
-      voice: !!voice,
-      duration: duration || 0,
-      createdAt: new Date()
-    };
+    const isVoice = Boolean(voice);
+    const nowIso = new Date().toISOString();
+    let msgId = `dm_${Date.now()}`;
 
-    let savedMsg: any;
-    if (isMongoConnected) {
-      savedMsg = await DirectMessageMongo.create(msgData);
-    } else {
-      savedMsg = {
-        _id: `dm_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-        ...msgData,
-        createdAt: msgData.createdAt.toISOString()
-      };
-      inMemoryDirectMessages.push(savedMsg);
+    if (isSupabaseConnected) {
+      const { data, error } = await supabase.from('direct_messages').insert({
+        sender_id: String(senderId),
+        receiver_id: String(receiverId),
+        text: text.trim(),
+        media_type: isVoice ? 'voice' : 'text',
+        duration: duration || 0
+      }).select().maybeSingle();
+
+      if (data && !error) {
+        msgId = String(data.id);
+      }
     }
 
     const formattedMsg = {
-      id: String(savedMsg._id),
-      sender: savedMsg.senderName,
-      senderId: String(savedMsg.senderId),
-      receiverId: String(savedMsg.receiverId),
-      text: savedMsg.text,
-      voice: !!savedMsg.voice,
-      duration: savedMsg.duration,
-      timestamp: new Date(savedMsg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      id: msgId,
+      sender: senderName || 'User',
+      senderId: String(senderId),
+      receiverId: String(receiverId),
+      text: text.trim(),
+      voice: isVoice,
+      duration: duration || 0,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
+
+    inMemoryDirectMessages.push({
+      _id: msgId,
+      senderId: String(senderId),
+      senderName: senderName || 'User',
+      senderAvatar: senderAvatar || '',
+      receiverId: String(receiverId),
+      receiverName: receiverName || 'Friend',
+      receiverAvatar: receiverAvatar || '',
+      text: text.trim(),
+      voice: isVoice,
+      duration: duration || 0,
+      createdAt: nowIso
+    });
 
     // Broadcast to recipient via WebSocket
     sendToUserGlobally(String(receiverId), {
@@ -2337,7 +2023,7 @@ app.post("/api/dm/send", async (req: express.Request, res: express.Response) => 
       }
     });
 
-    // Broadcast to sender via WebSocket (in case multiple tabs or sockets open)
+    // Broadcast to sender via WebSocket
     sendToUserGlobally(String(senderId), {
       type: 'dm_message',
       message: formattedMsg,
@@ -2356,72 +2042,42 @@ app.post("/api/dm/send", async (req: express.Request, res: express.Response) => 
   }
 });
 
-// Delete a specific message
-app.delete("/api/dm/message/:msgId", async (req: express.Request, res: express.Response) => {
+// Delete a DM message
+app.delete("/api/dm/messages/:id", async (req: express.Request, res: express.Response) => {
   try {
-    const { msgId } = req.params;
-
-    let msg: any = null;
-    if (isMongoConnected) {
-      msg = await DirectMessageMongo.findById(msgId);
-      if (msg) {
-        await DirectMessageMongo.findByIdAndDelete(msgId);
-      }
-    } else {
-      const idx = inMemoryDirectMessages.findIndex(m => String(m._id) === String(msgId));
-      if (idx !== -1) {
-        msg = inMemoryDirectMessages.splice(idx, 1)[0];
-      }
+    const { id } = req.params;
+    if (isSupabaseConnected) {
+      await supabase.from('direct_messages').delete().eq('id', id);
     }
-
-    if (msg) {
-      const sId = String(msg.senderId);
-      const rId = String(msg.receiverId);
-      sendToUserGlobally(sId, { type: 'dm_message_deleted', messageId: msgId, conversationId: rId });
-      sendToUserGlobally(rId, { type: 'dm_message_deleted', messageId: msgId, conversationId: sId });
-    }
-
+    const idx = inMemoryDirectMessages.findIndex(m => m._id === id);
+    if (idx !== -1) inMemoryDirectMessages.splice(idx, 1);
     res.json({ success: true });
   } catch (error) {
-    console.error('Error deleting DM message:', error);
     res.status(500).json({ error: "Failed to delete message" });
   }
 });
 
-// Clear an entire conversation between two users
-app.delete("/api/dm/conversation/:userId/:friendId", async (req: express.Request, res: express.Response) => {
+// Clear conversation between two users
+app.delete("/api/dm/conversations/:userId/:friendId", async (req: express.Request, res: express.Response) => {
   try {
     const { userId, friendId } = req.params;
     const uid = String(userId);
     const fid = String(friendId);
-
-    if (isMongoConnected) {
-      await DirectMessageMongo.deleteMany({
-        $or: [
-          { senderId: uid, receiverId: fid },
-          { senderId: fid, receiverId: uid }
-        ]
-      });
-    } else {
-      for (let i = inMemoryDirectMessages.length - 1; i >= 0; i--) {
-        const m = inMemoryDirectMessages[i];
-        if ((String(m.senderId) === uid && String(m.receiverId) === fid) ||
-            (String(m.senderId) === fid && String(m.receiverId) === uid)) {
-          inMemoryDirectMessages.splice(i, 1);
-        }
+    if (isSupabaseConnected) {
+      await supabase.from('direct_messages').delete().or(`and(sender_id.eq.${uid},receiver_id.eq.${fid}),and(sender_id.eq.${fid},receiver_id.eq.${uid})`);
+    }
+    for (let i = inMemoryDirectMessages.length - 1; i >= 0; i--) {
+      const m = inMemoryDirectMessages[i];
+      if ((m.senderId === uid && m.receiverId === fid) || (m.senderId === fid && m.receiverId === uid)) {
+        inMemoryDirectMessages.splice(i, 1);
       }
     }
-
-    sendToUserGlobally(uid, { type: 'dm_chat_cleared', conversationId: fid });
-    sendToUserGlobally(fid, { type: 'dm_chat_cleared', conversationId: uid });
-
     res.json({ success: true });
   } catch (error) {
     console.error('Error clearing DM conversation:', error);
     res.status(500).json({ error: "Failed to clear conversation" });
   }
 });
-
 
 // --- VOICE ROOM ENDPOINTS ---
 
@@ -2432,9 +2088,10 @@ async function generateUniqueRoomId(): Promise<string> {
   while (attempts < 100) {
     attempts++;
     const candidate = Math.floor(100000 + Math.random() * 900000).toString();
-    if (isMongoConnected) {
-      const existing = await RoomMongo.findOne({ roomId: candidate, isActive: true });
-      if (!existing) return candidate;
+    if (activeRoomsCache.has(candidate)) continue;
+    if (isSupabaseConnected) {
+      const { data } = await supabase.from('rooms').select('id').eq('id', candidate).maybeSingle();
+      if (!data) return candidate;
     } else {
       const existing = inMemoryRooms.find(r => r.roomId === candidate && r.isActive);
       if (!existing) return candidate;
@@ -2443,9 +2100,6 @@ async function generateUniqueRoomId(): Promise<string> {
   return `${Date.now()}`.slice(-6);
 }
 
-// In-Memory cache for public rooms list to serve requests in <1ms
-let cachedPublicRoomsList: any[] | null = null;
-let cachedPublicRoomsTime = 0;
 
 // Get all active PUBLIC rooms (Private rooms are hidden from public list and only found via room code)
 app.get("/api/rooms", async (req: express.Request, res: express.Response) => {
@@ -2456,17 +2110,20 @@ app.get("/api/rooms", async (req: express.Request, res: express.Response) => {
       return;
     }
 
-    if (isMongoConnected) {
-      let rooms = await RoomMongo.find({ isActive: true, isPrivate: { $ne: true } }).sort({ createdAt: -1 }).lean().maxTimeMS(1500).limit(50);
-      const sanitizedRooms = rooms.map(r => {
-        const clean = sanitizeRoom(r.toObject ? r.toObject() : r);
-        delete clean.roomPassword;
-        return clean;
-      });
-      cachedPublicRoomsList = sanitizedRooms;
-      cachedPublicRoomsTime = Date.now();
-      res.json({ success: true, rooms: sanitizedRooms });
-    } else {
+    if (isSupabaseConnected) {
+      const { data, error } = await supabase.from('rooms').select('*').eq('is_active', true).eq('is_private', false).order('created_at', { ascending: false }).limit(50);
+      if (data && !error) {
+        const sanitizedRooms = data.map(r => {
+          const clean = sanitizeRoom(supabaseToRoom(r));
+          delete clean.roomPassword;
+          return clean;
+        });
+        cachedPublicRoomsList = sanitizedRooms;
+        cachedPublicRoomsTime = Date.now();
+        return res.json({ success: true, rooms: sanitizedRooms });
+      }
+    }
+    if (true) {
       const activeRooms = inMemoryRooms.filter(r => r.isActive && !r.isPrivate).map(r => {
         const clean = { ...sanitizeRoom(r) };
         delete clean.roomPassword;
@@ -2521,33 +2178,37 @@ app.post("/api/rooms", async (req: express.Request, res: express.Response) => {
 
     cachedPublicRoomsList = null;
 
-    if (isMongoConnected) {
-      const newRoom = await RoomMongo.create({
-        roomId: generatedRoomId,
-        title,
-        description: description || `Welcome to ${safeHost.name}'s voice room!`,
-        host: safeHost,
-        theme: theme || 'neon',
-        category: category || 'chat',
-        onlineCount: 1,
-        activeGame: game,
-        isOfficialGame: isOfficial,
-        gamePrizePool: prize,
-        backgroundUrl: backgroundUrl || '',
-        roomImage: roomImage || '',
-        isActive: true,
-        isPrivate: isPriv,
-        roomPassword: pwd,
-        invitedUsers: [],
-        seats: initialSeats,
-        onlineUsers: [safeHost],
-        chatMessages: [welcomeMsg]
-      });
-      const roomObj = sanitizeRoom(newRoom.toObject ? newRoom.toObject() : newRoom);
-      activeRoomsCache.set(String(newRoom._id), roomObj);
-      activeRoomsCache.set(generatedRoomId, roomObj);
-      res.json({ success: true, room: roomObj });
-    } else {
+    const roomRaw: any = {
+      id: generatedRoomId,
+      roomId: generatedRoomId,
+      title,
+      description: description || `Welcome to ${safeHost.name}'s voice room!`,
+      host: safeHost,
+      theme: theme || 'neon',
+      category: category || 'chat',
+      onlineCount: 1,
+      activeGame: game,
+      isOfficialGame: isOfficial,
+      gamePrizePool: prize,
+      backgroundUrl: backgroundUrl || '',
+      roomImage: roomImage || '',
+      isActive: true,
+      isPrivate: isPriv,
+      roomPassword: pwd,
+      invitedUsers: [],
+      seats: initialSeats,
+      onlineUsers: [safeHost],
+      chatMessages: [welcomeMsg]
+    };
+    if (isSupabaseConnected) {
+      await supabase.from('rooms').insert(roomToSupabase(roomRaw));
+    }
+    const roomObj = sanitizeRoom(roomRaw);
+    activeRoomsCache.set(generatedRoomId, roomObj);
+    inMemoryRooms.push(roomRaw);
+    res.json({ success: true, room: roomObj });
+    return;
+    if (false) {
       const newRoom: InMemRoom = {
         id: `room_${Date.now()}`,
         roomId: generatedRoomId,
@@ -2786,18 +2447,12 @@ app.get("/api/rooms/bycode/:code", async (req: express.Request, res: express.Res
     const { code } = req.params;
     const cleanCode = String(code || '').trim();
     let room: any = null;
-    if (isMongoConnected) {
-      if (mongoose.Types.ObjectId.isValid(cleanCode)) {
-        room = await RoomMongo.findOne({ $or: [{ roomId: cleanCode }, { _id: cleanCode }], isActive: true }).lean();
-      } else {
-        room = await RoomMongo.findOne({ roomId: cleanCode, isActive: true }).lean();
-      }
-      if (room) {
-        room.id = String(room._id);
-        room = sanitizeRoom(room);
-        delete room.roomPassword;
-      }
-    } else {
+    room = await getRoom(cleanCode);
+    if (room) {
+      delete room.roomPassword;
+      return res.json({ success: true, room });
+    }
+    if (false) {
       const found = inMemoryRooms.find(r => (r.roomId === cleanCode || r.id === cleanCode) && r.isActive);
       if (found) {
         room = { ...sanitizeRoom(found) };
@@ -3448,36 +3103,25 @@ startServer();
 async function gracefulShutdown(signal: string) {
   console.log(`\n🛑 [${signal}] Graceful shutdown initiated — draining connections...`);
 
-  // Flush any unsaved room states from debounce queue
   try {
     const savePromises: Promise<any>[] = [];
     activeRoomsCache.forEach((room: any, key: string) => {
-      // Only save entries keyed by MongoDB ID (24-char hex), skip alias keys
-      if (key.length === 24 && /^[a-f0-9]+$/i.test(key) && room._id) {
+      if (room && (key === room.id || key === room._id || key === room.roomId)) {
+        const row = roomToSupabase(room);
         savePromises.push(
-          RoomMongo.updateOne(
-            { _id: room._id },
-            { $set: { seats: room.seats, onlineUsers: room.onlineUsers, isActive: room.isActive } }
-          ).catch(() => {})
+          Promise.resolve(supabase.from('rooms').upsert(row))
         );
       }
     });
     if (savePromises.length > 0) {
       await Promise.allSettled(savePromises);
-      console.log(`💾 Flushed ${savePromises.length} room states to MongoDB before exit.`);
+      console.log(`💾 Flushed ${savePromises.length} room states to Supabase before exit.`);
     }
   } catch (_) {}
-
-  // Close MongoDB connection
-  if (isMongoConnected) {
-    await mongoose.connection.close(false).catch(() => {});
-    console.log('🔌 MongoDB connection closed.');
-  }
 
   console.log('✅ Shutdown complete. Goodbye!');
   process.exit(0);
 }
-
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 

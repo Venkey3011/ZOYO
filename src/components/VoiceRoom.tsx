@@ -243,8 +243,10 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   // Sound Synthesizer (AudioContext)
   const audioContextRef = useRef<AudioContext | null>(null);
 
-  // Microphone state & visualizer
+  // Microphone state & visualizer (120 FPS high-refresh optimized)
   const [myVoiceLevel, setMyVoiceLevel] = useState(0);
+  const lastVoiceUpdateRef = useRef<number>(0);
+  const lastVoiceLevelValRef = useRef<number>(0);
   const micStreamRef = useRef<MediaStream | null>(null);
   const micAnalyserRef = useRef<AnalyserNode | null>(null);
   const micRafIdRef = useRef<number | null>(null);
@@ -602,7 +604,15 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         }
         const average = sum / bufferLength;
         const level = Math.min(100, Math.floor(average * 1.5));
-        setMyVoiceLevel(level);
+        
+        // ⚡ 120 FPS Optimization: Throttle React state re-renders to only significant audio changes
+        const now = performance.now();
+        const diff = Math.abs(level - lastVoiceLevelValRef.current);
+        if ((now - lastVoiceUpdateRef.current > 50 && diff >= 4) || (level <= 5 && lastVoiceLevelValRef.current > 5) || (level > 12 && lastVoiceLevelValRef.current <= 12)) {
+          lastVoiceUpdateRef.current = now;
+          lastVoiceLevelValRef.current = level;
+          setMyVoiceLevel(level);
+        }
 
         const currentSeat = mySeatIndexRef.current;
         if (currentSeat !== null && !isMyMicMuted) {

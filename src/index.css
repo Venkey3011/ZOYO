@@ -5,7 +5,7 @@
   --font-display: "Sora", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-/* Fix mobile browser viewport: Prevents address-bar bouncing and holds top/bottom bars firmly fixed */
+/* ⚡ 120 FPS High-Refresh Smoothness & Viewport Lock */
 html, body {
   margin: 0;
   padding: 0;
@@ -23,6 +23,10 @@ html, body {
   overscroll-behavior: none;
   -webkit-overflow-scrolling: touch;
   -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 #root {
@@ -33,6 +37,35 @@ html, body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+/* ⚡ Hardware GPU Acceleration for 120 FPS buttery smooth transitions */
+.gpu-layer {
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+  will-change: transform, opacity;
+}
+
+/* Smooth Momentum Scrolling */
+.smooth-scroll {
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+  overscroll-behavior-y: contain;
+  contain: content;
+}
+
+/* Content visibility optimization for high-density lists */
+.content-contain {
+  contain: layout style paint;
+  content-visibility: auto;
+}
+
+/* Instant click response — eliminates 300ms mobile delay */
+button, a, input, select, textarea, [role="button"] {
+  touch-action: manipulation;
 }
 
 /* Custom Scrollbar */

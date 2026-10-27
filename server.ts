@@ -31,11 +31,14 @@ let cachedPublicRoomsTime = 0;
 // ─── Data Mappers: Supabase <-> ZOYO Models ──────────────────────────────
 function supabaseToUser(row: any): any {
   if (!row) return null;
+  const rawId = (row.id && row.id !== 'undefined' && row.id !== 'null') 
+    ? String(row.id) 
+    : (row._id && row._id !== 'undefined' ? String(row._id) : (row.yoyo_id ? `u_${row.yoyo_id}` : `u_${row.name || Date.now()}`));
   return {
     ...row,
-    id: String(row.id),
-    _id: String(row.id),
-    userId: String(row.id),
+    id: rawId,
+    _id: rawId,
+    userId: rawId,
     name: row.name || 'User',
     username: row.username || (row.name ? row.name.toLowerCase().replace(/\s+/g, '') : ''),
     nickname: row.nickname || row.name || '',
@@ -766,6 +769,14 @@ app.get("/api/health", (req, res) => {
     supabaseActive: isSupabaseConnected,
     cachedUsers: activeUsersCache.size,
     activeRooms: activeRoomsCache.size
+  });
+});
+
+app.get("/api/db-status", (req, res) => {
+  res.json({
+    connected: isSupabaseConnected,
+    mode: isSupabaseConnected ? "Supabase Cloud (Active)" : "In-Memory Fallback",
+    supabaseActive: isSupabaseConnected
   });
 });
 

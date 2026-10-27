@@ -320,19 +320,29 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
     setLoading(true);
     setErrorMsg('');
     try {
-      const statusRes = await fetch('/api/db-status');
-      if (statusRes.ok) {
-        const statusData = await statusRes.json();
-        setDbStatus(statusData);
+      try {
+        const statusRes = await fetch('/api/db-status');
+        if (statusRes.ok) {
+          const statusData = await statusRes.json();
+          setDbStatus(statusData);
+        } else {
+          const healthRes = await fetch('/api/health');
+          if (healthRes.ok) {
+            const healthData = await healthRes.json();
+            setDbStatus({ connected: healthData.connected, mode: healthData.mode });
+          }
+        }
+      } catch (e) {
+        console.warn('Status check warning:', e);
       }
 
       const usersRes = await fetch('/api/users');
       if (usersRes.ok) {
         const usersData = await usersRes.json();
-        console.log('🔍 Fetched users data:', usersData);
-        if (usersData.success) {
-          console.log('✅ Setting users:', usersData.users.length, 'users');
+        if (usersData && usersData.success && Array.isArray(usersData.users)) {
           setUsers(usersData.users);
+        } else if (Array.isArray(usersData)) {
+          setUsers(usersData);
         } else {
           console.error('❌ API returned success=false');
         }
@@ -661,9 +671,9 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
           <div className="flex items-center gap-1.5">
             <span className={`w-2 h-2 rounded-full ${dbStatus.connected ? 'bg-emerald-500 animate-ping' : 'bg-amber-500'}`}></span>
             <span className="font-bold uppercase tracking-wider">Database Mode:</span>
-            <span className="font-black">{dbStatus.connected ? (dbStatus.mode || 'MongoDB Atlas Active') : (dbStatus.mode || 'Offline / Fallback')}</span>
+            <span className="font-black">{dbStatus.connected ? (dbStatus.mode || 'Supabase Cloud (Active)') : (dbStatus.mode || 'Offline / Fallback')}</span>
           </div>
-          {dbStatus.connected && <span className="font-semibold text-emerald-700 font-mono text-[9px]">MongoDB Atlas Connected ✓</span>}
+          {dbStatus.connected && <span className="font-semibold text-emerald-700 font-mono text-[9px]">Supabase Cloud Connected ✓</span>}
 
         </div>
       )}

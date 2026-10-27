@@ -411,6 +411,11 @@ async function connectToSupabase() {
     const { data: users, error } = await supabase.from('users').select('*').limit(500);
     if (error) {
       console.warn("⚠️ Supabase connection test returned error:", error.message);
+      if (SUPABASE_KEY.startsWith("sb_secret_")) {
+        console.warn("👉 Notice: The configured SUPABASE_KEY is a CLI Personal Token ('sb_secret_...'), NOT a Project API Key.");
+        console.warn("👉 Please copy your project's 'anon public' or 'service_role secret' key (starts with 'eyJ...') from:");
+        console.warn("   https://supabase.com/dashboard/project/efiiphktyjafxcoudvfj/settings/api");
+      }
       console.warn("⚠️ Running in in-memory fallback mode.");
       isSupabaseConnected = false;
       return;

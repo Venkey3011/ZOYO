@@ -769,6 +769,318 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+
+// LiveKit token endpoint for seamless voice chat
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || 'devkey';
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || 'devsecret00000000000000000000000';
+const LIVEKIT_URL = process.env.LIVEKIT_URL || 'ws://localhost:7880';
+
+app.post("/api/livekit/token", async (req: express.Request, res: express.Response) => {
+  try {
+    const { userId, userName, roomId } = req.body;
+    if (!userId || !roomId) {
+      return res.status(400).json({ error: "userId and roomId required" });
+    }
+    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+      identity: String(userId),
+      name: String(userName || userId),
+      ttl: '4h'
+    });
+    at.addGrant({ roomJoin: true, room: String(roomId), canPublish: true, canSubscribe: true });
+    const token = await at.toJwt();
+    res.json({ success: true, token, url: LIVEKIT_URL });
+  } catch (err) {
+    console.error('LiveKit token error:', err);
+    res.status(500).json({ error: "Failed to generate LiveKit token" });
+  }
+});
+
+
+// Active in-memory store for OTPs
+const activeOTPs = new Map<string, { code: string; expiresAt: number }>();
+
+// Send OTP endpoint
+app.post("/api/auth/send-otp", async (req: express.Request, res: express.Response) => {
+  try {
+    const { phoneNumber, purpose } = req.body;
+    if (!phoneNumber) {
+      res.status(400).json({ error: "Phone number is required." });
+      return;
+    }
+
+    const cleanedPhone = phoneNumber.trim();
+
+    // If purpose is login, ensure the user exists
+    if (purpose === 'login') {
+      const user = await findUserByPhone(cleanedPhone);
+      if (!user) {
+        res.status(400).json({ error: "No user is registered with this phone number. Please sign up first!" });
+        return;
+      }
+    }
+
+    // Generate a beautiful random 6-digit OTP code
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes validity
+
+    activeOTPs.set(cleanedPhone, { code, expiresAt });
+
+    console.log(`[SMS OTP SIMULATION] Code sent to ${cleanedPhone}: ${code}`);
+
+    res.json({
+      success: true,
+      message: `OTP sent successfully to ${cleanedPhone}`,
+      otp: code // Returned for easy simulation and user experience
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to send OTP code." });
+  }
+});
+
+// Verify OTP endpoint
+app.post("/api/auth/verify-otp", async (req: express.Request, res: express.Response) => {
+  try {
+    const { phoneNumber, otp } = req.body;
+    if (!phoneNumber || !otp) {
+      res.status(400).json({ error: "Phone number and OTP code are required." });
+      return;
+    }
+
+    const cleanedPhone = phoneNumber.trim();
+    const active = activeOTPs.get(cleanedPhone);
+
+    if (!active) {
+      res.status(400).json({ error: "No OTP code was sent to this number." });
+      return;
+    }
+
+    if (Date.now() > active.expiresAt) {
+      activeOTPs.delete(cleanedPhone);
+      res.status(400).json({ error: "OTP code has expired. Please send a new code." });
+      return;
+    }
+
+    if (active.code !== otp.trim()) {
+      res.status(400).json({ error: "Invalid OTP code." });
+      return;
+    }
+
+    res.json({ success: true, message: "OTP code verified successfully!" });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to verify OTP." });
+  }
+});
+
+// Login via OTP endpoint
+app.post("/api/auth/login-otp", async (req: express.Request, res: express.Response) => {
+  try {
+    const { phoneNumber, otp } = req.body;
+    if (!phoneNumber || !otp) {
+      res.status(400).json({ error: "Phone number and OTP code are required." });
+      return;
+    }
+
+    const cleanedPhone = phoneNumber.trim();
+    const active = activeOTPs.get(cleanedPhone);
+
+    if (!active || active.code !== otp.trim()) {
+      res.status(400).json({ error: "Invalid or expired OTP code." });
+      return;
+    }
+
+    if (Date.now() > active.expiresAt) {
+      res.status(400).json({ error: "OTP code has expired." });
+      return;
+    }
+
+    // Find registered user
+    const user = await findUserByPhone(cleanedPhone);
+    if (!user) {
+      res.status(400).json({ error: "No user found with this phone number. Please register first." });
+      return;
+    }
+
+    if (user.isBlocked) {
+      res.status(403).json({ error: "Your account is blocked. Please contact your administrator." });
+      return;
+    }
+
+    // Clear active OTP
+    activeOTPs.delete(cleanedPhone);
+
+    const { password: _, ...safeUser } = (user as any).toObject ? (user as any).toObject() : user;
+    res.json({ success: true, user: safeUser });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to log in with OTP." });
+  }
+});
+
+// Login endpoint (Standard with username/password)
+app.post("/api/auth/login", async (req: express.Request, res: express.Response) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      res.status(400).json({ error: "Username and password are required" });
+      return;
+    }
+
+    const trimmedInput = String(username).trim();
+    const trimmedPassword = String(password).trim();
+
+    // ⚡ 0ms Fast path: Search by name/username/email in cache & DB
+    let user = await findUserByName(trimmedInput);
+    if (!user && trimmedInput.includes('@')) {
+      user = await findUserByEmail(trimmedInput);
+    }
+    if (!user) {
+      res.status(401).json({ error: "User not found. Check your username or email." });
+      return;
+    }
+
+    if (user.password !== trimmedPassword) {
+      res.status(401).json({ error: "Invalid password" });
+      return;
+    }
+
+    if (user.isBlocked) {
+      res.status(403).json({ error: "Your account is blocked. Please contact your administrator or manager." });
+      return;
+    }
+
+    // Refresh user cache on login for fast subsequent requests
+    setCachedUser(user);
+
+    // Success
+    const { password: _, ...safeUser } = (user as any).toObject ? (user as any).toObject() : user;
+    res.json({ success: true, user: safeUser });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
+// Signup endpoint (With mandatory profile & email/phone fields)
+app.post("/api/auth/signup", async (req: express.Request, res: express.Response) => {
+  try {
+    const { username, nickname, password, avatar, coins, gender, dateOfBirth, country, phoneNumber, email } = req.body;
+    
+    if (!username || !password || !gender || !dateOfBirth || !country || (!phoneNumber && !email)) {
+      res.status(400).json({ error: "All details (Username, Nickname, Password, Email/Phone, Gender, Date of Birth, and Country) are mandatory." });
+      return;
+    }
+
+    // Validate username is alphanumeric/underscores only
+    if (!/^[a-z0-9_]{3,24}$/.test(username)) {
+      res.status(400).json({ error: "Username must be 3-24 characters (letters, numbers, underscore only)." });
+      return;
+    }
+
+    // Enforce unique username (handle)
+    const existingName = await findUserByName(username);
+    if (existingName) {
+      res.status(400).json({ error: "This username is already taken. Try another @handle." });
+      return;
+    }
+
+    // Enforce unique email
+    if (email) {
+      const existingEmail = await findUserByEmail(email);
+      if (existingEmail) {
+        res.status(400).json({ error: "This email address is already registered. Please login instead." });
+        return;
+      }
+    }
+
+    if (phoneNumber) {
+      const existingPhone = await findUserByPhone(phoneNumber);
+      if (existingPhone) {
+        res.status(400).json({ error: "This phone number is already registered. Please login instead." });
+        return;
+      }
+    }
+
+    // Display name = nickname if provided, else fall back to username
+    const displayName = (nickname || username).trim();
+
+    const newUser = await createUser({
+      name: displayName,
+      username: username.trim().toLowerCase(),
+      nickname: displayName,
+      password: password.trim(),
+      role: 'user',
+      avatar: avatar,
+      coins: Number(coins) || 0,
+      gender: gender,
+      dateOfBirth: dateOfBirth,
+      country: country,
+      phoneNumber: phoneNumber ? phoneNumber.trim() : '',
+      email: email ? email.trim().toLowerCase() : ''
+    });
+
+    const { password: _, ...safeUser } = (newUser as any).toObject ? (newUser as any).toObject() : newUser;
+    res.json({ success: true, user: safeUser });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Social Login or Signup fallback
+app.post("/api/auth/social-login", async (req: express.Request, res: express.Response) => {
+  try {
+    const { email, name, avatar, provider, socialId } = req.body;
+    if (!email || !provider || !socialId) {
+      res.status(400).json({ error: "Missing mandatory social attributes (email, provider, socialId)" });
+      return;
+    }
+
+    // Check if user is blocked or exists
+    let user = await findUserBySocial(provider, socialId);
+    if (!user) {
+      // Also try to find by email to prevent duplicate registration
+      user = await findUserByEmail(email);
+    }
+
+    if (user) {
+      if (user.isBlocked) {
+        res.status(403).json({ error: "Your account is blocked. Please contact your administrator." });
+        return;
+      }
+      const { password: _, ...safeUser } = (user as any).toObject ? (user as any).toObject() : user;
+      res.json({ success: true, user: safeUser, isNewUser: false });
+      return;
+    }
+
+    // Automatically create a new user profile upon social sign-in
+    let finalUsername = name ? name.trim() : `zoyo_${provider}_${Math.floor(1000 + Math.random() * 9000)}`;
+    const nameExists = await findUserByName(finalUsername);
+    if (nameExists) {
+      finalUsername = `${finalUsername}_${Math.floor(100 + Math.random() * 900)}`;
+    }
+
+    const newUser = await createUser({
+      name: finalUsername,
+      password: `oauth_${Math.floor(100000 + Math.random() * 900000)}`, // Social accounts do not require manual password entry
+      email: email.trim().toLowerCase(),
+      avatar: avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
+      role: 'user',
+      coins: 0,
+      gender: 'Other',
+      dateOfBirth: '2005-01-01',
+      country: 'Global',
+      socialId: socialId,
+      socialProvider: provider
+    });
+
+    const { password: _, ...safeUser } = (newUser as any).toObject ? (newUser as any).toObject() : newUser;
+    res.json({ success: true, user: safeUser, isNewUser: true });
+  } catch (err) {
+    console.error("Social login failure:", err);
+    res.status(500).json({ error: "Failed to authenticate via social partner." });
+  }
+});
+
+// Get all users (for Admin and Managers)
+
 app.get("/api/users", async (req: express.Request, res: express.Response) => {
   try {
     const users = await getUsers();

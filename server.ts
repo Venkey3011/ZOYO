@@ -474,7 +474,8 @@ async function connectToMongo() {
     }).catch((e: any) => console.warn('Cache pre-warm warning:', e));
 
     // ⚡ Pre-warm public rooms cache so /api/rooms returns in <1ms after first login
-    RoomMongo.find({ isActive: true }).lean().limit(100).then((rooms: any[]) => {
+    // Use $ne: false to also catch rooms where isActive field is missing/null (legacy documents)
+    RoomMongo.find({ isActive: { $ne: false } }).lean().limit(200).then((rooms: any[]) => {
       if (rooms && rooms.length > 0) {
         rooms.forEach((r: any) => {
           activeRoomsCache.set(String(r._id), r);
@@ -485,6 +486,8 @@ async function connectToMongo() {
         cachedPublicRoomsList = publicRooms;
         cachedPublicRoomsTime = Date.now();
         console.log(`⚡ Pre-warmed ${publicRooms.length} public rooms into cache for instant 0ms load.`);
+      } else {
+        console.log(`⚡ Pre-warmed 0 public rooms (no active rooms in DB yet).`);
       }
     }).catch((e: any) => console.warn('Room pre-warm warning:', e));
 
@@ -3428,3 +3431,50 @@ async function startServer() {
 
 startServer();
 
+// ─── Graceful Shutdown ────────────────────────────────────────────────────────
+// Handles SIGTERM (deploy restart) and SIGINT (Ctrl+C) cleanly so in-flight
+// requests drain before the process exits. Prevents the red "terminated by
+// signal SIGTERM" error in hosting logs.
+async function gracefulShutdown(signal: string) {
+  console.log(`\n🛑 [${signal}] Graceful shutdown initiated — draining connections...`);
+
+  // Flush any unsaved room states from debounce queue
+  try {
+    const savePromises: Promise<any>[] = [];
+    activeRoomsCache.forEach((room: any, key: string) => {
+      // Only save entries keyed by MongoDB ID (24-char hex), skip alias keys
+      if (key.length === 24 && /^[a-f0-9]+$/i.test(key) && room._id) {
+        savePromises.push(
+          RoomMongo.updateOne(
+            { _id: room._id },
+            { $set: { seats: room.seats, onlineUsers: room.onlineUsers, isActive: room.isActive } }
+          ).catch(() => {})
+        );
+      }
+    });
+    if (savePromises.length > 0) {
+      await Promise.allSettled(savePromises);
+      console.log(`💾 Flushed ${savePromises.length} room states to MongoDB before exit.`);
+    }
+  } catch (_) {}
+
+  // Close MongoDB connection
+  if (isMongoConnected) {
+    await mongoose.connection.close(false).catch(() => {});
+    console.log('🔌 MongoDB connection closed.');
+  }
+
+  console.log('✅ Shutdown complete. Goodbye!');
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
+
+// Prevent unhandled promise rejections from crashing the server
+process.on('unhandledRejection', (reason) => {
+  console.error('⚠️ Unhandled Promise Rejection (non-fatal):', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ Uncaught Exception (non-fatal):', err.message);
+});

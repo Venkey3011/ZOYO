@@ -308,7 +308,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
 
   // Sync activeTab with role-based accessibility on initial load
   useEffect(() => {
-    if (currentUser.role === 'admin' || currentUser.role === 'manager') {
+    if (currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'coin_seller') {
       setActiveTab('user_control');
     } else {
       setActiveTab('coin_transfer');
@@ -372,50 +372,20 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
   }, [currentUser]);
 
   // Hierarchical User Filter - Different logic per tab
+  // User Directory Filter - Managers, Coin Sellers, and Admins can view ALL users across the platform
   const getManageableUsers = () => {
-    console.log('🔍 Current user role:', currentUser.role);
-    console.log('🔍 Current tab:', activeTab);
-    console.log('🔍 Total users in state:', users.length);
-
-    // Admin always sees all users in all tabs
-    if (currentUser.role === 'admin') {
-      console.log('✅ Admin sees all users:', users.length);
-      return users;
-    }
-
-    // Manager logic depends on the active tab
-    if (currentUser.role === 'manager') {
-      // In Coin Transfer tab: Manager sees ALL users (to transfer coins to anyone)
-      if (activeTab === 'coin_transfer') {
-        console.log('✅ Manager (Coin Transfer tab) sees all users:', users.length);
-        return users;
-      }
-
-      // In User Control tab: Manager only sees users under their management
-      if (activeTab === 'user_control') {
-        const managedUsers = users.filter(u =>
-          u.createdBy === currentUser.name ||
-          u.managerId === currentUser.name ||
-          u.managerId === (currentUser._id || currentUser.id)
-        );
-        console.log('✅ Manager (User Control tab) sees managed users:', managedUsers.length);
-        return managedUsers;
-      }
-
-      // For other tabs (access_privilege), show all users
-      console.log('✅ Manager (other tabs) sees all users:', users.length);
-      return users;
-    }
-
-    // Coin sellers see all users (they need to transfer coins to anyone)
-    console.log('✅ Coin seller sees all users:', users.length);
     return users;
   };
 
-  const filteredUsers = getManageableUsers().filter(u =>
-    !searchQuery.trim() ||
-    (u.yoyoId || '').toLowerCase().includes(searchQuery.toLowerCase().trim())
-  );
+  const filteredUsers = getManageableUsers().filter(u => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase().trim();
+    return (
+      (u.name || '').toLowerCase().includes(q) ||
+      (u.yoyoId || '').toLowerCase().includes(q) ||
+      (u.role || '').toLowerCase().includes(q)
+    );
+  });
 
   console.log('🔍 Filtered users after search:', filteredUsers.length, 'query:', searchQuery);
 
@@ -427,8 +397,8 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
     const targetUser = users.find(u => (u._id || u.id) === userId);
     if (!targetUser) return;
 
-    if (currentUser.role !== 'admin' && currentUser.role !== 'manager') {
-      setErrorMsg('Access Denied. Only Admins and Managers can restrict accounts.');
+    if (currentUser.role !== 'admin' && currentUser.role !== 'manager' && currentUser.role !== 'coin_seller') {
+      setErrorMsg('Access Denied. Only Admins, Managers, and Coin Sellers can restrict accounts.');
       return;
     }
 
@@ -712,7 +682,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
 
       {/* Tab Navigation */}
       <div className="mt-4 flex gap-1 bg-zinc-150 p-1 rounded-xl border border-zinc-200/60 overflow-x-auto scrollbar-none shrink-0">
-        {(currentUser.role === 'admin' || currentUser.role === 'manager') && (
+        {(currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'coin_seller') && (
           <button
             onClick={() => setActiveTab('user_control')}
             className={`flex-1 min-w-[75px] py-2 text-center font-bold rounded-lg transition-all text-[10px] cursor-pointer whitespace-nowrap px-1.5 ${
@@ -791,19 +761,21 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       {/* Dynamic Sub-Page Content */}
       <div className="mt-4 flex flex-col flex-1 gap-3 min-h-0">
         
-        {/* TAB 1: USER CONTROL (Admin & Manager Only) */}
-        {activeTab === 'user_control' && (currentUser.role === 'admin' || currentUser.role === 'manager') && (
+        {/* TAB 1: USER CONTROL (Admin, Manager & Coin Seller) */}
+        {activeTab === 'user_control' && (currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'coin_seller') && (
           <div className="flex flex-col gap-3">
             
             {/* Hierarchy Info Eyebrow */}
             <div className="bg-white p-2.5 rounded-xl border border-zinc-200 text-zinc-500 text-[10px] leading-relaxed flex flex-col gap-1 shadow-sm">
               <span className="font-extrabold text-zinc-800 flex items-center gap-1">
-                👥 Hierarchical Directory Status
+                👥 Platform User Directory Status
               </span>
               {currentUser.role === 'admin' ? (
-                <span>As a <strong>Super Admin</strong>, you are at the root of the hierarchy and can view and control all registered accounts.</span>
+                <span>As a <strong>Super Admin</strong>, you are at the root of the hierarchy and can view and control all registered accounts ({users.length} total).</span>
+              ) : currentUser.role === 'manager' ? (
+                <span>As a <strong>Manager</strong>, you can view all registered users across the platform ({users.length} total), manage account status, and register new users.</span>
               ) : (
-                <span>As a <strong>Manager</strong>, you can view, block/unblock, and register users that are registered directly under you.</span>
+                <span>As a <strong>Coin Seller</strong>, you can view all registered users across the platform ({users.length} total) and manage coin transfers.</span>
               )}
             </div>
 
@@ -815,7 +787,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
               >
                 <span className="flex items-center gap-1.5 text-[11px]">
                   <UserPlus className="w-3.5 h-3.5 text-rose-500" /> 
-                  {currentUser.role === 'manager' ? 'Add User Under Me' : 'Register New User'}
+                  {currentUser.role === 'manager' ? 'Register User (Manager)' : currentUser.role === 'coin_seller' ? 'Register User (Coin Seller)' : 'Register New User'}
                 </span>
                 <span className="text-rose-600 text-[10px] uppercase font-black">
                   {showCreateForm ? 'Collapse ➖' : 'Expand ➕'}
@@ -899,8 +871,8 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search users by ZOYO ID..."
-                className="w-full bg-white border border-zinc-200 rounded-xl pl-9 pr-4 py-2 text-xs text-zinc-800 focus:outline-none focus:ring-1 focus:ring-rose-500 shadow-sm font-mono"
+                placeholder="Search users by Name, ZOYO ID, or Role..."
+                className="w-full bg-white border border-zinc-200 rounded-xl pl-9 pr-4 py-2 text-xs text-zinc-800 focus:outline-none focus:ring-1 focus:ring-rose-500 shadow-sm"
               />
             </div>
 
@@ -908,7 +880,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
             <div className="flex flex-col gap-2">
               {filteredUsers.length === 0 ? (
                 <div className="py-8 text-center text-zinc-500 font-bold bg-white rounded-2xl border border-zinc-200 shadow-sm">
-                  No users with that ZOYO ID matched.
+                  No users matched your search.
                 </div>
               ) : (
                 filteredUsers.map((user) => {

@@ -2899,73 +2899,43 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                 )}
               </div>
             ) : (
-              // Empty Seat Options — user must confirm before sitting
-              <div className="flex flex-col gap-3 text-xs">
-                {/* Confirmation banner if user is already in a seat */}
+              // Empty Seat — clean confirmation UI
+              <div className="flex flex-col gap-4 text-xs">
+
+                {/* Seat info card */}
+                <div className="flex items-center gap-3 bg-gradient-to-br from-pink-50 to-rose-50 border border-rose-100 rounded-2xl p-3.5">
+                  <div className="w-12 h-12 rounded-full bg-white border-2 border-dashed border-rose-300 flex items-center justify-center shrink-0">
+                    <Mic className="w-5 h-5 text-rose-400" />
+                  </div>
+                  <div>
+                    <p className="font-black text-zinc-800 text-sm">Mic Seat {selectedSeatIndex}</p>
+                    <p className="text-zinc-500 text-[11px] mt-0.5">This seat is open — tap below to grab the mic and speak live 🎙️</p>
+                  </div>
+                </div>
+
+                {/* Move banner if user is already in a seat */}
                 {mySeatIndex !== null && mySeatIndex !== selectedSeatIndex && (
-                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-2.5 text-center text-amber-700 font-bold text-[11px]">
-                    ⚡ You'll move from Seat {mySeatIndex} → Seat {selectedSeatIndex}
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-2.5 text-center text-amber-700 font-bold text-[11px] flex items-center justify-center gap-1.5">
+                    ↔️ Moving from Seat {mySeatIndex} → Seat {selectedSeatIndex}
                   </div>
                 )}
 
+                {/* Confirm button */}
                 <button
                   onClick={handleSitSelf}
-                  className="w-full bg-gradient-to-r from-pink-500 to-rose-600 text-white font-black py-3 rounded-xl hover:opacity-95 shadow-md shadow-pink-500/10 cursor-pointer flex items-center justify-center gap-1.5 active:scale-98 transition-all"
+                  className="w-full bg-gradient-to-r from-pink-500 to-rose-600 text-white font-black py-3.5 rounded-2xl hover:opacity-95 shadow-lg shadow-pink-500/20 cursor-pointer flex items-center justify-center gap-2 active:scale-95 transition-all text-sm"
                 >
-                  <Mic className="w-4 h-4" />
+                  <Mic className="w-5 h-5" />
                   <span>{mySeatIndex !== null ? `Move to Seat ${selectedSeatIndex}` : 'Sit Here & Join Mic'}</span>
                 </button>
 
-                <div className="text-center text-[10px] text-zinc-400 my-1">— OR place a guest —</div>
-
+                {/* Cancel */}
                 <button
-                  onClick={handleSpawnPresetGuest}
-                  className="w-full bg-stone-50 border border-zinc-200 text-zinc-600 hover:bg-stone-100 font-bold py-2.5 rounded-xl cursor-pointer flex items-center justify-center gap-1 shadow-sm"
+                  onClick={() => setShowSeatModal(false)}
+                  className="w-full bg-stone-100 hover:bg-stone-200 text-zinc-500 font-bold py-2.5 rounded-xl cursor-pointer flex items-center justify-center transition-all active:scale-95"
                 >
-                  <UserPlus className="w-4 h-4" />
-                  <span>Spawn Random Simulated Guest</span>
+                  Cancel
                 </button>
-
-                {/* Add fully customized guest form */}
-                <form onSubmit={handleCreateCustomGuest} className="flex flex-col gap-2.5 bg-stone-50 p-3 rounded-2xl border border-zinc-150 mt-1 shadow-inner">
-                  <p className="font-black text-zinc-400 text-[9px] uppercase tracking-wider">Configure Custom Guest Seat</p>
-                  
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[9px] text-zinc-400 font-bold">Guest Nickname</label>
-                    <input
-                      type="text"
-                      required
-                      value={customGuestName}
-                      onChange={(e) => setCustomGuestName(e.target.value)}
-                      placeholder="e.g. Leo 🐺"
-                      className="bg-white border border-zinc-200 rounded-lg px-2 py-1 text-[11px] text-zinc-800 focus:outline-none focus:border-rose-500 shadow-sm"
-                    />
-                  </div>
-
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[9px] text-zinc-400 font-bold font-sans">Choose Guest Avatar Preset</label>
-                    <div className="flex gap-2.5 justify-center py-1">
-                      {PRESET_AVATARS.map((av, idx) => (
-                        <img
-                          key={idx}
-                          src={av}
-                          alt=""
-                          onClick={() => setCustomGuestAvatar(av)}
-                          className={`w-6 h-6 rounded-full object-cover cursor-pointer border transition-all ${
-                            customGuestAvatar === av ? 'border-rose-500 scale-110 shadow-sm' : 'border-zinc-200'
-                          }`}
-                        />
-                      ))}
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="w-full mt-1 bg-rose-600 text-white font-black py-2 rounded-lg cursor-pointer hover:bg-rose-700 shadow-sm"
-                  >
-                    + Place Customized Guest
-                  </button>
-                </form>
               </div>
             )}
           </div>

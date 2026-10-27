@@ -417,46 +417,53 @@ async function connectToMongo() {
   try {
     mongoose.set('strictQuery', true);
     await mongoose.connect(MONGODB_URI, {
+      maxPoolSize: 50,          // Maintain pool of up to 50 concurrent sockets for instant parallel requests
+      minPoolSize: 10,          // Keep 10 idle sockets open at all times to eliminate cold connection handshakes
+      maxIdleTimeMS: 30000,     // Close idle connections after 30s
       serverSelectionTimeoutMS: 5000,
       connectTimeoutMS: 5000,
+      socketTimeoutMS: 20000,
+      retryWrites: true,
+      retryReads: true
     });
     isMongoConnected = true;
-    console.log("🔌 Connected successfully to MongoDB Atlas (Primary Database)!");
+    console.log("🔌 Connected successfully to MongoDB Atlas (High-Speed Pool, Low ms)!");
 
     // Seed Admin account in MongoDB Atlas if missing
-    const adminExists = await UserMongo.findOne({ name: "Admin" }).lean().maxTimeMS(2000).catch(() => null);
-    if (!adminExists) {
-      const seeded = await UserMongo.create({
-        name: "Admin",
-        username: "admin",
-        nickname: "Admin",
-        password: "Admin123", // Preseeded credentials
-        role: "admin",
-        avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80",
-        level: 99,
-        coins: 999999999,
-        frameId: "frame_royal",
-        bubbleId: "bubble_royal",
-        badge: "👑 Owner",
-        createdBy: "system",
-        managerId: "none",
-        isBlocked: false,
-        yoyoId: "888888",
-        gender: "Male",
-        dateOfBirth: "1995-10-24",
-        country: "Global",
-        followersCount: 0,
-        followingCount: 0,
-        giftsCount: 0,
-        visitorsCount: 0,
-        family: "None",
-        vipStatus: "None"
-      });
-      setCachedUser(seeded);
-      console.log("✅ Seeded Admin user in MongoDB Atlas.");
-    } else {
-      setCachedUser(adminExists);
-    }
+    UserMongo.findOne({ name: "Admin" }).lean().maxTimeMS(2500).then(async (adminExists: any) => {
+      if (!adminExists) {
+        const seeded = await UserMongo.create({
+          name: "Admin",
+          username: "admin",
+          nickname: "Admin",
+          password: "Admin123", // Preseeded credentials
+          role: "admin",
+          avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80",
+          level: 99,
+          coins: 999999999,
+          frameId: "frame_royal",
+          bubbleId: "bubble_royal",
+          badge: "👑 Owner",
+          createdBy: "system",
+          managerId: "none",
+          isBlocked: false,
+          yoyoId: "888888",
+          gender: "Male",
+          dateOfBirth: "1995-10-24",
+          country: "Global",
+          followersCount: 0,
+          followingCount: 0,
+          giftsCount: 0,
+          visitorsCount: 0,
+          family: "None",
+          vipStatus: "None"
+        });
+        setCachedUser(seeded);
+        console.log("✅ Seeded Admin user in MongoDB Atlas.");
+      } else {
+        setCachedUser(adminExists);
+      }
+    }).catch((e: any) => console.warn('Admin seed check error:', e));
 
     // ⚡ Pre-warm user cache from MongoDB Atlas in background for 0ms sub-millisecond logins
     UserMongo.find({}).lean().limit(1000).then((users: any[]) => {
@@ -708,18 +715,30 @@ async function createUser(userData: any) {
 async function updateUser(id: string, updateData: any) {
   invalidateCachedUser(id);
   if (isMongoConnected) {
-    const updated = await UserMongo.findByIdAndUpdate(id, { $set: updateData }, { new: true });
-    if (updated) setCachedUser(updated);
-    return updated;
-  } else {
-    const index = inMemoryDB.findIndex(u => u._id === id);
-    if (index !== -1) {
-      inMemoryDB[index] = { ...inMemoryDB[index], ...updateData };
-      setCachedUser(inMemoryDB[index]);
-      return inMemoryDB[index];
+    try {
+      let updated = null;
+      if (mongoose.Types.ObjectId.isValid(id)) {
+        updated = await UserMongo.findByIdAndUpdate(id, { $set: updateData }, { returnDocument: 'after' }).lean().maxTimeMS(2000);
+      } else {
+        updated = await UserMongo.findOneAndUpdate(
+          { $or: [{ username: id }, { name: id }, { yoyoId: id }] },
+          { $set: updateData },
+          { returnDocument: 'after' }
+        ).lean().maxTimeMS(2000);
+      }
+      if (updated) setCachedUser(updated);
+      return updated;
+    } catch (err) {
+      console.warn(`[updateUser] Error updating user ${id}:`, err);
     }
-    return null;
   }
+  const index = inMemoryDB.findIndex(u => u._id === id || (u as any).id === id || u.name === id);
+  if (index !== -1) {
+    inMemoryDB[index] = { ...inMemoryDB[index], ...updateData };
+    setCachedUser(inMemoryDB[index]);
+    return inMemoryDB[index];
+  }
+  return null;
 }
 
 
@@ -1813,26 +1832,34 @@ async function getRoom(id: string) {
 
   // 2. Query MongoDB Atlas if connected
   if (isMongoConnected) {
-    let room = null;
-    if (mongoose.Types.ObjectId.isValid(cleanId)) {
-      room = await RoomMongo.findById(cleanId).lean();
-    }
-    if (!room) {
-      room = await RoomMongo.findOne({ $or: [{ roomId: cleanId }, { _id: cleanId }] }).lean();
-    }
-    if (room) {
-      // lean() returns plain object; normalise _id to string id
-      (room as any).id = String((room as any)._id);
-      activeRoomsCache.set(cleanId, room);
-      activeRoomsCache.set(String(room._id), room);
-      return sanitizeRoom(room);
+    try {
+      let room = null;
+      if (mongoose.Types.ObjectId.isValid(cleanId)) {
+        room = await RoomMongo.findById(cleanId).lean().maxTimeMS(2000);
+      }
+      if (!room) {
+        room = await RoomMongo.findOne({ $or: [{ roomId: cleanId }, { id: cleanId }] }).lean().maxTimeMS(2000);
+      }
+      if (room) {
+        // lean() returns plain object; normalise _id to string id
+        (room as any).id = String((room as any)._id);
+        activeRoomsCache.set(cleanId, room);
+        activeRoomsCache.set(String(room._id), room);
+        if (room.roomId) activeRoomsCache.set(String(room.roomId), room);
+        if ((room as any).id) activeRoomsCache.set(String((room as any).id), room);
+        return sanitizeRoom(room);
+      }
+    } catch (err) {
+      console.warn(`[getRoom] MongoDB query error for ${cleanId}:`, err);
     }
   }
 
   // 3. Fallback to inMemoryRooms
-  const room = inMemoryRooms.find(r => r.id === cleanId || r.roomId === cleanId);
+  const room = inMemoryRooms.find(r => r.id === cleanId || r.roomId === cleanId || (r as any)._id === cleanId);
   if (room) {
     activeRoomsCache.set(cleanId, room);
+    if (room.id) activeRoomsCache.set(String(room.id), room);
+    if (room.roomId) activeRoomsCache.set(String(room.roomId), room);
     return sanitizeRoom(room);
   }
 
@@ -1846,11 +1873,12 @@ async function saveRoom(room: any) {
 
   // 1. Instant update in activeRoomsCache for sub-millisecond response
   activeRoomsCache.set(id, room);
+  if (room._id) activeRoomsCache.set(String(room._id), room);
   if (room.id) activeRoomsCache.set(String(room.id), room);
   if (room.roomId) activeRoomsCache.set(String(room.roomId), room);
 
   // Also keep inMemoryRooms in sync if present
-  const memIdx = inMemoryRooms.findIndex(r => r.id === id || r.roomId === id);
+  const memIdx = inMemoryRooms.findIndex(r => r.id === id || r.roomId === id || (r as any)._id === id);
   if (memIdx !== -1) {
     inMemoryRooms[memIdx] = { ...room };
   }
@@ -1867,12 +1895,19 @@ async function saveRoom(room: any) {
     try {
       if (isMongoConnected) {
         const { _id, __v, ...update } = room;
-        await RoomMongo.findByIdAndUpdate(id, { $set: update }, { new: false }).catch(() => {});
+        const targetId = String(_id || room.id || id);
+        if (mongoose.Types.ObjectId.isValid(targetId)) {
+          await RoomMongo.updateOne({ _id: targetId }, { $set: update }).maxTimeMS(2500);
+        } else if (room.roomId) {
+          await RoomMongo.updateOne({ roomId: room.roomId }, { $set: update }).maxTimeMS(2500);
+        } else {
+          await RoomMongo.updateOne({ id: targetId }, { $set: update }).maxTimeMS(2500);
+        }
       }
     } catch (err) {
       console.warn(`[RoomPersistence] Failed to persist room ${id}:`, err);
     }
-  }, 300);
+  }, 250);
 
   roomSaveDebounceTimers.set(id, timer);
 }
@@ -2069,7 +2104,7 @@ app.post("/api/friend-requests/:requestId/respond", async (req: express.Request,
     if (!['accept', 'reject'].includes(action)) { res.status(400).json({ error: "action must be 'accept' or 'reject'" }); return; }
     const newStatus = action === 'accept' ? 'accepted' : 'rejected';
     if (isMongoConnected) {
-      const fr = await FriendRequestMongo.findByIdAndUpdate(requestId, { status: newStatus }, { new: true });
+      const fr = await FriendRequestMongo.findByIdAndUpdate(requestId, { $set: { status: newStatus } }, { returnDocument: 'after' }).maxTimeMS(2000);
       if (!fr) { res.status(404).json({ error: "Friend request not found" }); return; }
       res.json({ success: true, friendRequest: fr });
     } else {
@@ -2808,7 +2843,9 @@ app.post("/api/rooms/:id/seat/:seatIndex", async (req: express.Request, res: exp
       if (room.seats[seatIdx] && room.seats[seatIdx].user) {
         const occId = String(room.seats[seatIdx].user._id || room.seats[seatIdx].user.id || '');
         const occName = String(room.seats[seatIdx].user.name || '');
-        if ((occId && occId !== newUserId) || (occName && occName !== user.name)) {
+        const idMismatch = occId && newUserId && occId !== newUserId;
+        const nameMismatch = occName && user.name && occName !== user.name;
+        if (idMismatch && nameMismatch) {
           res.status(409).json({ error: `Seat already occupied by ${room.seats[seatIdx].user.name}` });
           return;
         }

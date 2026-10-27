@@ -861,9 +861,15 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
             }
           } else if (data.type === 'seats_updated') {
             if (data.seats && Array.isArray(data.seats)) {
-              setSeats(data.seats);
-              const found = data.seats.find((s: any) => s.user && String(s.user._id || s.user.id) === currentUserId);
+              // Protect seat 0: always ensure host is anchored there
+              const sanitized = data.seats.map((s: any) => {
+                if (s.index === 0 && !s.user) return { ...s, user: safeRoom.host };
+                return s;
+              });
+              setSeats(sanitized);
+              const found = sanitized.find((s: any) => s.user && (String(s.user._id || s.user.id) === currentUserId || s.user.name === currentUser.name));
               if (!found && mySeatIndexRef.current !== null) {
+                // We were kicked/displaced from seat
                 disableMicrophone();
                 setMySeatIndex(null);
                 toast('You were removed from the mic seat', 'info');
@@ -1056,6 +1062,8 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   // Click handler for Seat triggers Action Menu
   const handleSeatClick = (index: number) => {
     playSynthSound('tap');
+
+    // Seat 0 is host-only — non-hosts get a toast
     if (index === 0) {
       const isHost = String(currentUserId) === String((safeRoom.host as any)?._id || safeRoom.host?.id) || currentUser.name === safeRoom.host?.name;
       if (!isHost) {
@@ -1063,18 +1071,31 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         return;
       }
     }
+
+    const seatOccupied = Boolean(seats[index]?.user);
+
+    // If user taps an EMPTY seat and they are already seated elsewhere: move directly (no modal)
+    if (!seatOccupied && mySeatIndex !== null && mySeatIndex !== index) {
+      setSelectedSeatIndex(index);
+      handleSitSelfAtIndex(index);
+      return;
+    }
+
+    // If user taps their OWN occupied seat: just open modal to show Leave option
+    if (seatOccupied && mySeatIndex === index) {
+      setSelectedSeatIndex(index);
+      setShowSeatModal(true);
+      return;
+    }
+
     setSelectedSeatIndex(index);
     setCustomGuestName(`Guest Seat ${index}`);
     setCustomGuestLevel(Math.floor(Math.random() * 20) + 5);
     setShowSeatModal(true);
   };
 
-  // Seat Action implementation handlers - Instantaneous with Optimistic UI
-  const handleSitSelf = async () => {
-    if (selectedSeatIndex === null) return;
-    const index = selectedSeatIndex;
-    setShowSeatModal(false);
-
+  // Core seat-sit logic — accepts explicit index so it can be called without modal
+  const handleSitSelfAtIndex = async (index: number) => {
     // Save previous snapshot for rollback if needed
     const prevSeats = [...seats];
     const prevMySeat = mySeatIndex;
@@ -1090,8 +1111,9 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       if (s.index === index) {
         return { ...s, user: optimisticUser, isTalking: false, isMuted: false };
       }
+      // Clear user's old seat
       if (prevMySeat !== null && s.index === prevMySeat) {
-        return { ...s, user: null, isTalking: false, isMuted: false };
+        return { ...s, user: s.index === 0 ? safeRoom.host : null, isTalking: false, isMuted: false };
       }
       return s;
     }));
@@ -1105,7 +1127,6 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     sendWs('seat_status', { seatIndex: index, isTalking: false, isMuted: false });
 
     try {
-      // Backend automatically vacates user's previous seat in room, no need to send redundant /leave request first!
       const res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1115,7 +1136,6 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         toast(`Failed: ${errData.error || 'Could not sit in seat'}`, 'error');
-        // Rollback state on error
         setSeats(prevSeats);
         setMySeatIndex(prevMySeat);
         return;
@@ -1123,15 +1143,27 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
       const data = await res.json();
       if (data.success && data.room?.seats) {
-        setSeats(data.room.seats);
+        // Protect seat 0 from losing host in the server response
+        const sanitized = data.room.seats.map((s: any) => {
+          if (s.index === 0 && !s.user) return { ...s, user: safeRoom.host };
+          return s;
+        });
+        setSeats(sanitized);
       }
     } catch (err) {
       console.error('Error sitting in seat:', err);
-      // Rollback state on error
       setSeats(prevSeats);
       setMySeatIndex(prevMySeat);
       toast('Failed to sit in seat. Please try again.', 'error');
     }
+  };
+
+  // Seat Action implementation handlers - Instantaneous with Optimistic UI
+  const handleSitSelf = async () => {
+    if (selectedSeatIndex === null) return;
+    const index = selectedSeatIndex;
+    setShowSeatModal(false);
+    await handleSitSelfAtIndex(index);
   };
 
   const handleSpawnPresetGuest = async () => {

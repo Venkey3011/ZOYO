@@ -2917,6 +2917,12 @@ app.post("/api/rooms/:id/seat/:seatIndex", async (req: express.Request, res: exp
       room.onlineCount = Math.max(room.onlineUsers?.length || 1, room.seats.filter((s: any) => s.user).length);
     }
 
+    // Always anchor seat 0 to the room host — never let it go empty
+    if (room.seats && room.seats[0] && room.host) {
+      room.seats[0].user = room.host;
+    }
+
+    room.onlineCount = Math.max(room.onlineUsers?.length || 1, room.seats.filter((s: any) => s.user).length);
     await saveRoom(room);
 
     // Broadcast seat change to ALL clients in the room
@@ -3277,14 +3283,18 @@ async function startServer() {
           }, ws);
         } else if (type === 'seat_status') {
           // Live microphone speech detection or mute toggle
+          // Only persist mute changes to DB — isTalking fires many times/sec and must NOT hit DB
           const { seatIndex, isTalking, isMuted } = payload || {};
-          const room = await getRoom(roomId);
-          if (room && room.seats && room.seats[seatIndex]) {
-            if (isTalking !== undefined) room.seats[seatIndex].isTalking = isTalking;
-            if (isMuted !== undefined) room.seats[seatIndex].isMuted = isMuted;
-            await saveRoom(room);
+          if (isMuted !== undefined) {
+            // Mute toggle is rare — persist it
+            const room = await getRoom(roomId);
+            if (room && room.seats && room.seats[seatIndex] !== undefined) {
+              room.seats[seatIndex].isMuted = isMuted;
+              if (isTalking !== undefined) room.seats[seatIndex].isTalking = isTalking;
+              await saveRoom(room);
+            }
           }
-
+          // Always broadcast the live state change to all room clients
           broadcastToRoom(roomId, {
             type: 'seat_status_updated',
             seatIndex,

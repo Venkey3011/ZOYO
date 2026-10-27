@@ -3,7 +3,8 @@ import { User } from '../types';
 import { PRESET_AVATARS } from '../data';
 import { 
   X, Copy, MessageCircle, UserPlus, Gift, Sparkles, 
-  Award, ShieldCheck, Heart, Eye, Check, Star, LogOut 
+  Award, ShieldCheck, Heart, Eye, Check, Star, LogOut,
+  UserX, ShieldAlert
 } from 'lucide-react';
 import { toast } from './Toast';
 
@@ -15,6 +16,10 @@ interface UserProfileModalProps {
   onOpenChat?: (targetUser: User) => void;
   onSendGift?: (targetUser: User) => void;
   onLeaveSeat?: () => void;
+  isHost?: boolean;
+  userSeatIndex?: number | null;
+  onKickFromSeat?: (seatIndex: number, user: User) => void;
+  onKickFromRoom?: (user: User) => void;
 }
 
 export default function UserProfileModal({
@@ -25,6 +30,10 @@ export default function UserProfileModal({
   onOpenChat,
   onSendGift,
   onLeaveSeat,
+  isHost = false,
+  userSeatIndex = null,
+  onKickFromSeat,
+  onKickFromRoom,
 }: UserProfileModalProps) {
   const [profileData, setProfileData] = useState<User | null>(user);
   const [friendReqSent, setFriendReqSent] = useState(false);
@@ -358,6 +367,42 @@ export default function UserProfileModal({
               </div>
             )}
           </div>
+
+          {/* Room Host Operator Actions */}
+          {!isMe && isHost && (
+            <div className="w-full flex flex-col gap-2 pt-2 border-t border-zinc-150 animate-in fade-in duration-200">
+              <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                👑 Host Room Controls
+              </span>
+              <div className="flex gap-2">
+                {userSeatIndex !== null && userSeatIndex !== undefined && userSeatIndex > 0 && onKickFromSeat && (
+                  <button
+                    onClick={() => {
+                      onClose();
+                      onKickFromSeat(userSeatIndex, profileData);
+                    }}
+                    className="flex-1 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-extrabold py-2 px-3 rounded-xl text-[11px] flex items-center justify-center gap-1.5 cursor-pointer shadow-xs active:scale-98 transition-all"
+                  >
+                    <UserX className="w-3.5 h-3.5" />
+                    <span>Kick from Seat {userSeatIndex}</span>
+                  </button>
+                )}
+
+                {onKickFromRoom && (
+                  <button
+                    onClick={() => {
+                      onClose();
+                      onKickFromRoom(profileData);
+                    }}
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white font-extrabold py-2 px-3 rounded-xl text-[11px] flex items-center justify-center gap-1.5 cursor-pointer shadow-xs active:scale-98 transition-all"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5" />
+                    <span>Kick from Room</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
       </div>

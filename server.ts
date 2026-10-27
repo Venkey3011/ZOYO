@@ -2828,6 +2828,44 @@ app.post("/api/rooms/:id/seat/:seatIndex", async (req: express.Request, res: exp
 
       // Ensure user is in onlineUsers without duplicates
       addOnlineUserToRoom(room, safeUser);
+    } else if (action === 'kick') {
+      const { hostId, hostName, targetUserId, targetUserName } = req.body;
+      const rHostId = String(room.host?._id || room.host?.id || '');
+      const isHost = String(hostId) === rHostId || hostName === room.host?.name;
+      if (!isHost) {
+        res.status(403).json({ error: "Only the host can kick users from seats" });
+        return;
+      }
+
+      console.log(`🚫 Host ${hostName} kicking user ${targetUserName || targetUserId} from seat ${seatIdx} in room ${id}`);
+      room.seats[seatIdx] = { 
+        index: seatIdx, 
+        user: seatIdx === 0 ? room.host : null, 
+        isMuted: false, 
+        isTalking: false 
+      };
+      room.onlineCount = Math.max(room.onlineUsers?.length || 1, room.seats.filter((s: any) => s.user).length);
+
+      await saveRoom(room);
+
+      // Broadcast kick event so kicked user immediately cuts mic stream
+      broadcastToRoom(id, {
+        type: 'user_kicked_from_seat',
+        seatIndex: seatIdx,
+        kickedUserId: String(targetUserId),
+        kickedUserName: targetUserName || 'Guest',
+        kickedBy: hostName || 'Host',
+        seats: room.seats
+      });
+
+      broadcastToRoom(id, {
+        type: 'seats_updated',
+        seats: room.seats,
+        onlineCount: room.onlineCount
+      });
+
+      res.json({ success: true, room });
+      return;
     } else if (action === 'leave') {
       console.log(`👋 User leaving seat ${seatIdx} in room ${id}`);
       room.seats[seatIdx] = { 
@@ -2851,6 +2889,59 @@ app.post("/api/rooms/:id/seat/:seatIndex", async (req: express.Request, res: exp
     res.json({ success: true, room });
   } catch (error) {
     console.error('Error updating seat:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Kick a user out of the room completely (Host only)
+app.post("/api/rooms/:id/kick-user", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    const { hostId, hostName, targetUserId, targetUserName } = req.body;
+
+    const room = await getRoom(id);
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return;
+    }
+
+    const rHostId = String(room.host?._id || room.host?.id || '');
+    const isHost = String(hostId) === rHostId || hostName === room.host?.name;
+    if (!isHost) {
+      res.status(403).json({ error: "Only the room host can kick users" });
+      return;
+    }
+
+    const tId = String(targetUserId);
+    removeOnlineUserFromRoom(room, tId, targetUserName);
+
+    // Vacate seat if user was seated
+    if (room.seats) {
+      for (const seat of room.seats) {
+        if (seat.user && (String(seat.user._id || seat.user.id) === tId || (targetUserName && seat.user.name === targetUserName))) {
+          seat.user = seat.index === 0 ? room.host : null;
+          seat.isTalking = false;
+          seat.isMuted = false;
+        }
+      }
+    }
+
+    await saveRoom(room);
+
+    // Broadcast user kicked from room
+    broadcastToRoom(id, {
+      type: 'user_kicked_from_room',
+      kickedUserId: tId,
+      kickedUserName: targetUserName || 'Guest',
+      kickedBy: hostName || 'Host',
+      onlineUsers: room.onlineUsers,
+      onlineCount: room.onlineCount,
+      seats: room.seats
+    });
+
+    res.json({ success: true, room });
+  } catch (error) {
+    console.error('Error kicking user from room:', error);
     res.status(500).json({ error: "Internal server error" });
   }
 });

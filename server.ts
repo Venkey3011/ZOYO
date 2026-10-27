@@ -15,7 +15,7 @@ app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
 // ⚡ SUPABASE REALTIME & HIGH-CONCURRENCY DATABASE (The ONLY Database)
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://efiiphktyjafxcoudvfj.supabase.co";
-const SUPABASE_KEY = process.env.SUPABASE_KEY || "sb_secret_ERMVM91RFJGm7udbqXrRGw_rrDy4drF";
+const SUPABASE_KEY = process.env.SUPABASE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmaWlwaGt0eWphZnhjb3VkdmZqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MjU1NTIzMiwiZXhwIjoyMTA4MTMxMjMyfQ.S2cAnwoTnIMFwODVHsXLA0IvvnHmQ8ZSk7h3hJ6hWtM";
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false },

@@ -1084,20 +1084,14 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
     const seatOccupied = Boolean(seats[index]?.user);
 
-    // If user taps an EMPTY seat and they are already seated elsewhere: move directly (no modal)
-    if (!seatOccupied && mySeatIndex !== null && mySeatIndex !== index) {
-      setSelectedSeatIndex(index);
-      handleSitSelfAtIndex(index);
-      return;
-    }
-
-    // If user taps their OWN occupied seat: just open modal to show Leave option
+    // If user taps their OWN occupied seat: open modal to show Leave option
     if (seatOccupied && mySeatIndex === index) {
       setSelectedSeatIndex(index);
       setShowSeatModal(true);
       return;
     }
 
+    // All other cases (empty seat, or occupied by someone else): open modal for confirmation/options
     setSelectedSeatIndex(index);
     setCustomGuestName(`Guest Seat ${index}`);
     setCustomGuestLevel(Math.floor(Math.random() * 20) + 5);
@@ -2747,7 +2741,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           <div className="bg-white border border-zinc-200 w-full max-w-sm rounded-3xl p-5 flex flex-col gap-4 animate-in zoom-in-95 duration-150 shadow-2xl">
             <div className="flex justify-between items-center border-b border-zinc-150 pb-2">
               <h3 className="text-xs font-black text-zinc-800 flex items-center gap-1">
-                ⚙️ Seat {selectedSeatIndex} Operator Controls
+                🎙️ Mic Seat {selectedSeatIndex}
               </h3>
               <button
                 onClick={() => setShowSeatModal(false)}
@@ -2813,7 +2807,12 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                 </div>
 
                 {/* Simulated Bot Commands (if guest is not the current user) */}
-                {seats[selectedSeatIndex].user?.id !== currentUser.id && (
+                {(() => {
+                  const seatUser = seats[selectedSeatIndex].user;
+                  const seatUserId = String(seatUser?._id || seatUser?.id || (seatUser as any)?.userId || '');
+                  const isMe = seatUserId === currentUserId || seatUser?.name === currentUser.name;
+                  return !isMe;
+                })() && (
                   <div className="flex flex-col gap-2.5 bg-stone-50 p-3 rounded-2xl border border-zinc-150 shadow-inner">
                     <p className="font-black text-zinc-400 text-[10px] uppercase tracking-wider">Guest Bot Operations</p>
                     
@@ -2860,7 +2859,12 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                 )}
 
                 {/* Current user sitting on this seat -> Leave Seat */}
-                {(seats[selectedSeatIndex].user?._id === currentUserId || seats[selectedSeatIndex].user?.id === currentUserId || seats[selectedSeatIndex].user?.name === currentUser.name) && (
+                {(() => {
+                  const seatUser = seats[selectedSeatIndex].user;
+                  const seatUserId = String(seatUser?._id || seatUser?.id || (seatUser as any)?.userId || '');
+                  const isMe = seatUserId === currentUserId || seatUser?.name === currentUser.name;
+                  return isMe;
+                })() && (
                   <button
                     onClick={handleLeaveSeat}
                     className="w-full mt-1 bg-rose-50 border border-rose-200 text-rose-600 font-bold py-2.5 rounded-xl hover:bg-rose-100/50 cursor-pointer flex items-center justify-center gap-1.5 shadow-sm active:scale-98 transition-all"
@@ -2871,7 +2875,11 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                 )}
 
                 {/* Host controls for kicking someone else from seat or room */}
-                {isCurrentUserHost && selectedSeatIndex > 0 && seats[selectedSeatIndex].user && seats[selectedSeatIndex].user?._id !== currentUserId && seats[selectedSeatIndex].user?.id !== currentUserId && seats[selectedSeatIndex].user?.name !== currentUser.name && (
+                {isCurrentUserHost && selectedSeatIndex > 0 && seats[selectedSeatIndex].user && (() => {
+                  const seatUser = seats[selectedSeatIndex].user;
+                  const seatUserId = String(seatUser?._id || seatUser?.id || (seatUser as any)?.userId || '');
+                  return seatUserId !== currentUserId && seatUser?.name !== currentUser.name;
+                })() && (
                   <div className="flex flex-col gap-2 pt-2 border-t border-zinc-150">
                     <button
                       onClick={() => handleKickUserFromSeat(selectedSeatIndex, seats[selectedSeatIndex].user!)}
@@ -2891,17 +2899,24 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                 )}
               </div>
             ) : (
-              // Empty Seat Options (Let them place guest or themselves)
+              // Empty Seat Options — user must confirm before sitting
               <div className="flex flex-col gap-3 text-xs">
+                {/* Confirmation banner if user is already in a seat */}
+                {mySeatIndex !== null && mySeatIndex !== selectedSeatIndex && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-2.5 text-center text-amber-700 font-bold text-[11px]">
+                    ⚡ You'll move from Seat {mySeatIndex} → Seat {selectedSeatIndex}
+                  </div>
+                )}
+
                 <button
                   onClick={handleSitSelf}
-                  className="w-full bg-gradient-to-r from-pink-500 to-rose-600 text-white font-black py-2.5 rounded-xl hover:opacity-95 shadow-md shadow-pink-500/10 cursor-pointer flex items-center justify-center gap-1"
+                  className="w-full bg-gradient-to-r from-pink-500 to-rose-600 text-white font-black py-3 rounded-xl hover:opacity-95 shadow-md shadow-pink-500/10 cursor-pointer flex items-center justify-center gap-1.5 active:scale-98 transition-all"
                 >
                   <Mic className="w-4 h-4" />
-                  <span>Sit Here Myself (Join Mic Speakers)</span>
+                  <span>{mySeatIndex !== null ? `Move to Seat ${selectedSeatIndex}` : 'Sit Here & Join Mic'}</span>
                 </button>
 
-                <div className="text-center text-[10px] text-zinc-400 my-1">— OR —</div>
+                <div className="text-center text-[10px] text-zinc-400 my-1">— OR place a guest —</div>
 
                 <button
                   onClick={handleSpawnPresetGuest}

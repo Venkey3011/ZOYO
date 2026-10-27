@@ -1845,15 +1845,27 @@ async function getRoom(id: string) {
     return sanitizeRoom(activeRoomsCache.get(cleanId));
   }
 
-  // 2. Query Supabase
+  // 2. Query Supabase — try by UUID id first, then by title as fallback
   if (isSupabaseConnected) {
     try {
-      const { data, error } = await supabase
+      // Primary: match by UUID id
+      let { data, error } = await supabase
         .from('rooms')
         .select('*')
-        .or(`id.eq.${cleanId},title.ilike.${cleanId}`)
-        .limit(1)
+        .eq('id', cleanId)
         .maybeSingle();
+
+      // Secondary fallback: match by title (exact) if primary found nothing
+      if ((!data || error) && cleanId.length < 36) {
+        const fallback = await supabase
+          .from('rooms')
+          .select('*')
+          .ilike('title', cleanId)
+          .limit(1)
+          .maybeSingle();
+        data = fallback.data;
+        error = fallback.error;
+      }
 
       if (data && !error) {
         const room = supabaseToRoom(data);

@@ -18,6 +18,7 @@ interface MobileFrameProps {
   currentUserRole?: string;
   isLoggedIn?: boolean;
   inboxCount?: number;
+  unreadMessagesCount?: number;
   onOpenFriends?: () => void;
 }
 
@@ -33,6 +34,7 @@ export default function MobileFrame({
   currentUserRole,
   isLoggedIn,
   inboxCount = 0,
+  unreadMessagesCount = 0,
   onOpenFriends,
 }: MobileFrameProps) {
 
@@ -94,6 +96,7 @@ export default function MobileFrame({
                 const IconComponent = tab.icon;
                 const isSelected = activeTab === tab.id;
                 const isFriends = tab.id === 'friends';
+                const isChat = tab.id === 'chat';
                 const handleClick = () => onTabChange(tab.id);
 
                 return (
@@ -109,8 +112,13 @@ export default function MobileFrame({
                     <div className="relative">
                       <IconComponent className={`w-4 h-4 ${isSelected ? 'stroke-[2.5]' : 'stroke-2'}`} />
                       {isFriends && inboxCount > 0 && (
-                        <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[8px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center">
-                          {inboxCount}
+                        <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[8px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center animate-pulse">
+                          {inboxCount > 9 ? '9+' : inboxCount}
+                        </span>
+                      )}
+                      {isChat && unreadMessagesCount > 0 && (
+                        <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[8px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center animate-pulse">
+                          {unreadMessagesCount > 9 ? '9+' : unreadMessagesCount}
                         </span>
                       )}
                     </div>
@@ -118,6 +126,11 @@ export default function MobileFrame({
                     {isFriends && inboxCount > 0 && (
                       <span className="ml-auto bg-rose-100 text-rose-600 text-[9px] font-black px-1.5 py-0.5 rounded-full">
                         {inboxCount}
+                      </span>
+                    )}
+                    {isChat && unreadMessagesCount > 0 && (
+                      <span className="ml-auto bg-rose-100 text-rose-600 text-[9px] font-black px-1.5 py-0.5 rounded-full">
+                        {unreadMessagesCount}
                       </span>
                     )}
                   </button>
@@ -203,6 +216,7 @@ export default function MobileFrame({
                 const IconComponent = tab.icon;
                 const isSelected = activeTab === tab.id;
                 const isFriends = tab.id === 'friends';
+                const isChat = tab.id === 'chat';
                 const handleClick = () => onTabChange(tab.id);
 
                 return (
@@ -218,8 +232,13 @@ export default function MobileFrame({
                     <div className="relative text-xl flex items-center justify-center">
                       <IconComponent className={`w-5 h-5 ${isSelected ? 'stroke-[2.5]' : 'stroke-2'}`} />
                       {isFriends && inboxCount > 0 && (
-                        <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[8px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center leading-none">
-                          {inboxCount}
+                        <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[8px] font-black min-w-3.5 h-3.5 px-0.5 rounded-full flex items-center justify-center leading-none animate-pulse shadow-xs">
+                          {inboxCount > 9 ? '9+' : inboxCount}
+                        </span>
+                      )}
+                      {isChat && unreadMessagesCount > 0 && (
+                        <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[8px] font-black min-w-3.5 h-3.5 px-0.5 rounded-full flex items-center justify-center leading-none animate-pulse shadow-xs">
+                          {unreadMessagesCount > 9 ? '9+' : unreadMessagesCount}
                         </span>
                       )}
                     </div>

@@ -136,8 +136,9 @@ export default function App() {
     };
   }, []);
 
-  // Friends system
+  // Friends & Notifications badge counts
   const [inboxCount, setInboxCount] = useState(0);
+  const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
 
   // Poll for ban/block and sync status steadily (4.5s interval without tearing down on coin change)
   React.useEffect(() => {
@@ -202,23 +203,91 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  // Poll friend request inbox badge count every 30 seconds
+  // Poll notification counts (pending friend requests & unread DMs) every 12 seconds
   useEffect(() => {
     if (!isLoggedIn) return;
     const uId = currentUser._id || currentUser.id;
     if (!uId || uId === 'me') return;
-    const fetchInbox = async () => {
+
+    const fetchNotifications = async () => {
       try {
-        const res = await fetch(`/api/friend-requests/${uId}/inbox`);
+        const res = await fetch(`/api/notifications/counts/${uId}`);
         if (res.ok) {
           const data = await res.json();
-          if (data.success) setInboxCount(data.requests?.length || 0);
+          if (data.success) {
+            setInboxCount(data.friendRequests || 0);
+            if (activeTabRef.current !== 'chat') {
+              setUnreadMessagesCount(data.unreadDMs || 0);
+            }
+          }
         }
       } catch { /* ignore */ }
     };
-    fetchInbox();
-    const interval = setInterval(fetchInbox, 30000);
+
+    fetchNotifications();
+    const interval = setInterval(fetchNotifications, 12000);
     return () => clearInterval(interval);
+  }, [isLoggedIn, currentUser._id, currentUser.id]);
+
+  // Global WebSocket for instantaneous push notifications (friend requests, DMs, responses)
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    const uId = currentUser._id || currentUser.id;
+    if (!uId || uId === 'me') return;
+
+    let ws: WebSocket | null = null;
+    let reconnectTimer: any = null;
+    let isMounted = true;
+
+    const connectGlobalWs = () => {
+      try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          ws?.send(JSON.stringify({
+            type: 'register_user',
+            userId: String(uId)
+          }));
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'friend_request_received') {
+              setInboxCount(prev => prev + 1);
+              toast(`🤝 New friend request from ${data.friendRequest?.sender_name || 'a user'}!`, 'info');
+            } else if (data.type === 'friend_request_responded') {
+              if (data.action === 'accept') {
+                toast(`🎉 ${data.friendRequest?.receiver_name || 'Friend'} accepted your friend request!`, 'success');
+              }
+            } else if (data.type === 'dm_message') {
+              if (activeTabRef.current !== 'chat') {
+                setUnreadMessagesCount(prev => prev + 1);
+                const partnerName = data.partner?.name || data.message?.sender || 'Friend';
+                const preview = data.message?.text || 'Sent you a message';
+                toast(`💬 Message from ${partnerName}: ${preview.slice(0, 30)}`, 'info');
+              }
+            }
+          } catch {}
+        };
+
+        ws.onclose = () => {
+          if (isMounted) {
+            reconnectTimer = setTimeout(connectGlobalWs, 5000);
+          }
+        };
+      } catch {}
+    };
+
+    connectGlobalWs();
+
+    return () => {
+      isMounted = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) ws.close();
+    };
   }, [isLoggedIn, currentUser._id, currentUser.id]);
 
   // Sync state modifications back to Express MongoDB server
@@ -456,6 +525,9 @@ export default function App() {
       setActiveRoomId(null);
       setActiveRoomOverride(null);
     }
+    if (newTab === 'chat') {
+      setUnreadMessagesCount(0);
+    }
     if (newTab !== activeTabRef.current) {
       setActiveTab(newTab);
       saveStoredActiveTab(newTab);
@@ -621,6 +693,7 @@ export default function App() {
       userAvatar={currentUser.avatar}
       currentUserRole={currentUser.role}
       inboxCount={inboxCount}
+      unreadMessagesCount={unreadMessagesCount}
     >
       {activeRoomId && activeRoom ? (
         <VoiceRoom

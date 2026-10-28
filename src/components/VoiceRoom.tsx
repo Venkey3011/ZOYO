@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Room, User, Seat, ChatMessage, Gift, LudoState, DiceDuelState } from '../types';
-import { GIFTS, AUDIO_TRACKS, PRESET_AVATARS } from '../data';
+import { GIFTS, AUDIO_TRACKS, PRESET_AVATARS, ROOM_WALLPAPERS } from '../data';
 import { 
   ChevronLeft, Users, Mic, MicOff, Send, 
   Trophy, Sparkles, X, Gift as GiftIcon, Flame, Play, Pause,
   CornerDownRight, RefreshCw, Smile, Zap, MessageSquare, Award, UserPlus, Trash, VolumeX, MessageSquareDashed,
-  Share2, Copy, Eye, UserX, ShieldAlert
+  Share2, Copy, Eye, UserX, ShieldAlert, Palette, Music, Volume2, Disc, SkipForward, SkipBack, Sliders, Check, ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from './Toast';
@@ -211,10 +211,37 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   // Floating reactions list
   const [reactions, setReactions] = useState<{ id: string; emoji: string; seatIndex: number }[]>([]);
 
+  // Room Customization State
+  const defaultWallpaper = (safeRoom as any).backgroundUrl || ROOM_WALLPAPERS[0].url;
+  const [roomBackground, setRoomBackground] = useState<string>(defaultWallpaper);
+  const [roomTitle, setRoomTitle] = useState<string>(safeRoom.title || 'Voice Room');
+  const [roomNotice, setRoomNotice] = useState<string>((safeRoom as any).notice || safeRoom.description || 'Welcome to the room! Sit back, relax and enjoy the vibes ✨');
+  const [seatStyle, setSeatStyle] = useState<'sofa' | 'classic'>((safeRoom as any).seatStyle || 'sofa');
+  const [showCustomizationModal, setShowCustomizationModal] = useState(false);
+  const [customWallpaperInput, setCustomWallpaperInput] = useState('');
+  const [isSavingCustomization, setIsSavingCustomization] = useState(false);
+
+  // Music Player State (Host & Audience Synchronized)
+  const [showMusicDrawer, setShowMusicDrawer] = useState(false);
+  const [musicVolume, setMusicVolume] = useState<number>(0.7);
+  const [musicProgress, setMusicProgress] = useState<number>(0);
+  const [musicDuration, setMusicDuration] = useState<number>(0);
+  const [customAudioUrl, setCustomAudioUrl] = useState<string>('');
+  const [customAudioName, setCustomAudioName] = useState<string>('');
+  const roomMusicAudioRef = useRef<HTMLAudioElement | null>(null);
+
   // Intercept hardware / gesture back button to close any open modal or drawer in VoiceRoom
   useEffect(() => {
-    if (showGiftDrawer || showAudienceModal || showSeatModal || showUserProfileModal || showInvitePanel) {
+    if (showGiftDrawer || showAudienceModal || showSeatModal || showUserProfileModal || showInvitePanel || showCustomizationModal || showMusicDrawer) {
       return registerBackHandler(() => {
+        if (showCustomizationModal) {
+          setShowCustomizationModal(false);
+          return true;
+        }
+        if (showMusicDrawer) {
+          setShowMusicDrawer(false);
+          return true;
+        }
         if (showGiftDrawer) {
           setShowGiftDrawer(false);
           return true;
@@ -238,7 +265,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         return false;
       });
     }
-  }, [showGiftDrawer, showAudienceModal, showSeatModal, showUserProfileModal, showInvitePanel]);
+  }, [showGiftDrawer, showAudienceModal, showSeatModal, showUserProfileModal, showInvitePanel, showCustomizationModal, showMusicDrawer]);
 
   // Sound Synthesizer (AudioContext)
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -871,14 +898,23 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
             }
           } else if (data.type === 'seats_updated') {
             if (data.seats && Array.isArray(data.seats)) {
-              // Protect seat 0: always ensure host is anchored there
-              const sanitized = data.seats.map((s: any) => {
-                if (s.index === 0 && !s.user) return { ...s, user: safeRoom.host };
-                return s;
+              const rawSeats = data.seats;
+              const sanitized = Array.from({ length: 9 }, (_, i) => {
+                const s = rawSeats.find((item: any) => item && item.index === i) || rawSeats[i];
+                return {
+                  index: i,
+                  user: (i === 0 && !s?.user) ? safeRoom.host : (s?.user || null),
+                  isMuted: Boolean(s?.isMuted),
+                  isTalking: Boolean(s?.isTalking)
+                };
               });
               setSeats(sanitized);
-              const found = sanitized.find((s: any) => s.user && (String(s.user._id || s.user.id) === currentUserId || s.user.name === currentUser.name));
-              if (!found && mySeatIndexRef.current !== null) {
+
+              // Check if seated in guest seats 1-8 first, fallback to seat 0 for host
+              const guestSeat = sanitized.slice(1).find((s: any) => s.user && (String(s.user._id || s.user.id) === currentUserId || s.user.name === currentUser.name));
+              const found = guestSeat || (isCurrentUserHost ? sanitized[0] : null);
+
+              if (!found && mySeatIndexRef.current !== null && mySeatIndexRef.current !== 0) {
                 // We were kicked/displaced from seat
                 disableMicrophone();
                 setMySeatIndex(null);
@@ -982,6 +1018,46 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
               setTimeout(() => {
                 setReactions(prev => prev.filter(r => r.id !== id));
               }, 2000);
+            }
+          } else if (data.type === 'room_updated') {
+            if (data.room) {
+              const updated = data.room;
+              if (updated.backgroundUrl) setRoomBackground(updated.backgroundUrl);
+              if (updated.title) setRoomTitle(updated.title);
+              if (updated.notice || updated.description) setRoomNotice(updated.notice || updated.description);
+              if (updated.seatStyle) setSeatStyle(updated.seatStyle);
+              toast('Room settings updated ✨', 'info');
+            }
+          } else if (data.type === 'room_music') {
+            const { musicState, senderName } = data;
+            if (musicState && roomMusicAudioRef.current) {
+              const audio = roomMusicAudioRef.current;
+              const { action, track, currentTime, isPlaying } = musicState;
+
+              if (track) {
+                setActiveTrack(track);
+                if (audio.src !== track.url) {
+                  audio.src = track.url;
+                }
+              }
+
+              if (currentTime !== undefined && Math.abs(audio.currentTime - currentTime) > 2) {
+                audio.currentTime = currentTime;
+              }
+
+              if (action === 'play' || isPlaying) {
+                setIsTrackPlaying(true);
+                audio.play().catch(e => {
+                  console.warn('Audience autoplay blocked for music:', e);
+                  setAudioAutoplayBlocked(true);
+                });
+                if (senderName && senderName !== currentUser.name) {
+                  toast(`🎵 ${senderName} playing: ${track?.name || 'Music'}`, 'info');
+                }
+              } else if (action === 'pause' || !isPlaying) {
+                setIsTrackPlaying(false);
+                audio.pause();
+              }
             }
           }
         } catch (err) {
@@ -1137,28 +1213,36 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         body: JSON.stringify({ user: optimisticUser, action: 'sit' })
       });
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        toast(`Failed: ${errData.error || 'Could not sit in seat'}`, 'error');
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok || !data?.success) {
+        const errorMsg = data?.error || `Server error (${res.status})`;
+        toast(`Could not sit in seat: ${errorMsg}`, 'error');
         setSeats(prevSeats);
         setMySeatIndex(prevMySeat);
         return;
       }
 
-      const data = await res.json();
-      if (data.success && data.room?.seats) {
-        // Protect seat 0 from losing host in the server response
-        const sanitized = data.room.seats.map((s: any) => {
-          if (s.index === 0 && !s.user) return { ...s, user: safeRoom.host };
-          return s;
+      if (data.room?.seats && Array.isArray(data.room.seats)) {
+        const rawSeats = data.room.seats;
+        const sanitized = Array.from({ length: 9 }, (_, i) => {
+          const s = rawSeats.find((item: any) => item && item.index === i) || rawSeats[i];
+          return {
+            index: i,
+            user: (i === 0 && !s?.user) ? safeRoom.host : (s?.user || null),
+            isMuted: Boolean(s?.isMuted),
+            isTalking: Boolean(s?.isTalking)
+          };
         });
         setSeats(sanitized);
+        setMySeatIndex(index);
+        toast(`You are now seated on Mic Seat ${index}! 🎙️`, 'success');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error sitting in seat:', err);
       setSeats(prevSeats);
       setMySeatIndex(prevMySeat);
-      toast('Failed to sit in seat. Please try again.', 'error');
+      toast(`Failed to sit in seat: ${err?.message || 'Network error'}`, 'error');
     }
   };
 
@@ -1264,22 +1348,23 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     }]);
   };
 
-  const handleLeaveSeat = async () => {
-    // If selectedSeatIndex is set, use it; otherwise fallback to user's currently occupied seat
-    const index = selectedSeatIndex !== null ? selectedSeatIndex : mySeatIndex;
+  const handleLeaveSeat = async (explicitIndex?: number) => {
+    // If explicitIndex is passed, use it; otherwise fallback to selectedSeatIndex or mySeatIndex
+    const index = explicitIndex !== undefined && explicitIndex !== null 
+      ? explicitIndex 
+      : (selectedSeatIndex !== null ? selectedSeatIndex : mySeatIndex);
+
     if (index === null || index === undefined) return;
 
-    const leavingUser = seats[index]?.user || currentUser;
-    if (!leavingUser) {
+    // Host cannot leave seat 0
+    if (index === 0) {
+      toast('Host Seat belongs permanently to the room Host 👑', 'info');
       setShowSeatModal(false);
       setShowUserProfileModal(false);
       return;
     }
 
-    const leavingUserId = String(leavingUser._id || leavingUser.id || (leavingUser as any).userId);
-    const currentUid = String(currentUser._id || currentUser.id || currentUserId);
-    const isMe = leavingUserId === currentUid || leavingUser.name === currentUser.name;
-
+    const leavingUser = seats[index]?.user || currentUser;
     setShowSeatModal(false);
     setShowUserProfileModal(false);
 
@@ -1290,16 +1375,14 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     // Optimistically update local seats state immediately (<1ms)
     setSeats(prev => prev.map(s => s.index === index ? { 
       ...s, 
-      user: index === 0 ? safeRoom.host : null, 
+      user: null, 
       isTalking: false, 
       isMuted: false 
     } : s));
     
-    if (isMe) {
-      setMySeatIndex(null);
-      disableMicrophone();
-      setIsMyMicMuted(true);
-    }
+    setMySeatIndex(null);
+    disableMicrophone();
+    setIsMyMicMuted(true);
 
     // Call server to persist the vacancy and broadcast seats_updated to all clients
     try {
@@ -1308,38 +1391,36 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'leave', user: leavingUser })
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && data.room?.seats) {
-          const sanitized = data.room.seats.map((s: any) => {
-            if (s.index === 0 && !s.user) return { ...s, user: safeRoom.host };
-            return s;
-          });
-          setSeats(sanitized);
-        }
-      } else {
-        // Rollback state on error
-        setSeats(prevSeats);
-        if (isMe) setMySeatIndex(prevMySeat);
+      const data = await res.json().catch(() => null);
+
+      if (data?.success && data.room?.seats && Array.isArray(data.room.seats)) {
+        const rawSeats = data.room.seats;
+        const sanitized = Array.from({ length: 9 }, (_, i) => {
+          const s = rawSeats.find((item: any) => item && item.index === i) || rawSeats[i];
+          return {
+            index: i,
+            user: (i === 0 && !s?.user) ? safeRoom.host : (s?.user || null),
+            isMuted: Boolean(s?.isMuted),
+            isTalking: Boolean(s?.isTalking)
+          };
+        });
+        setSeats(sanitized);
       }
     } catch (err) {
       console.warn('Failed to persist leaving seat to server:', err);
-      // Rollback state on error
-      setSeats(prevSeats);
-      if (isMe) setMySeatIndex(prevMySeat);
     }
 
     // Broadcast seat status update via WebSocket
     sendWs('seat_status', { seatIndex: index, isTalking: false, isMuted: false });
 
-    toast(`${leavingUser.name} left Mic Seat ${index}`, 'info');
+    toast(`${leavingUser.name || 'You'} left Mic Seat ${index}`, 'info');
 
     setChatMessages(prev => [...prev, {
       id: String(Date.now()),
       userId: 'system',
       userName: 'System',
       userLevel: 0,
-      message: `${leavingUser.name} left Mic Seat ${index}.`,
+      message: `${leavingUser.name || 'User'} left Mic Seat ${index}.`,
       type: 'system'
     }]);
   };
@@ -1505,13 +1586,191 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     }
   };
 
-  const toggleBackingTrack = (track: typeof AUDIO_TRACKS[0]) => {
+  // Music Player audio setup
+  useEffect(() => {
+    const audio = new Audio();
+    audio.crossOrigin = 'anonymous';
+    audio.volume = musicVolume;
+    roomMusicAudioRef.current = audio;
+
+    const handleTimeUpdate = () => {
+      setMusicProgress(audio.currentTime);
+      setMusicDuration(audio.duration || 0);
+    };
+
+    const handleEnded = () => {
+      setIsTrackPlaying(false);
+      const curIdx = AUDIO_TRACKS.findIndex(t => t.id === activeTrack?.id);
+      if (curIdx !== -1 && curIdx < AUDIO_TRACKS.length - 1) {
+        const nextTrack = AUDIO_TRACKS[curIdx + 1];
+        if (isCurrentUserHost) {
+          handlePlayTrack(nextTrack);
+        }
+      }
+    };
+
+    audio.addEventListener('timeupdate', handleTimeUpdate);
+    audio.addEventListener('ended', handleEnded);
+
+    return () => {
+      audio.removeEventListener('timeupdate', handleTimeUpdate);
+      audio.removeEventListener('ended', handleEnded);
+      audio.pause();
+      audio.src = '';
+    };
+  }, []);
+
+  useEffect(() => {
+    if (roomMusicAudioRef.current) {
+      roomMusicAudioRef.current.volume = musicVolume;
+    }
+  }, [musicVolume]);
+
+  const handlePlayTrack = (track: typeof AUDIO_TRACKS[0] | any) => {
     playSynthSound('tap');
-    if (activeTrack?.id === track.id) {
-      setIsTrackPlaying(!isTrackPlaying);
+    if (!roomMusicAudioRef.current) return;
+    const audio = roomMusicAudioRef.current;
+    if (activeTrack?.url !== track.url) {
+      audio.src = track.url;
+      audio.currentTime = 0;
+    }
+    setActiveTrack(track);
+    setIsTrackPlaying(true);
+    audio.play().catch(e => {
+      console.warn('Audio play error:', e);
+      setAudioAutoplayBlocked(true);
+    });
+
+    if (isCurrentUserHost) {
+      sendWs('room_music', {
+        action: 'play',
+        track,
+        currentTime: 0,
+        isPlaying: true
+      });
+    }
+  };
+
+  const handleTogglePlayPause = () => {
+    playSynthSound('tap');
+    if (!roomMusicAudioRef.current) return;
+    const audio = roomMusicAudioRef.current;
+    if (!activeTrack) {
+      handlePlayTrack(AUDIO_TRACKS[0]);
+      return;
+    }
+    if (isTrackPlaying) {
+      audio.pause();
+      setIsTrackPlaying(false);
+      if (isCurrentUserHost) {
+        sendWs('room_music', {
+          action: 'pause',
+          track: activeTrack,
+          currentTime: audio.currentTime,
+          isPlaying: false
+        });
+      }
     } else {
-      setActiveTrack(track);
+      audio.play().catch(e => console.warn('Audio play error:', e));
       setIsTrackPlaying(true);
+      if (isCurrentUserHost) {
+        sendWs('room_music', {
+          action: 'play',
+          track: activeTrack,
+          currentTime: audio.currentTime,
+          isPlaying: true
+        });
+      }
+    }
+  };
+
+  const handleSeekMusic = (newTime: number) => {
+    if (!roomMusicAudioRef.current) return;
+    roomMusicAudioRef.current.currentTime = newTime;
+    setMusicProgress(newTime);
+    if (isCurrentUserHost && activeTrack) {
+      sendWs('room_music', {
+        action: 'seek',
+        track: activeTrack,
+        currentTime: newTime,
+        isPlaying: isTrackPlaying
+      });
+    }
+  };
+
+  const handleNextTrack = () => {
+    const curIdx = AUDIO_TRACKS.findIndex(t => t.id === activeTrack?.id);
+    const nextIdx = (curIdx + 1) % AUDIO_TRACKS.length;
+    handlePlayTrack(AUDIO_TRACKS[nextIdx]);
+  };
+
+  const handlePrevTrack = () => {
+    const curIdx = AUDIO_TRACKS.findIndex(t => t.id === activeTrack?.id);
+    const prevIdx = (curIdx - 1 + AUDIO_TRACKS.length) % AUDIO_TRACKS.length;
+    handlePlayTrack(AUDIO_TRACKS[prevIdx]);
+  };
+
+  const handlePlayCustomAudio = () => {
+    if (!customAudioUrl.trim()) {
+      toast('Please enter a valid audio URL', 'error');
+      return;
+    }
+    const customTrack = {
+      id: `custom_${Date.now()}`,
+      name: customAudioName.trim() || 'Custom Stream',
+      url: customAudioUrl.trim(),
+      duration: 'Live',
+      artist: currentUser.name
+    };
+    handlePlayTrack(customTrack);
+    setCustomAudioUrl('');
+    setCustomAudioName('');
+    toast(`Playing custom track: ${customTrack.name} 🎶`, 'success');
+  };
+
+  const toggleBackingTrack = (track: typeof AUDIO_TRACKS[0]) => {
+    if (activeTrack?.id === track.id) {
+      handleTogglePlayPause();
+    } else {
+      handlePlayTrack(track);
+    }
+  };
+
+  const handleSaveRoomCustomization = async (newBg?: string, newTitle?: string, newNotice?: string, newStyle?: 'sofa' | 'classic') => {
+    setIsSavingCustomization(true);
+    const bgToSave = newBg !== undefined ? newBg : roomBackground;
+    const titleToSave = newTitle !== undefined ? newTitle : roomTitle;
+    const noticeToSave = newNotice !== undefined ? newNotice : roomNotice;
+    const styleToSave = newStyle !== undefined ? newStyle : seatStyle;
+
+    setRoomBackground(bgToSave);
+    setRoomTitle(titleToSave);
+    setRoomNotice(noticeToSave);
+    setSeatStyle(styleToSave);
+
+    try {
+      const res = await fetch(`/api/rooms/${roomId}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          backgroundUrl: bgToSave,
+          title: titleToSave,
+          description: noticeToSave,
+          notice: noticeToSave,
+          seatStyle: styleToSave
+        })
+      });
+      if (res.ok) {
+        toast('Room customization saved! 🎨✨', 'success');
+        setShowCustomizationModal(false);
+      } else {
+        toast('Failed to save customization to server', 'error');
+      }
+    } catch (err) {
+      console.error('Save customization error:', err);
+      toast('Network error saving room', 'error');
+    } finally {
+      setIsSavingCustomization(false);
     }
   };
 
@@ -1730,15 +1989,15 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   };
 
   return (
-    <div id="voiceRoom_container" className="flex-1 flex flex-col h-full bg-slate-50 relative overflow-hidden select-none">
+    <div id="voiceRoom_container" className="flex-1 flex flex-col h-full bg-slate-950 relative overflow-hidden select-none">
       
-      {/* Background Themed Atmosphere */}
-      <div className={`absolute inset-0 z-0 opacity-20 transition-all pointer-events-none ${
-        safeRoom.theme === 'neon' ? 'bg-gradient-to-tr from-violet-100 via-slate-50 to-indigo-100' :
-        safeRoom.theme === 'pink' ? 'bg-gradient-to-tr from-pink-100 via-slate-50 to-rose-100' :
-        safeRoom.theme === 'royal' ? 'bg-gradient-to-tr from-amber-100 via-slate-50 to-blue-100' :
-        'bg-gradient-to-tr from-purple-100 via-slate-50 to-emerald-100'
-      }`}></div>
+      {/* Dynamic Fullscreen Wallpaper */}
+      <div 
+        className="absolute inset-0 z-0 bg-cover bg-center transition-all duration-700 pointer-events-none"
+        style={{ backgroundImage: `url(${roomBackground})` }}
+      >
+        <div className="absolute inset-0 bg-gradient-to-b from-black/75 via-black/35 to-black/85 backdrop-blur-[1px]" />
+      </div>
 
       {/* ===== FULLSCREEN GIFT ANIMATION OVERLAY ===== */}
       <AnimatePresence>
@@ -1960,36 +2219,35 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         )}
       </AnimatePresence>
 
-
-      {/* Room Header */}
+      {/* Frosted Glass Room Header */}
       <div 
         id="voiceRoom_header" 
-        className="h-14 px-4 flex items-center justify-between border-b border-zinc-200 z-10 bg-white/90 backdrop-blur-md shrink-0"
+        className="h-14 px-3 flex items-center justify-between border-b border-white/10 z-10 bg-black/40 backdrop-blur-md shrink-0 text-white"
         style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           <button 
             id="voiceRoom_backBtn"
             onClick={onLeave}
-            className="text-zinc-500 hover:text-zinc-900 p-1.5 rounded-full hover:bg-zinc-100 cursor-pointer transition-colors"
+            className="text-white/80 hover:text-white p-1.5 rounded-full hover:bg-white/10 cursor-pointer transition-colors"
           >
             <ChevronLeft className="w-5 h-5" />
           </button>
           <div className="min-w-0">
-            <h2 className="text-xs font-black text-zinc-800 truncate w-[160px] flex items-center gap-1">
+            <h2 className="text-xs font-black text-white truncate max-w-[130px] sm:max-w-[180px] flex items-center gap-1">
               {(safeRoom as any).isPrivate && <span title="Private Room">🔒</span>}
-              <span className="truncate">{safeRoom.title}</span>
+              <span className="truncate">{roomTitle}</span>
             </h2>
             <div className="flex items-center gap-1.5 mt-0.5">
-              <span className="text-[9px] text-rose-500 font-bold">Host: {safeRoom.host.name}</span>
-              <span className="text-[9px] bg-stone-100 text-zinc-500 px-1.5 py-0.2 rounded font-black">Lvl {safeRoom.host.level}</span>
+              <span className="text-[9px] text-amber-300 font-bold truncate max-w-[80px]">Host: {safeRoom.host.name}</span>
+              <span className="text-[8px] bg-white/20 text-white px-1.5 py-0.2 rounded font-black backdrop-blur-sm">Lvl {safeRoom.host.level}</span>
               {(safeRoom as any).roomId && (
                 <button
                   onClick={() => {
                     navigator.clipboard.writeText(String((safeRoom as any).roomId));
                     toast(`Room code #${(safeRoom as any).roomId} copied! 📋`, 'success');
                   }}
-                  className="text-[9px] bg-indigo-50 border border-indigo-200 text-indigo-700 px-1.5 py-0.2 rounded font-mono font-bold cursor-pointer hover:bg-indigo-100"
+                  className="text-[8px] bg-amber-400/20 border border-amber-400/40 text-amber-300 px-1.5 py-0.2 rounded font-mono font-bold cursor-pointer hover:bg-amber-400/30"
                   title="Click to copy Room Code"
                 >
                   #{(safeRoom as any).roomId}
@@ -1999,73 +2257,92 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* Online Room Audience & Participants */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {/* Host Customization Button */}
+          {isCurrentUserHost && (
+            <button
+              onClick={() => setShowCustomizationModal(true)}
+              className="flex items-center gap-1 text-[10px] bg-amber-500/25 hover:bg-amber-500/35 border border-amber-400/40 text-amber-300 font-black px-2 py-1 rounded-full shadow-sm cursor-pointer transition-all active:scale-95"
+              title="Customize Room Background, Title & Layout"
+            >
+              <Palette className="w-3 h-3" />
+              <span>Theme</span>
+            </button>
+          )}
+
+          {/* Room Music Button */}
+          <button
+            onClick={() => setShowMusicDrawer(true)}
+            className={`flex items-center gap-1 text-[10px] border px-2 py-1 rounded-full shadow-sm cursor-pointer transition-all active:scale-95 ${
+              isTrackPlaying
+                ? 'bg-rose-500/30 border-rose-400/60 text-rose-300 font-black animate-pulse'
+                : 'bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold'
+            }`}
+            title="Room Music Player"
+          >
+            <Music className="w-3 h-3" />
+            <span>Music</span>
+          </button>
+
+          {/* Online Audience Count */}
           <button
             onClick={() => setShowAudienceModal(true)}
-            className="flex items-center gap-1 text-[10px] bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 font-black px-2.5 py-1 rounded-full shadow-sm cursor-pointer transition-colors"
-            title="View all users currently in this room"
+            className="flex items-center gap-1 text-[10px] bg-white/10 hover:bg-white/20 border border-white/20 text-white font-black px-2 py-1 rounded-full shadow-sm cursor-pointer transition-colors"
+            title="View participants"
           >
             <Users className="w-3 h-3" />
             <span>{uniqueParticipants.length}</span>
           </button>
 
-          {/* Share Room Button */}
-          <button
-            onClick={() => {
-              const code = (safeRoom as any).roomId || '';
-              const inviteText = code
-                ? `Join my ZOYO voice room "${safeRoom.title}"! Room Code: ${code}`
-                : `Join my ZOYO voice room "${safeRoom.title}"! Room ID: ${roomId}`;
-              navigator.clipboard.writeText(inviteText);
-              toast(`Room code ${code || ''} copied! Share with friends 📋🚀`, 'success');
-            }}
-            className="flex items-center gap-1 text-[10px] bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-700 font-black px-2 py-1 rounded-full shadow-sm cursor-pointer transition-colors"
-            title="Share room invitation"
-          >
-            <Share2 className="w-3 h-3" />
-            <span>{(safeRoom as any).roomId ? `#${(safeRoom as any).roomId}` : 'Share'}</span>
-          </button>
-
-          {/* Invite Friends Button — host only, especially for private rooms */}
-          {isCurrentUserHost && (
-            <button
-              onClick={async () => {
-                setShowInvitePanel(true);
-                if (friendsList.length === 0) {
-                  try {
-                    const uid = currentUser._id || currentUser.id;
-                    const res = await fetch(`/api/friends/${uid}`);
-                    if (res.ok) {
-                      const data = await res.json();
-                      setFriendsList(data.friends || []);
-                    }
-                  } catch { /* ignore */ }
-                }
-              }}
-              className="flex items-center gap-1 text-[10px] bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 font-black px-2 py-1 rounded-full shadow-sm cursor-pointer transition-colors"
-              title="Invite friends to room"
-            >
-              <UserPlus className="w-3 h-3" />
-              <span>Invite</span>
-            </button>
-          )}
-
-          <div className="flex items-center gap-1 text-[10px] bg-rose-50 border border-rose-200 text-rose-700 font-black px-2 py-1 rounded-full shadow-sm">
-            <Mic className="w-3 h-3" />
-            <span>{seats.filter(s => s.user !== null).length}/9</span>
-          </div>
-
+          {/* Exit Room Button */}
           <button 
             id="voiceRoom_exitBtn"
             onClick={onLeave}
-            className="bg-rose-600 hover:bg-rose-700 text-white font-black text-[10px] px-3 py-1.5 rounded-full shadow-sm cursor-pointer active:scale-95 transition-all"
+            className="bg-rose-600 hover:bg-rose-700 text-white font-black text-[10px] px-2.5 py-1 rounded-full shadow-sm cursor-pointer active:scale-95 transition-all"
           >
             Exit
           </button>
         </div>
       </div>
 
+      {/* Room Announcement / Notice Banner */}
+      <div className="z-10 px-4 py-1.5 flex items-center justify-between bg-black/40 backdrop-blur-md border-b border-white/10 text-white text-[10px] shrink-0">
+        <div className="flex items-center gap-1.5 truncate flex-1 mr-2">
+          <span className="text-amber-400 text-xs">📢</span>
+          <span className="truncate font-semibold text-white/90">{roomNotice}</span>
+        </div>
+        {isCurrentUserHost && (
+          <button
+            onClick={() => setShowCustomizationModal(true)}
+            className="text-[9px] text-amber-300 hover:text-amber-200 underline font-black shrink-0 cursor-pointer"
+          >
+            Edit
+          </button>
+        )}
+      </div>
+
+      {/* Floating Vinyl Music Disc Widget */}
+      {isTrackPlaying && activeTrack && (
+        <div className="absolute top-28 right-4 z-20">
+          <motion.button
+            onClick={() => setShowMusicDrawer(true)}
+            animate={{ rotate: 360 }}
+            transition={{ repeat: Infinity, duration: 4, ease: 'linear' }}
+            className="relative w-11 h-11 rounded-full bg-gradient-to-tr from-zinc-950 via-zinc-900 to-zinc-800 border-2 border-amber-400/90 shadow-[0_0_15px_rgba(251,191,36,0.4)] flex items-center justify-center cursor-pointer group hover:scale-105 active:scale-95"
+            title={`Now Playing: ${activeTrack.name}`}
+          >
+            <div className="absolute inset-1 rounded-full border border-zinc-700/60 pointer-events-none" />
+            <div className="absolute inset-2.5 rounded-full border border-zinc-700/40 pointer-events-none" />
+            <div className="w-4 h-4 rounded-full bg-amber-400 flex items-center justify-center text-[9px] font-black text-black">
+              🎵
+            </div>
+            <span className="absolute -top-1 -right-1 flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+            </span>
+          </motion.button>
+        </div>
+      )}
 
       {/* Audio Autoplay Unblock Notification Banner */}
       {audioAutoplayBlocked && (
@@ -2073,28 +2350,36 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           onClick={() => {
             setAudioAutoplayBlocked(false);
             remoteAudiosRef.current.forEach(audio => audio.play().catch(() => {}));
+            if (roomMusicAudioRef.current && isTrackPlaying) {
+              roomMusicAudioRef.current.play().catch(() => {});
+            }
           }}
           className="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 text-[10px] font-black flex items-center justify-between cursor-pointer z-30 shadow-md animate-pulse"
         >
-          <span>🔊 Live audio requires browser permission. Tap here to hear speakers!</span>
+          <span>🔊 Live audio requires browser permission. Tap here to hear sound!</span>
           <span className="bg-white/20 px-2 py-0.5 rounded text-[9px] uppercase">Enable Sound</span>
         </div>
       )}
 
       {/* Core Grid / Stage Area: Seats Panel */}
-      <div id="voiceRoom_seatsArea" className="flex-1 overflow-y-auto px-4 py-2 scrollbar-none flex flex-col gap-4 z-10 min-h-0 pb-20">
+      <div id="voiceRoom_seatsArea" className="flex-1 overflow-y-auto px-4 py-2 scrollbar-none flex flex-col gap-3.5 z-10 min-h-0 pb-20">
         
-        {/* The Host Seat (Featured Top - Permanently Displays Host Avatar) */}
+        {/* The Host Seat (Featured Top - Golden Throne) */}
         {(() => {
           const hostAvatar = (seats && seats[0] && seats[0].user?.avatar) || safeRoom.host?.avatar || PRESET_AVATARS[0];
           const hostName = (seats && seats[0] && seats[0].user?.name) || safeRoom.host?.name || "Host";
 
           return (
-            <div className="flex flex-col items-center shrink-0 mt-2">
+            <div className="flex flex-col items-center shrink-0 mt-1">
               <div className="relative">
                 {seats && seats[0] && seats[0].user && seats[0].isTalking && (
-                  <div className="absolute inset-0 rounded-full bg-rose-400/30 animate-ping border border-rose-400/50 scale-125 pointer-events-none"></div>
+                  <div className="absolute inset-0 rounded-full bg-amber-400/40 animate-ping border-2 border-amber-400/60 scale-125 pointer-events-none"></div>
                 )}
+
+                {/* Golden Crown badge above host */}
+                <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-30 text-base drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] animate-bounce">
+                  👑
+                </div>
 
                 <div
                   onClick={() => {
@@ -2108,7 +2393,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                       setShowUserProfileModal(true);
                     }
                   }}
-                  className="relative z-20 w-16 h-16 rounded-full overflow-hidden border-2 border-amber-400 cursor-pointer flex items-center justify-center bg-white shadow-md hover:scale-105 transition-transform"
+                  className="relative z-20 w-16 h-16 rounded-full overflow-hidden border-2 border-amber-400 cursor-pointer flex items-center justify-center bg-zinc-900 shadow-[0_0_15px_rgba(251,191,36,0.4)] hover:scale-105 transition-transform"
                   title={`Host: ${hostName}`}
                 >
                   <img
@@ -2117,7 +2402,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                     className="w-full h-full object-cover"
                   />
                   {seats && seats[0] && seats[0].isMuted && (
-                    <div className="absolute bottom-0 right-0 bg-rose-500 rounded-full p-0.5 border border-white">
+                    <div className="absolute bottom-0 right-0 bg-rose-500 rounded-full p-0.5 border border-white shadow">
                       <MicOff className="w-2.5 h-2.5 text-white" />
                     </div>
                   )}
@@ -2129,18 +2414,18 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                     initial={{ y: 0, opacity: 1, scale: 0.5 }}
                     animate={{ y: -70, opacity: 0, scale: 1.5 }}
                     transition={{ duration: 1.5 }}
-                    className="absolute inset-0 flex items-center justify-center text-2xl pointer-events-none"
+                    className="absolute inset-0 flex items-center justify-center text-2xl pointer-events-none z-30"
                   >
                     {reaction.emoji}
                   </motion.div>
                 ))}
               </div>
 
-              <div className="flex items-center gap-1 mt-1">
-                <span className="text-[10px] bg-gradient-to-r from-amber-500 to-rose-500 text-white font-black px-2 py-0.2 rounded-full uppercase scale-90">
-                  Host
+              <div className="flex items-center gap-1.5 mt-1.5">
+                <span className="text-[9px] bg-gradient-to-r from-amber-500 to-yellow-400 text-zinc-950 font-black px-2 py-0.5 rounded-full uppercase tracking-wider shadow">
+                  👑 Host
                 </span>
-                <span className="text-[10px] font-extrabold text-zinc-700 truncate max-w-[95px]">
+                <span className="text-[11px] font-black text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] truncate max-w-[100px]">
                   {hostName}
                 </span>
               </div>
@@ -2148,8 +2433,8 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           );
         })()}
 
-        {/* 8 Guests Seats Grid */}
-        <div className="grid grid-cols-4 gap-x-2 gap-y-4 px-2 bg-white border border-zinc-200/80 rounded-3xl p-3 shadow-sm shrink-0">
+        {/* 8 Guests Seats Grid (Sofa Lounge or Classic Mic) */}
+        <div className="grid grid-cols-4 gap-x-2.5 gap-y-3.5 px-3 py-3.5 bg-black/40 backdrop-blur-md border border-white/15 rounded-3xl shadow-2xl shrink-0">
           {seats && Array.isArray(seats) && seats.slice(1).map((seat) => {
             const hasUser = Boolean(seat.user && (seat.user.id || (seat.user as any)._id || seat.user.name));
             const seatUid = seat.user ? String(seat.user.id || (seat.user as any)._id || '') : '';
@@ -2161,46 +2446,59 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                 <div className="relative">
                   {hasUser && isMe && myVoiceLevel > 10 && (
                     <span 
-                      className="absolute inset-0 rounded-full bg-rose-400/40 animate-pulse border border-rose-400 pointer-events-none"
+                      className="absolute inset-0 rounded-full bg-emerald-400/50 animate-pulse border-2 border-emerald-400 pointer-events-none"
                       style={{ transform: `scale(${1 + myVoiceLevel / 100})` }}
                     ></span>
                   )}
 
                   {hasUser && !isMe && seat.isTalking && (
-                    <span className="absolute inset-0 rounded-full bg-rose-500/30 animate-ping border border-rose-500/40 scale-125 pointer-events-none"></span>
+                    <span className="absolute inset-0 rounded-full bg-emerald-500/40 animate-ping border-2 border-emerald-400 scale-125 pointer-events-none"></span>
                   )}
 
                   <div 
                     onClick={() => {
                       setSelectedSeatIndex(seat.index);
-                      if (hasUser && seat.user) {
+                      if (hasUser && isMe) {
+                        setShowSeatModal(true);
+                      } else if (hasUser && seat.user) {
                         setInspectedUser(seat.user);
                         setShowUserProfileModal(true);
                       } else {
                         handleSeatClick(seat.index);
                       }
                     }}
-                    className={`relative z-20 w-11 h-11 rounded-full flex items-center justify-center cursor-pointer transition-all hover:scale-105 ${
-                      hasUser 
-                        ? (seat.user?.frameId === 'frame_neon' ? 'border-2 border-indigo-400 animate-pulse' :
-                           seat.user?.frameId === 'frame_pink' ? 'border-2 border-pink-400' :
-                           seat.user?.frameId === 'frame_royal' ? 'border-2 border-amber-400' : 
-                           'border border-zinc-200 bg-white shadow-sm')
-                        : 'border border-dashed border-zinc-300 bg-stone-50 hover:bg-stone-100 shadow-inner'
+                    className={`relative z-20 cursor-pointer transition-all hover:scale-105 active:scale-95 ${
+                      hasUser
+                        ? `w-12 h-12 rounded-full overflow-hidden flex items-center justify-center ${
+                            seat.user?.frameId === 'frame_neon' ? 'border-2 border-indigo-400 shadow-[0_0_10px_rgba(99,102,241,0.6)] animate-pulse' :
+                            seat.user?.frameId === 'frame_pink' ? 'border-2 border-pink-400 shadow-[0_0_10px_rgba(244,114,182,0.6)]' :
+                            seat.user?.frameId === 'frame_royal' ? 'border-2 border-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.6)]' : 
+                            'border-2 border-white/60 bg-zinc-900 shadow-md'
+                          }`
+                        : seatStyle === 'sofa'
+                          ? 'w-12 h-12 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/20 hover:border-amber-400/60 shadow-lg flex flex-col items-center justify-center group'
+                          : 'w-11 h-11 rounded-full border border-dashed border-white/30 bg-white/10 hover:bg-white/20 flex items-center justify-center'
                     }`}
                   >
                     {hasUser ? (
                       <img 
                         src={seat.user?.avatar} 
                         alt="User" 
-                        className="w-full h-full rounded-full object-cover" 
+                        className="w-full h-full object-cover" 
                       />
+                    ) : seatStyle === 'sofa' ? (
+                      <div className="flex flex-col items-center justify-center pointer-events-none">
+                        <span className="text-base group-hover:scale-110 transition-transform">🛋️</span>
+                        <span className="text-[8px] font-black text-amber-300/90 tracking-tighter leading-none mt-0.5">
+                          No.{seat.index}
+                        </span>
+                      </div>
                     ) : (
-                      <span className="text-zinc-400 text-xs font-bold">{seat.index}</span>
+                      <span className="text-white/60 text-xs font-bold">{seat.index}</span>
                     )}
 
                     {hasUser && seat.isMuted && (
-                      <div className="absolute bottom-0 right-0 bg-rose-500 rounded-full p-0.5 border border-white">
+                      <div className="absolute bottom-0 right-0 bg-rose-500 rounded-full p-0.5 border border-white shadow">
                         <MicOff className="w-2.5 h-2.5 text-white" />
                       </div>
                     )}
@@ -2220,11 +2518,15 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                 </div>
 
                 <div className="text-center mt-1 w-full px-1 min-w-0">
-                  <p className={`text-[9px] font-semibold truncate ${isMe ? 'text-rose-600 font-black' : 'text-zinc-600'}`}>
-                    {hasUser ? seat.user?.name : "Join"}
+                  <p className={`text-[9px] truncate drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] ${
+                    isMe ? 'text-amber-400 font-black' : hasUser ? 'text-white font-bold' : 'text-white/60 font-medium'
+                  }`}>
+                    {hasUser ? seat.user?.name : "Empty"}
                   </p>
                   {hasUser && (
-                    <span className="text-[7px] bg-stone-100 text-zinc-500 px-1 rounded font-bold">Lvl {seat.user?.level}</span>
+                    <span className="text-[7px] bg-white/20 text-white/90 px-1 py-0.2 rounded font-bold backdrop-blur-sm">
+                      Lvl {seat.user?.level}
+                    </span>
                   )}
                 </div>
               </div>
@@ -2232,31 +2534,49 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           })}
         </div>
 
-        {/* Backing Music Player Control (Mini Row) */}
-        <div className="bg-white border border-zinc-200 rounded-2xl p-2.5 flex items-center justify-between shrink-0 text-xs shadow-sm">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-lg">🎵</span>
+        {/* Backing Music Player Mini Bar */}
+        <div className="bg-black/40 backdrop-blur-md border border-white/15 rounded-2xl p-2.5 flex items-center justify-between shrink-0 text-xs shadow-lg text-white">
+          <div 
+            onClick={() => setShowMusicDrawer(true)}
+            className="flex items-center gap-2.5 min-w-0 cursor-pointer hover:opacity-90 transition-opacity flex-1"
+          >
+            <div className={`w-8 h-8 rounded-full bg-gradient-to-tr from-amber-500 to-rose-500 flex items-center justify-center text-sm shadow ${isTrackPlaying ? 'animate-spin' : ''}`} style={{ animationDuration: '4s' }}>
+              🎵
+            </div>
             <div className="min-w-0">
-              <p className="text-[10px] text-zinc-400 font-bold leading-tight">Backing Music</p>
-              <p className="text-[11px] text-zinc-800 font-black truncate max-w-[150px]">
-                {activeTrack ? activeTrack.name : "None Playing"}
+              <div className="flex items-center gap-1.5">
+                <p className="text-[9px] text-amber-300 font-black uppercase tracking-wider">Room Music</p>
+                {isTrackPlaying && (
+                  <span className="flex h-1.5 w-1.5 relative">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-white font-black truncate max-w-[140px]">
+                {activeTrack ? activeTrack.name : "Tap to Play Music"}
               </p>
             </div>
           </div>
-          <div className="flex gap-1">
-            {AUDIO_TRACKS.map((track) => (
-              <button
-                key={track.id}
-                onClick={() => toggleBackingTrack(track)}
-                className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer transition-all ${
-                  activeTrack?.id === track.id && isTrackPlaying
-                    ? 'bg-rose-600 text-white animate-pulse'
-                    : 'bg-stone-50 text-zinc-600 border border-zinc-200 hover:bg-stone-100'
-                }`}
-              >
-                {activeTrack?.id === track.id && isTrackPlaying ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-              </button>
-            ))}
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleTogglePlayPause}
+              className={`p-2 rounded-xl text-[10px] font-black cursor-pointer transition-all shadow ${
+                isTrackPlaying
+                  ? 'bg-rose-600 hover:bg-rose-500 text-white animate-pulse'
+                  : 'bg-white/15 hover:bg-white/25 text-white border border-white/20'
+              }`}
+              title={isTrackPlaying ? "Pause" : "Play"}
+            >
+              {isTrackPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 fill-white" />}
+            </button>
+            <button
+              onClick={() => setShowMusicDrawer(true)}
+              className="p-2 rounded-xl text-[10px] bg-white/15 hover:bg-white/25 text-white border border-white/20 font-black cursor-pointer shadow transition-all"
+              title="Open Music Player Library"
+            >
+              <Sliders className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
 
@@ -3216,6 +3536,393 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           onKickFromSeat={handleKickUserFromSeat}
           onKickFromRoom={handleKickUserFromRoom}
         />
+      )}
+
+      {/* ===== Room Customization Modal (Host Only) ===== */}
+      {showCustomizationModal && isCurrentUserHost && (
+        <div className="absolute inset-0 bg-black/75 backdrop-blur-md flex items-end sm:items-center justify-center z-50 animate-in fade-in duration-200 p-0 sm:p-4">
+          <div className="bg-zinc-950 border border-white/15 w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 flex flex-col gap-4 text-white shadow-2xl max-h-[85%] overflow-y-auto scrollbar-none">
+            
+            {/* Header */}
+            <div className="flex justify-between items-center pb-2 border-b border-white/10">
+              <div className="flex items-center gap-2.5">
+                <span className="p-2 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                  <Palette className="w-5 h-5" />
+                </span>
+                <div>
+                  <h3 className="text-sm font-black text-white">Room Customization</h3>
+                  <p className="text-[10px] text-zinc-400">Personalize wallpaper, announcements & seats</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowCustomizationModal(false)}
+                className="text-zinc-400 hover:text-white bg-white/10 p-1.5 rounded-full cursor-pointer transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Wallpaper Presets */}
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                <span>🖼️ Scenic Wallpapers</span>
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {ROOM_WALLPAPERS.map((wp) => {
+                  const isSelected = roomBackground === wp.url;
+                  return (
+                    <div
+                      key={wp.id}
+                      onClick={() => setRoomBackground(wp.url)}
+                      className={`relative rounded-xl overflow-hidden aspect-[4/3] cursor-pointer border-2 transition-all group ${
+                        isSelected ? 'border-amber-400 scale-[1.02] shadow-[0_0_12px_rgba(251,191,36,0.6)]' : 'border-white/10 opacity-70 hover:opacity-100'
+                      }`}
+                    >
+                      <img src={wp.thumbnail || wp.url} alt={wp.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent flex items-end p-1.5">
+                        <span className="text-[9px] font-black text-white truncate drop-shadow">{wp.name}</span>
+                      </div>
+                      {isSelected && (
+                        <div className="absolute top-1 right-1 bg-amber-400 rounded-full p-0.5 text-black shadow">
+                          <Check className="w-2.5 h-2.5 stroke-[3]" />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Custom Wallpaper URL */}
+              <div className="mt-1 flex gap-1.5">
+                <input
+                  type="text"
+                  placeholder="Or paste custom image URL (https://...)"
+                  value={customWallpaperInput}
+                  onChange={(e) => setCustomWallpaperInput(e.target.value)}
+                  className="flex-1 bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-400"
+                />
+                <button
+                  onClick={() => {
+                    if (customWallpaperInput.trim()) {
+                      setRoomBackground(customWallpaperInput.trim());
+                      toast('Custom wallpaper applied! Preview active ✨', 'info');
+                    }
+                  }}
+                  className="bg-white/10 hover:bg-white/20 border border-white/20 px-3 py-2 rounded-xl text-xs font-bold text-white cursor-pointer active:scale-95"
+                >
+                  Apply
+                </button>
+              </div>
+            </div>
+
+            {/* Room Title */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
+                🏷️ Room Title
+              </label>
+              <input
+                type="text"
+                maxLength={35}
+                value={roomTitle}
+                onChange={(e) => setRoomTitle(e.target.value)}
+                className="bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
+              />
+            </div>
+
+            {/* Room Notice / Announcement */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
+                📢 Room Announcement / Notice
+              </label>
+              <textarea
+                rows={2}
+                maxLength={100}
+                value={roomNotice}
+                onChange={(e) => setRoomNotice(e.target.value)}
+                placeholder="Welcome to the room! Sit back, relax and enjoy the vibes ✨"
+                className="bg-zinc-900 border border-white/15 rounded-xl p-3 text-xs text-white resize-none focus:outline-none focus:border-amber-400"
+              />
+            </div>
+
+            {/* Seating Layout Style */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
+                🛋️ Seating Layout Style
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSeatStyle('sofa')}
+                  className={`p-2.5 rounded-xl border text-left flex items-center gap-2 cursor-pointer transition-all ${
+                    seatStyle === 'sofa'
+                      ? 'bg-amber-500/20 border-amber-400 text-white font-bold shadow-md'
+                      : 'bg-zinc-900 border-white/10 text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  <span className="text-xl">🛋️</span>
+                  <div className="min-w-0">
+                    <p className="text-xs font-black text-amber-300">Royal Lounge</p>
+                    <p className="text-[9px] text-zinc-400">Sofa seats (No.1–No.8)</p>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSeatStyle('classic')}
+                  className={`p-2.5 rounded-xl border text-left flex items-center gap-2 cursor-pointer transition-all ${
+                    seatStyle === 'classic'
+                      ? 'bg-amber-500/20 border-amber-400 text-white font-bold shadow-md'
+                      : 'bg-zinc-900 border-white/10 text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  <span className="text-xl">🎙️</span>
+                  <div className="min-w-0">
+                    <p className="text-xs font-black text-indigo-300">Classic Stage</p>
+                    <p className="text-[9px] text-zinc-400">Microphone circles</p>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* Save & Apply Button */}
+            <button
+              disabled={isSavingCustomization}
+              onClick={() => handleSaveRoomCustomization()}
+              className="w-full mt-2 bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-400 hover:to-rose-400 text-white font-black py-3 rounded-xl text-xs uppercase tracking-wider shadow-lg active:scale-95 cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {isSavingCustomization ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Saving Changes...</span>
+                </>
+              ) : (
+                <>
+                  <Check className="w-4 h-4 stroke-[3]" />
+                  <span>Save & Broadcast Room</span>
+                </>
+              )}
+            </button>
+
+          </div>
+        </div>
+      )}
+
+      {/* ===== Room Music Player Drawer ===== */}
+      {showMusicDrawer && (
+        <div className="absolute inset-0 bg-black/75 backdrop-blur-md flex items-end sm:items-center justify-center z-50 animate-in fade-in duration-200 p-0 sm:p-4">
+          <div className="bg-zinc-950 border border-white/15 w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 flex flex-col gap-4 text-white shadow-2xl max-h-[85%] overflow-y-auto scrollbar-none">
+            
+            {/* Header */}
+            <div className="flex justify-between items-center pb-2 border-b border-white/10">
+              <div className="flex items-center gap-2.5">
+                <span className="p-2 rounded-xl bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                  <Music className="w-5 h-5" />
+                </span>
+                <div>
+                  <h3 className="text-sm font-black text-white">Room Music Player</h3>
+                  <p className="text-[10px] text-zinc-400">Synchronized live playback for everyone in the room</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowMusicDrawer(false)}
+                className="text-zinc-400 hover:text-white bg-white/10 p-1.5 rounded-full cursor-pointer transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Now Playing Visualizer Card */}
+            <div className="bg-gradient-to-br from-zinc-900 to-zinc-950 border border-white/10 rounded-2xl p-4 flex flex-col items-center gap-3 relative overflow-hidden shadow-xl">
+              
+              {/* Spinning Vinyl Record Art */}
+              <div className="relative my-2">
+                <motion.div
+                  animate={{ rotate: isTrackPlaying ? 360 : 0 }}
+                  transition={{ repeat: isTrackPlaying ? Infinity : 0, duration: 5, ease: 'linear' }}
+                  className="w-24 h-24 rounded-full bg-gradient-to-tr from-zinc-950 via-zinc-900 to-zinc-800 border-4 border-amber-400/80 shadow-[0_0_20px_rgba(251,191,36,0.3)] flex items-center justify-center"
+                >
+                  <div className="w-20 h-20 rounded-full border border-zinc-700/60 flex items-center justify-center">
+                    <div className="w-14 h-14 rounded-full border border-zinc-700/40 flex items-center justify-center">
+                      <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-amber-500 to-rose-500 flex items-center justify-center text-xs font-black text-white shadow">
+                        🎵
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+                {isTrackPlaying && (
+                  <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500"></span>
+                  </span>
+                )}
+              </div>
+
+              {/* Title & Artist */}
+              <div className="text-center min-w-0 max-w-full">
+                <h4 className="text-sm font-black text-white truncate">
+                  {activeTrack ? activeTrack.name : "Select a Track"}
+                </h4>
+                <p className="text-[10px] text-zinc-400 mt-0.5 truncate">
+                  {activeTrack ? ((activeTrack as any).artist || safeRoom.host.name) : "Ready to play backing music"}
+                </p>
+              </div>
+
+              {/* Seek / Progress Bar */}
+              <div className="w-full flex flex-col gap-1 mt-1">
+                <input
+                  type="range"
+                  min={0}
+                  max={musicDuration || 100}
+                  value={musicProgress}
+                  onChange={(e) => handleSeekMusic(Number(e.target.value))}
+                  className="w-full accent-amber-400 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
+                />
+                <div className="flex justify-between text-[9px] text-zinc-400 font-mono">
+                  <span>
+                    {(() => {
+                      const m = Math.floor(musicProgress / 60);
+                      const s = Math.floor(musicProgress % 60);
+                      return `${m}:${s < 10 ? '0' : ''}${s}`;
+                    })()}
+                  </span>
+                  <span>
+                    {(() => {
+                      if (!musicDuration) return activeTrack?.duration || '0:00';
+                      const m = Math.floor(musicDuration / 60);
+                      const s = Math.floor(musicDuration % 60);
+                      return `${m}:${s < 10 ? '0' : ''}${s}`;
+                    })()}
+                  </span>
+                </div>
+              </div>
+
+              {/* Playback Control Buttons */}
+              <div className="flex items-center gap-4 mt-1">
+                <button
+                  onClick={handlePrevTrack}
+                  className="p-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white cursor-pointer transition-all active:scale-95"
+                  title="Previous Track"
+                >
+                  <SkipBack className="w-4 h-4" />
+                </button>
+
+                <button
+                  onClick={handleTogglePlayPause}
+                  className="p-4 rounded-full bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-white shadow-[0_0_15px_rgba(244,63,94,0.5)] cursor-pointer transition-all active:scale-90"
+                  title={isTrackPlaying ? "Pause" : "Play"}
+                >
+                  {isTrackPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 fill-white ml-0.5" />}
+                </button>
+
+                <button
+                  onClick={handleNextTrack}
+                  className="p-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white cursor-pointer transition-all active:scale-95"
+                  title="Next Track"
+                >
+                  <SkipForward className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Volume Slider */}
+              <div className="w-full flex items-center gap-2 pt-2 border-t border-white/10 text-xs">
+                <span className="text-zinc-400">
+                  {musicVolume === 0 ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={musicVolume}
+                  onChange={(e) => setMusicVolume(Number(e.target.value))}
+                  className="flex-1 accent-rose-500 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
+                />
+                <span className="text-[10px] font-mono text-zinc-400 w-8 text-right">
+                  {Math.round(musicVolume * 100)}%
+                </span>
+              </div>
+            </div>
+
+            {/* Presets Track Library */}
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
+                🎶 Music Library
+              </label>
+              <div className="flex flex-col gap-1.5 max-h-44 overflow-y-auto scrollbar-none pr-1">
+                {AUDIO_TRACKS.map((track) => {
+                  const isCurrent = activeTrack?.id === track.id;
+                  return (
+                    <div
+                      key={track.id}
+                      onClick={() => handlePlayTrack(track)}
+                      className={`p-2.5 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
+                        isCurrent
+                          ? 'bg-rose-500/20 border-rose-400/60 text-white font-bold'
+                          : 'bg-zinc-900 border-white/10 text-zinc-300 hover:bg-zinc-800/80 hover:text-white'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="text-base">{isCurrent && isTrackPlaying ? '▶️' : '🎵'}</span>
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold truncate">{track.name}</p>
+                          <p className="text-[9px] text-zinc-400 font-medium">{(track as any).artist || 'Studio Audio'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[9px] font-mono text-zinc-400">{track.duration}</span>
+                        {isCurrent && isTrackPlaying && (
+                          <span className="text-[8px] bg-rose-500 text-white font-black px-1.5 py-0.5 rounded uppercase">
+                            Playing
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Custom Audio Stream Input (Host Only) */}
+            {isCurrentUserHost && (
+              <div className="pt-2 border-t border-white/10 flex flex-col gap-2">
+                <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <span>🔗 Stream Custom Audio (Direct MP3 URL)</span>
+                </label>
+                <div className="flex flex-col gap-1.5">
+                  <input
+                    type="text"
+                    placeholder="Track Name (e.g. My Favorite Melody)"
+                    value={customAudioName}
+                    onChange={(e) => setCustomAudioName(e.target.value)}
+                    className="bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-400"
+                  />
+                  <div className="flex gap-1.5">
+                    <input
+                      type="text"
+                      placeholder="https://.../music.mp3"
+                      value={customAudioUrl}
+                      onChange={(e) => setCustomAudioUrl(e.target.value)}
+                      className="flex-1 bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-400"
+                    />
+                    <button
+                      onClick={handlePlayCustomAudio}
+                      className="bg-gradient-to-r from-amber-500 to-rose-500 hover:from-amber-400 hover:to-rose-400 px-3.5 py-2 rounded-xl text-xs font-black text-white cursor-pointer active:scale-95 shadow"
+                    >
+                      Stream
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={() => setShowMusicDrawer(false)}
+              className="w-full mt-1 bg-zinc-900 hover:bg-zinc-800 text-white font-black py-2.5 rounded-xl text-xs uppercase tracking-wider cursor-pointer border border-white/10"
+            >
+              Close
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

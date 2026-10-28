@@ -53,9 +53,49 @@ export const SHOP_ITEMS: ShopItem[] = [
 ];
 
 export const AUDIO_TRACKS = [
-  { id: 'bg_1', name: 'Chill Lofi Beats', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3', duration: '6:12' },
-  { id: 'bg_2', name: 'Upbeat Synth Party', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3', duration: '7:05' },
-  { id: 'bg_3', name: 'Soothing Acoustic Guitar', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3', duration: '5:44' }
+  { id: 'bg_1', name: 'Chill Lofi Beats', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3', duration: '6:12', artist: 'Lofi Dream' },
+  { id: 'bg_2', name: 'Upbeat Synth Party', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3', duration: '7:05', artist: 'Neon Wave' },
+  { id: 'bg_3', name: 'Soothing Acoustic Guitar', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3', duration: '5:44', artist: 'Golden Sun' },
+  { id: 'bg_4', name: 'Midnight Jazz Cafe', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3', duration: '5:02', artist: 'Smooth Groove' },
+  { id: 'bg_5', name: 'Deep Ambient Chill', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3', duration: '4:30', artist: 'Echo Flow' }
+];
+
+export const ROOM_WALLPAPERS = [
+  {
+    id: 'wp_mountain',
+    name: 'Alpine Highway & Peak',
+    category: 'Scenic',
+    url: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=1200&auto=format&fit=crop&q=80',
+    thumbnail: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=200&auto=format&fit=crop&q=80'
+  },
+  {
+    id: 'wp_neon',
+    name: 'Cyber Neon Metropolis',
+    category: 'Cyber',
+    url: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=1200&auto=format&fit=crop&q=80',
+    thumbnail: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=200&auto=format&fit=crop&q=80'
+  },
+  {
+    id: 'wp_galaxy',
+    name: 'Cosmic Starlight Realm',
+    category: 'Space',
+    url: 'https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?w=1200&auto=format&fit=crop&q=80',
+    thumbnail: 'https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?w=200&auto=format&fit=crop&q=80'
+  },
+  {
+    id: 'wp_sunset',
+    name: 'Golden Sunset Coast',
+    category: 'Nature',
+    url: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=1200&auto=format&fit=crop&q=80',
+    thumbnail: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=200&auto=format&fit=crop&q=80'
+  },
+  {
+    id: 'wp_luxury',
+    name: 'Imperial Golden Palace',
+    category: 'Royal',
+    url: 'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=1200&auto=format&fit=crop&q=80',
+    thumbnail: 'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=200&auto=format&fit=crop&q=80'
+  }
 ];
 
 export const PRESET_AVATARS = [

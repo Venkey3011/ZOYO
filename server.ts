@@ -2010,13 +2010,38 @@ app.post("/api/friend-requests", async (req: express.Request, res: express.Respo
   try {
     const { senderId, senderName, senderAvatar, senderYoyoId, receiverId, receiverName, receiverYoyoId } = req.body;
     if (!senderId || !receiverId) { res.status(400).json({ error: "senderId and receiverId are required" }); return; }
-    if (senderId === receiverId) { res.status(400).json({ error: "You cannot send a friend request to yourself" }); return; }
+    if (String(senderId) === String(receiverId)) { res.status(400).json({ error: "You cannot send a friend request to yourself" }); return; }
+
+    const sId = String(senderId).trim();
+    const rId = String(receiverId).trim();
+
+    // Look up sender and receiver to ensure accurate names, avatars, and IDs
+    const [senderUser, receiverUser] = await Promise.all([
+      findUserById(sId),
+      findUserById(rId)
+    ]);
+
+    const sName = senderName || senderUser?.name || 'User';
+    const sAvatar = senderAvatar || senderUser?.avatar || '';
+    const sYoyoId = senderYoyoId || senderUser?.yoyoId || '';
+    const rName = receiverName || receiverUser?.name || 'User';
+    const rAvatar = receiverUser?.avatar || '';
+    const rYoyoId = receiverYoyoId || receiverUser?.yoyoId || '';
+    const realReceiverId = receiverUser ? String(receiverUser.id || receiverUser._id) : rId;
+    const realSenderId = senderUser ? String(senderUser.id || senderUser._id) : sId;
+
+    if (realSenderId === realReceiverId) {
+      res.status(400).json({ error: "You cannot send a friend request to yourself" });
+      return;
+    }
+
+    const reqId = `fr_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
     if (isSupabaseConnected) {
       const { data: existing } = await supabase
         .from('friend_requests')
         .select('*')
-        .or(`and(sender_id.eq.${senderId},receiver_id.eq.${receiverId}),and(sender_id.eq.${receiverId},receiver_id.eq.${senderId})`)
+        .or(`and(sender_id.eq.${realSenderId},receiver_id.eq.${realReceiverId}),and(sender_id.eq.${realReceiverId},receiver_id.eq.${realSenderId})`)
         .in('status', ['pending', 'accepted'])
         .limit(1)
         .maybeSingle();
@@ -2028,29 +2053,49 @@ app.post("/api/friend-requests", async (req: express.Request, res: express.Respo
       }
 
       const { data: fr, error } = await supabase.from('friend_requests').insert({
-        sender_id: String(senderId),
-        sender_name: senderName || '',
-        sender_avatar: senderAvatar || '',
-        sender_yoyo_id: senderYoyoId || '',
-        receiver_id: String(receiverId),
-        receiver_name: receiverName || '',
-        receiver_yoyo_id: receiverYoyoId || '',
+        id: reqId,
+        sender_id: realSenderId,
+        sender_name: sName,
+        sender_avatar: sAvatar,
+        sender_yoyo_id: sYoyoId,
+        receiver_id: realReceiverId,
+        receiver_name: rName,
+        receiver_yoyo_id: rYoyoId,
         status: 'pending'
       }).select().maybeSingle();
 
       if (fr && !error) {
+        // Send real-time notification to receiver via WebSocket
+        sendToUserGlobally(realReceiverId, {
+          type: 'friend_request_received',
+          friendRequest: fr
+        });
+        if (rYoyoId && rYoyoId !== realReceiverId) {
+          sendToUserGlobally(rYoyoId, {
+            type: 'friend_request_received',
+            friendRequest: fr
+          });
+        }
         res.json({ success: true, friendRequest: fr });
         return;
+      } else if (error) {
+        console.warn('Supabase friend_request insert error:', error);
       }
     }
 
     const fr: InMemFriendRequest = {
-      _id: String(Date.now()),
-      senderId, senderName: senderName || '', senderAvatar: senderAvatar || '',
-      senderYoyoId: senderYoyoId || '', receiverId, receiverName: receiverName || '',
-      receiverYoyoId: receiverYoyoId || '', status: 'pending', createdAt: new Date().toISOString()
+      _id: reqId,
+      senderId: realSenderId, senderName: sName, senderAvatar: sAvatar,
+      senderYoyoId: sYoyoId, receiverId: realReceiverId, receiverName: rName,
+      receiverYoyoId: rYoyoId, status: 'pending', createdAt: new Date().toISOString()
     };
     inMemoryFriendRequests.push(fr);
+
+    sendToUserGlobally(realReceiverId, {
+      type: 'friend_request_received',
+      friendRequest: fr
+    });
+
     res.json({ success: true, friendRequest: fr });
   } catch (error) {
     console.error('Send friend request error:', error);
@@ -2062,30 +2107,41 @@ app.post("/api/friend-requests", async (req: express.Request, res: express.Respo
 app.get("/api/friend-requests/:userId/inbox", async (req: express.Request, res: express.Response) => {
   try {
     const { userId } = req.params;
+    const cleanId = String(userId).trim();
+    const user = await findUserById(cleanId);
+    const idList = [cleanId];
+    if (user) {
+      if (user.id && !idList.includes(String(user.id))) idList.push(String(user.id));
+      if (user._id && !idList.includes(String(user._id))) idList.push(String(user._id));
+      if (user.yoyoId && !idList.includes(String(user.yoyoId))) idList.push(String(user.yoyoId));
+    }
+
     if (isSupabaseConnected) {
       const { data, error } = await supabase
         .from('friend_requests')
         .select('*')
-        .eq('receiver_id', String(userId))
+        .in('receiver_id', idList)
         .eq('status', 'pending')
         .order('created_at', { ascending: false });
 
       if (data && !error) {
         const mapped = data.map((d: any) => ({
           _id: d.id,
+          id: d.id,
           senderId: d.sender_id,
           senderName: d.sender_name,
           senderAvatar: d.sender_avatar,
           senderYoyoId: d.sender_yoyo_id,
           receiverId: d.receiver_id,
           receiverName: d.receiver_name,
+          receiverYoyoId: d.receiver_yoyo_id,
           status: d.status,
           createdAt: d.created_at
         }));
         return res.json({ success: true, requests: mapped });
       }
     }
-    const requests = inMemoryFriendRequests.filter(fr => fr.receiverId === userId && fr.status === 'pending')
+    const requests = inMemoryFriendRequests.filter(fr => idList.includes(String(fr.receiverId)) && fr.status === 'pending')
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     res.json({ success: true, requests });
   } catch (error) {
@@ -2111,13 +2167,26 @@ app.post("/api/friend-requests/:requestId/respond", async (req: express.Request,
         .maybeSingle();
 
       if (data && !error) {
+        // Realtime notify original sender
+        sendToUserGlobally(String(data.sender_id), {
+          type: 'friend_request_responded',
+          action,
+          friendRequest: data
+        });
         return res.json({ success: true, friendRequest: data });
       }
     }
 
-    const fr = inMemoryFriendRequests.find(r => r._id === requestId);
+    const fr = inMemoryFriendRequests.find(r => r._id === requestId || (r as any).id === requestId);
     if (!fr) { res.status(404).json({ error: "Friend request not found" }); return; }
     fr.status = newStatus;
+
+    sendToUserGlobally(String(fr.senderId), {
+      type: 'friend_request_responded',
+      action,
+      friendRequest: fr
+    });
+
     res.json({ success: true, friendRequest: fr });
   } catch (error) {
     console.error('Respond to friend request error:', error);
@@ -2129,18 +2198,26 @@ app.post("/api/friend-requests/:requestId/respond", async (req: express.Request,
 app.get("/api/friends/:userId", async (req: express.Request, res: express.Response) => {
   try {
     const { userId } = req.params;
-    const uid = String(userId);
+    const cleanId = String(userId).trim();
+    const user = await findUserById(cleanId);
+    const idList = [cleanId];
+    if (user) {
+      if (user.id && !idList.includes(String(user.id))) idList.push(String(user.id));
+      if (user._id && !idList.includes(String(user._id))) idList.push(String(user._id));
+      if (user.yoyoId && !idList.includes(String(user.yoyoId))) idList.push(String(user.yoyoId));
+    }
 
     if (isSupabaseConnected) {
+      const orFilter = idList.map(id => `sender_id.eq.${id},receiver_id.eq.${id}`).join(',');
       const { data } = await supabase
         .from('friend_requests')
         .select('*')
         .eq('status', 'accepted')
-        .or(`sender_id.eq.${uid},receiver_id.eq.${uid}`);
+        .or(orFilter);
 
       if (data) {
         const friends = await Promise.all(data.map(async (fr: any) => {
-          const isSender = String(fr.sender_id) === uid;
+          const isSender = idList.includes(String(fr.sender_id));
           const fId = isSender ? fr.receiver_id : fr.sender_id;
           const fName = isSender ? fr.receiver_name : fr.sender_name;
           const fYoyoId = isSender ? fr.receiver_yoyo_id : fr.sender_yoyo_id;
@@ -2160,22 +2237,84 @@ app.get("/api/friends/:userId", async (req: express.Request, res: express.Respon
       }
     }
 
-    const requests = inMemoryFriendRequests.filter(fr =>
-      fr.status === 'accepted' && (fr.senderId === userId || fr.receiverId === userId)
+    const userFrs = inMemoryFriendRequests.filter(fr => 
+      idList.some(id => String(fr.senderId) === id || String(fr.receiverId) === id) && fr.status === 'accepted'
     );
-    const friends = requests.map(fr => {
-      const isSender = fr.senderId === userId;
+    const friends = userFrs.map(fr => {
+      const isSender = idList.some(id => String(fr.senderId) === id);
       return {
         id: isSender ? fr.receiverId : fr.senderId,
         name: isSender ? fr.receiverName : fr.senderName,
-        avatar: (isSender ? fr.receiverAvatar : fr.senderAvatar) || `https://api.dicebear.com/7.x/thumbs/svg?seed=${fr.senderId}`,
+        avatar: isSender ? fr.receiverAvatar : fr.senderAvatar,
         yoyoId: isSender ? fr.receiverYoyoId : fr.senderYoyoId
       };
     });
     res.json({ success: true, friends });
   } catch (error) {
-    console.error('Error fetching friends:', error);
+    console.error('Get friends error:', error);
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Notification Badges / Counts Endpoint
+app.get("/api/notifications/counts/:userId", async (req: express.Request, res: express.Response) => {
+  try {
+    const { userId } = req.params;
+    const cleanId = String(userId).trim();
+    const user = await findUserById(cleanId);
+    const idList = [cleanId];
+    if (user) {
+      if (user.id && !idList.includes(String(user.id))) idList.push(String(user.id));
+      if (user._id && !idList.includes(String(user._id))) idList.push(String(user._id));
+      if (user.yoyoId && !idList.includes(String(user.yoyoId))) idList.push(String(user.yoyoId));
+    }
+
+    let friendRequestsCount = 0;
+    let unreadDMsCount = 0;
+
+    if (isSupabaseConnected) {
+      // 1. Count pending incoming friend requests
+      const { count: frCount, error: frErr } = await supabase
+        .from('friend_requests')
+        .select('id', { count: 'exact', head: true })
+        .in('receiver_id', idList)
+        .eq('status', 'pending');
+
+      if (!frErr && typeof frCount === 'number') {
+        friendRequestsCount = frCount;
+      }
+
+      // 2. Count distinct conversation partners where latest message was received
+      const orFilter = idList.map(id => `receiver_id.eq.${id}`).join(',');
+      const { data: recentMsgs } = await supabase
+        .from('direct_messages')
+        .select('sender_id, created_at')
+        .or(orFilter)
+        .order('created_at', { ascending: false })
+        .limit(20);
+
+      if (recentMsgs && recentMsgs.length > 0) {
+        const senders = new Set(recentMsgs.map(m => m.sender_id));
+        unreadDMsCount = senders.size;
+      }
+    } else {
+      friendRequestsCount = inMemoryFriendRequests.filter(fr => 
+        idList.includes(String(fr.receiverId)) && fr.status === 'pending'
+      ).length;
+      const recent = inMemoryDirectMessages.filter(m => idList.includes(String(m.receiverId)));
+      const senders = new Set(recent.map(m => m.senderId));
+      unreadDMsCount = senders.size;
+    }
+
+    res.json({
+      success: true,
+      friendRequests: friendRequestsCount,
+      unreadDMs: unreadDMsCount,
+      total: friendRequestsCount + unreadDMsCount
+    });
+  } catch (error) {
+    console.error('Error fetching notification counts:', error);
+    res.status(500).json({ error: "Failed to get counts", friendRequests: 0, unreadDMs: 0, total: 0 });
   }
 });
 
@@ -2310,10 +2449,11 @@ app.post("/api/dm/send", async (req: express.Request, res: express.Response) => 
 
     const isVoice = Boolean(voice);
     const nowIso = new Date().toISOString();
-    let msgId = `dm_${Date.now()}`;
+    const msgId = `dm_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
     if (isSupabaseConnected) {
       const { data, error } = await supabase.from('direct_messages').insert({
+        id: msgId,
         sender_id: String(senderId),
         receiver_id: String(receiverId),
         text: text.trim(),
@@ -2321,8 +2461,8 @@ app.post("/api/dm/send", async (req: express.Request, res: express.Response) => 
         duration: duration || 0
       }).select().maybeSingle();
 
-      if (data && !error) {
-        msgId = String(data.id);
+      if (error) {
+        console.warn('Supabase direct_message insert error:', error);
       }
     }
 
@@ -2596,7 +2736,12 @@ app.post("/api/rooms/:id/update", async (req: express.Request, res: express.Resp
     }
     Object.assign(room, updates);
     await saveRoom(room);
-    res.json({ success: true, room: sanitizeRoom(room) });
+    const sanitized = sanitizeRoom(room);
+    broadcastToRoom(id, {
+      type: 'room_updated',
+      room: sanitized
+    });
+    res.json({ success: true, room: sanitized });
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }
@@ -2824,37 +2969,60 @@ app.post("/api/rooms/:id/seat/:seatIndex", async (req: express.Request, res: exp
       return;
     }
 
-    if (!room.seats || !Array.isArray(room.seats)) {
-      room.seats = Array.from({ length: 9 }, (_, i) => ({
-        index: i,
-        user: i === 0 ? room.host : null,
-        isMuted: false,
-        isTalking: false
-      }));
+    if (isNaN(seatIdx) || seatIdx < 0 || seatIdx > 8) {
+      res.status(400).json({ error: "Invalid seat index (must be 0-8)" });
+      return;
     }
 
+    // Always normalize room.seats to an array of exactly 9 valid non-null seat objects
+    const rawSeats = Array.isArray(room.seats) ? room.seats : [];
+    room.seats = Array.from({ length: 9 }, (_, i) => {
+      const existing = rawSeats.find((s: any) => s && s.index === i) || rawSeats[i];
+      return {
+        index: i,
+        user: (i === 0 && !existing?.user) ? (room.host || null) : (existing?.user || null),
+        isMuted: Boolean(existing?.isMuted),
+        isTalking: Boolean(existing?.isTalking)
+      };
+    });
+
     if (action === 'sit' && user) {
-      const newUserId = String(user._id || user.id);
+      const newUserId = String(user._id || user.id || (user as any).userId || '');
       const safeUser = { ...user, id: newUserId, _id: newUserId, userId: newUserId };
 
-      // Check if seat is occupied by someone else
-      if (room.seats[seatIdx] && room.seats[seatIdx].user) {
-        const occId = String(room.seats[seatIdx].user._id || room.seats[seatIdx].user.id || '');
-        const occName = String(room.seats[seatIdx].user.name || '');
-        const idMismatch = occId && newUserId && occId !== newUserId;
-        const nameMismatch = occName && user.name && occName !== user.name;
-        if (idMismatch && nameMismatch) {
-          res.status(409).json({ error: `Seat already occupied by ${room.seats[seatIdx].user.name}` });
+      // Seat 0 is host-only
+      if (seatIdx === 0) {
+        const rHostId = String(room.host?._id || room.host?.id || (room.host as any)?.userId || '');
+        const isHost = (newUserId && rHostId && newUserId === rHostId) || (user.name && room.host?.name && user.name === room.host.name);
+        if (!isHost) {
+          res.status(403).json({ error: "Seat 0 is reserved exclusively for the room Host 👑" });
           return;
         }
       }
 
-      // Clear any other seat this user might already occupy in the room
+      // Check if target seat is already occupied by someone else
+      const targetSeat = room.seats[seatIdx];
+      if (targetSeat && targetSeat.user) {
+        const occId = String(targetSeat.user._id || targetSeat.user.id || (targetSeat.user as any).userId || '');
+        const occName = String(targetSeat.user.name || '');
+        const idMismatch = occId && newUserId && occId !== newUserId;
+        const nameMismatch = occName && user.name && occName !== user.name;
+        if (idMismatch && nameMismatch) {
+          res.status(409).json({ error: `Seat ${seatIdx} is already occupied by ${targetSeat.user.name}` });
+          return;
+        }
+      }
+
+      // Clear any other GUEST seat this user might already occupy (indices 1 to 8)
       room.seats.forEach((s: any) => {
-        if (s.index !== seatIdx && s.user && (String(s.user._id || s.user.id) === newUserId || s.user.name === user.name)) {
-          s.user = null;
-          s.isTalking = false;
-          s.isMuted = false;
+        if (!s || s.index === 0 || s.index === seatIdx) return;
+        if (s.user) {
+          const sUid = String(s.user._id || s.user.id || (s.user as any).userId || '');
+          if ((newUserId && sUid && sUid === newUserId) || (user.name && s.user.name === user.name)) {
+            s.user = null;
+            s.isTalking = false;
+            s.isMuted = false;
+          }
         }
       });
 
@@ -2879,7 +3047,7 @@ app.post("/api/rooms/:id/seat/:seatIndex", async (req: express.Request, res: exp
         isMuted: false, 
         isTalking: false 
       };
-      room.onlineCount = Math.max(room.onlineUsers?.length || 1, room.seats.filter((s: any) => s.user).length);
+      room.onlineCount = Math.max(room.onlineUsers?.length || 1, room.seats.filter((s: any) => s && s.user).length);
 
       await saveRoom(room);
 
@@ -2903,13 +3071,30 @@ app.post("/api/rooms/:id/seat/:seatIndex", async (req: express.Request, res: exp
       return;
     } else if (action === 'leave') {
       console.log(`👋 User leaving seat ${seatIdx} in room ${id}`);
-      room.seats[seatIdx] = { 
-        index: seatIdx, 
-        user: seatIdx === 0 ? room.host : null, 
-        isMuted: false, 
-        isTalking: false 
-      };
-      room.onlineCount = Math.max(room.onlineUsers?.length || 1, room.seats.filter((s: any) => s.user).length);
+      if (seatIdx > 0) {
+        room.seats[seatIdx] = { 
+          index: seatIdx, 
+          user: null, 
+          isMuted: false, 
+          isTalking: false 
+        };
+      }
+
+      // Also clear any other guest seat this leaving user might occupy
+      if (user) {
+        const leavingId = String(user._id || user.id || (user as any).userId || '');
+        room.seats.forEach((s: any) => {
+          if (!s || s.index === 0) return;
+          if (s.user) {
+            const sUid = String(s.user._id || s.user.id || (s.user as any).userId || '');
+            if ((leavingId && sUid && sUid === leavingId) || (user.name && s.user.name === user.name)) {
+              s.user = null;
+              s.isTalking = false;
+              s.isMuted = false;
+            }
+          }
+        });
+      }
     }
 
     // Always anchor seat 0 to the room host — never let it go empty
@@ -2917,7 +3102,7 @@ app.post("/api/rooms/:id/seat/:seatIndex", async (req: express.Request, res: exp
       room.seats[0].user = room.host;
     }
 
-    room.onlineCount = Math.max(room.onlineUsers?.length || 1, room.seats.filter((s: any) => s.user).length);
+    room.onlineCount = Math.max(room.onlineUsers?.length || 1, room.seats.filter((s: any) => s && s.user).length);
     await saveRoom(room);
 
     // Broadcast seat change to ALL clients in the room
@@ -3349,6 +3534,12 @@ async function startServer() {
             type: 'game_event',
             activeGame: payload?.activeGame,
             gameData: payload?.gameData
+          });
+        } else if (type === 'room_music') {
+          broadcastToRoom(roomId, {
+            type: 'room_music',
+            musicState: payload,
+            senderName: userName
           });
         }
       } catch (err) {

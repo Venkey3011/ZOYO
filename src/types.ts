@@ -49,6 +49,17 @@ export interface Room {
   roomId?: string;
   isOfficialGame?: boolean;
   gamePrizePool?: number;
+  notice?: string;
+  seatStyle?: 'sofa' | 'classic';
+  musicState?: {
+    isPlaying: boolean;
+    trackId?: string;
+    trackName?: string;
+    trackUrl?: string;
+    currentTime?: number;
+    volume?: number;
+    senderName?: string;
+  };
 }
 
 export interface CustomGame {

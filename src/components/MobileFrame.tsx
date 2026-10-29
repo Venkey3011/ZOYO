@@ -111,26 +111,16 @@ export default function MobileFrame({
                   >
                     <div className="relative">
                       <IconComponent className={`w-4 h-4 ${isSelected ? 'stroke-[2.5]' : 'stroke-2'}`} />
-                      {isFriends && inboxCount > 0 && (
-                        <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[8px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center animate-pulse">
-                          {inboxCount > 9 ? '9+' : inboxCount}
-                        </span>
-                      )}
-                      {isChat && unreadMessagesCount > 0 && (
-                        <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[8px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center animate-pulse">
-                          {unreadMessagesCount > 9 ? '9+' : unreadMessagesCount}
-                        </span>
-                      )}
                     </div>
                     <span>{tab.label}</span>
                     {isFriends && inboxCount > 0 && (
-                      <span className="ml-auto bg-rose-100 text-rose-600 text-[9px] font-black px-1.5 py-0.5 rounded-full">
-                        {inboxCount}
+                      <span className="ml-auto bg-rose-500 text-white text-[9px] font-black px-2 py-0.5 rounded-full shadow-xs animate-pulse">
+                        {inboxCount > 9 ? '9+' : inboxCount}
                       </span>
                     )}
                     {isChat && unreadMessagesCount > 0 && (
-                      <span className="ml-auto bg-rose-100 text-rose-600 text-[9px] font-black px-1.5 py-0.5 rounded-full">
-                        {unreadMessagesCount}
+                      <span className="ml-auto bg-rose-500 text-white text-[9px] font-black px-2 py-0.5 rounded-full shadow-xs animate-pulse">
+                        {unreadMessagesCount > 9 ? '9+' : unreadMessagesCount}
                       </span>
                     )}
                   </button>

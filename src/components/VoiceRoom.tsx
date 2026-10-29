@@ -5,7 +5,8 @@ import {
   ChevronLeft, Users, Mic, MicOff, Send, 
   Trophy, Sparkles, X, Gift as GiftIcon, Flame, Play, Pause,
   CornerDownRight, RefreshCw, Smile, Zap, MessageSquare, Award, UserPlus, Trash, VolumeX, MessageSquareDashed,
-  Share2, Copy, Eye, UserX, ShieldAlert, Palette, Music, Volume2, Disc, SkipForward, SkipBack, Sliders, Check, ExternalLink
+  Share2, Copy, Eye, UserX, ShieldAlert, Palette, Music, Volume2, Disc, SkipForward, SkipBack, Sliders, Check, ExternalLink,
+  Upload, FileAudio, Image as ImageIcon, LogOut, UploadCloud
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from './Toast';
@@ -220,6 +221,8 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   const [showCustomizationModal, setShowCustomizationModal] = useState(false);
   const [customWallpaperInput, setCustomWallpaperInput] = useState('');
   const [isSavingCustomization, setIsSavingCustomization] = useState(false);
+  const galleryFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isUploadingTheme, setIsUploadingTheme] = useState(false);
 
   // Music Player State (Host & Audience Synchronized)
   const [showMusicDrawer, setShowMusicDrawer] = useState(false);
@@ -229,6 +232,8 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   const [customAudioUrl, setCustomAudioUrl] = useState<string>('');
   const [customAudioName, setCustomAudioName] = useState<string>('');
   const roomMusicAudioRef = useRef<HTMLAudioElement | null>(null);
+  const deviceAudioFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isUploadingAudio, setIsUploadingAudio] = useState(false);
 
   // Intercept hardware / gesture back button to close any open modal or drawer in VoiceRoom
   useEffect(() => {
@@ -1207,16 +1212,27 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     sendWs('seat_status', { seatIndex: index, isTalking: false, isMuted: false });
 
     try {
-      const res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: optimisticUser, action: 'sit' })
-      });
+      let res: Response | null = null;
+      try {
+        res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user: optimisticUser, action: 'sit' })
+        });
+      } catch (networkErr) {
+        // Transient network retry after short pause
+        await new Promise(r => setTimeout(r, 600));
+        res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user: optimisticUser, action: 'sit' })
+        });
+      }
 
-      const data = await res.json().catch(() => null);
+      const data = await res?.json().catch(() => null);
 
-      if (!res.ok || !data?.success) {
-        const errorMsg = data?.error || `Server error (${res.status})`;
+      if (!res?.ok || !data?.success) {
+        const errorMsg = data?.error || `Server error (${res?.status || '500'})`;
         toast(`Could not sit in seat: ${errorMsg}`, 'error');
         setSeats(prevSeats);
         setMySeatIndex(prevMySeat);
@@ -1242,7 +1258,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       console.error('Error sitting in seat:', err);
       setSeats(prevSeats);
       setMySeatIndex(prevMySeat);
-      toast(`Failed to sit in seat: ${err?.message || 'Network error'}`, 'error');
+      toast(`Could not connect to seat service: ${err?.message || 'Network reconnecting...'}`, 'error');
     }
   };
 
@@ -1349,16 +1365,20 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   };
 
   const handleLeaveSeat = async (explicitIndex?: number) => {
-    // If explicitIndex is passed, use it; otherwise fallback to selectedSeatIndex or mySeatIndex
+    // Find where the user is actually seated in seats array
+    const actualSeatIdx = seats.findIndex(s => s.user && (
+      String(s.user._id || s.user.id || (s.user as any).userId) === currentUserId ||
+      s.user.name === currentUser.name
+    ));
+
     const index = explicitIndex !== undefined && explicitIndex !== null 
       ? explicitIndex 
-      : (selectedSeatIndex !== null ? selectedSeatIndex : mySeatIndex);
+      : (mySeatIndex !== null && mySeatIndex > 0 ? mySeatIndex : (actualSeatIdx > 0 ? actualSeatIdx : selectedSeatIndex));
 
-    if (index === null || index === undefined) return;
-
-    // Host cannot leave seat 0
-    if (index === 0) {
-      toast('Host Seat belongs permanently to the room Host 👑', 'info');
+    if (index === null || index === undefined || index <= 0) {
+      if (index === 0) {
+        toast('Host Seat belongs permanently to the room Host 👑', 'info');
+      }
       setShowSeatModal(false);
       setShowUserProfileModal(false);
       return;
@@ -1386,12 +1406,22 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
     // Call server to persist the vacancy and broadcast seats_updated to all clients
     try {
-      const res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'leave', user: leavingUser })
-      });
-      const data = await res.json().catch(() => null);
+      let res: Response | null = null;
+      try {
+        res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'leave', user: leavingUser })
+        });
+      } catch (netErr) {
+        await new Promise(r => setTimeout(r, 600));
+        res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'leave', user: leavingUser })
+        });
+      }
+      const data = await res?.json().catch(() => null);
 
       if (data?.success && data.room?.seats && Array.isArray(data.room.seats)) {
         const rawSeats = data.room.seats;
@@ -1405,6 +1435,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           };
         });
         setSeats(sanitized);
+        toast(`You left Mic Seat ${index}`, 'info');
       }
     } catch (err) {
       console.warn('Failed to persist leaving seat to server:', err);
@@ -1710,22 +1741,87 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     handlePlayTrack(AUDIO_TRACKS[prevIdx]);
   };
 
-  const handlePlayCustomAudio = () => {
-    if (!customAudioUrl.trim()) {
-      toast('Please enter a valid audio URL', 'error');
+  const handleGalleryThemeUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast('Please select an image file from your gallery', 'error');
       return;
     }
-    const customTrack = {
-      id: `custom_${Date.now()}`,
-      name: customAudioName.trim() || 'Custom Stream',
-      url: customAudioUrl.trim(),
-      duration: 'Live',
-      artist: currentUser.name
+    setIsUploadingTheme(true);
+    toast('Uploading theme image from gallery... 🖼️', 'info');
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const base64 = reader.result as string;
+        const res = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fileData: base64,
+            fileType: 'image',
+            fileName: file.name
+          })
+        });
+        const data = await res.json();
+        if (data.success && data.url) {
+          setRoomBackground(data.url);
+          toast('Gallery theme applied and saved! ✨', 'success');
+          handleSaveRoomCustomization(data.url);
+        } else {
+          toast(data.error || 'Failed to upload theme image', 'error');
+        }
+      } catch (err) {
+        toast('Network error uploading theme', 'error');
+      } finally {
+        setIsUploadingTheme(false);
+        if (e.target) e.target.value = '';
+      }
     };
-    handlePlayTrack(customTrack);
-    setCustomAudioUrl('');
-    setCustomAudioName('');
-    toast(`Playing custom track: ${customTrack.name} 🎶`, 'success');
+    reader.readAsDataURL(file);
+  };
+
+  const handleDeviceAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsUploadingAudio(true);
+    toast('Uploading song from your device... 🎵', 'info');
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const base64 = reader.result as string;
+        const res = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fileData: base64,
+            fileType: 'audio',
+            fileName: file.name
+          })
+        });
+        const data = await res.json();
+        if (data.success && data.url) {
+          const trackName = file.name.replace(/\.[^/.]+$/, "");
+          const localTrack = {
+            id: `device_${Date.now()}`,
+            name: trackName,
+            url: data.url,
+            duration: 'Device Music',
+            artist: currentUser.name
+          };
+          handlePlayTrack(localTrack);
+          toast(`Now playing "${trackName}"! 🎶`, 'success');
+        } else {
+          toast(data.error || 'Failed to upload audio', 'error');
+        }
+      } catch (err) {
+        toast('Network error uploading audio file', 'error');
+      } finally {
+        setIsUploadingAudio(false);
+        if (e.target) e.target.value = '';
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   const toggleBackingTrack = (track: typeof AUDIO_TRACKS[0]) => {
@@ -2580,47 +2676,17 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           </div>
         </div>
 
-        {/* Game Mode Picker Tabs */}
-        <div className="grid grid-cols-4 gap-2 shrink-0">
-          <button
-            onClick={handleSetupLudo}
-            className={`py-2 rounded-xl text-[11px] font-black flex items-center justify-center gap-1 shadow-sm border cursor-pointer transition-all ${
-              activeGame === 'ludo'
-                ? 'bg-amber-500 border-amber-600 text-white'
-                : 'bg-white border-zinc-200 text-zinc-700 hover:bg-stone-50'
-            }`}
-          >
-            <span>🎲 Ludo</span>
-          </button>
-          <button
-            onClick={challengeDiceDuel}
-            className={`py-2 rounded-xl text-[11px] font-black flex items-center justify-center gap-1 shadow-sm border cursor-pointer transition-all ${
-              activeGame === 'dice'
-                ? 'bg-rose-600 border-rose-700 text-white'
-                : 'bg-white border-zinc-200 text-zinc-700 hover:bg-stone-50'
-            }`}
-          >
-            <span>🔥 Duel</span>
-          </button>
-          <button
-            onClick={() => setActiveGame(activeGame === 'wheel' ? 'none' : 'wheel')}
-            className={`py-2 rounded-xl text-[11px] font-black flex items-center justify-center gap-1 shadow-sm border cursor-pointer transition-all ${
-              activeGame === 'wheel'
-                ? 'bg-purple-600 border-purple-700 text-white'
-                : 'bg-white border-zinc-200 text-zinc-700 hover:bg-stone-50'
-            }`}
-          >
-            <span>🎡 Spin</span>
-          </button>
+        {/* Dedicated Gift Action Bar */}
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => {
               setSelectedGiftRecipient(0);
               setShowGiftDrawer(true);
             }}
-            className="py-2 rounded-xl text-[11px] font-black bg-gradient-to-r from-pink-500 to-rose-600 text-white flex items-center justify-center gap-1 shadow-md border border-pink-500/10 cursor-pointer active:scale-95 transition-all"
+            className="flex-1 py-2.5 px-4 rounded-2xl text-xs font-black bg-gradient-to-r from-pink-500 via-rose-500 to-amber-500 hover:from-pink-600 hover:to-amber-600 text-white flex items-center justify-center gap-2 shadow-md border border-pink-500/20 cursor-pointer active:scale-98 transition-all"
           >
-            <GiftIcon className="w-3 h-3 fill-white" />
-            <span>Gift</span>
+            <GiftIcon className="w-4 h-4 fill-white" />
+            <span>Send Animated Gift 🎁</span>
           </button>
         </div>
 
@@ -3338,39 +3404,45 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                           <Eye className="w-3 h-3" />
                           <span>Profile</span>
                         </button>
-                        {/* Add Friend button for other users */}
+                        {/* Add Friend / Friends badge for other users */}
                         {!isMe && (
-                          <button
-                            title={`Add ${u.name} as friend`}
-                            onClick={async () => {
-                              try {
-                                const res = await fetch('/api/friend-requests', {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({
-                                    senderId: currentUserId,
-                                    senderName: currentUser.name,
-                                    senderAvatar: currentUser.avatar,
-                                    senderYoyoId: (currentUser as any).yoyoId || '',
-                                    receiverId: uId,
-                                    receiverName: u.name,
-                                    receiverYoyoId: (u as any).yoyoId || ''
-                                  })
-                                });
-                                const data = await res.json();
-                                if (data.success) {
-                                  toast(`Friend request sent to ${u.name}! 🎉`, 'success');
-                                } else {
-                                  toast(data.error || 'Could not send request', 'error');
+                          friendsList.some(f => String(f.id || (f as any)._id) === uId || f.name === u.name) ? (
+                            <span className="text-[8px] bg-emerald-50 text-emerald-700 font-black border border-emerald-200 px-2 py-0.5 rounded-full">
+                              🤝 Friends
+                            </span>
+                          ) : (
+                            <button
+                              title={`Add ${u.name} as friend`}
+                              onClick={async () => {
+                                try {
+                                  const res = await fetch('/api/friend-requests', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                      senderId: currentUserId,
+                                      senderName: currentUser.name,
+                                      senderAvatar: currentUser.avatar,
+                                      senderYoyoId: (currentUser as any).yoyoId || '',
+                                      receiverId: uId,
+                                      receiverName: u.name,
+                                      receiverYoyoId: (u as any).yoyoId || ''
+                                    })
+                                  });
+                                  const data = await res.json();
+                                  if (data.success) {
+                                    toast(`Friend request sent to ${u.name}! 🎉`, 'success');
+                                  } else {
+                                    toast(data.error || 'Could not send request', 'error');
+                                  }
+                                } catch {
+                                  toast('Network error. Try again.', 'error');
                                 }
-                              } catch {
-                                toast('Network error. Try again.', 'error');
-                              }
-                            }}
-                            className="text-[8px] bg-pink-50 text-pink-600 font-black border border-pink-200 px-2 py-0.5 rounded-full hover:bg-pink-100 transition-colors"
-                          >
-                            + Friend
-                          </button>
+                              }}
+                              className="text-[8px] bg-pink-50 text-pink-600 font-black border border-pink-200 px-2 py-0.5 rounded-full hover:bg-pink-100 transition-colors"
+                            >
+                              + Friend
+                            </button>
+                          )
                         )}
                       </div>
 
@@ -3592,27 +3664,19 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                 })}
               </div>
 
-              {/* Custom Wallpaper URL */}
-              <div className="mt-1 flex gap-1.5">
-                <input
-                  type="text"
-                  placeholder="Or paste custom image URL (https://...)"
-                  value={customWallpaperInput}
-                  onChange={(e) => setCustomWallpaperInput(e.target.value)}
-                  className="flex-1 bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-400"
-                />
-                <button
-                  onClick={() => {
-                    if (customWallpaperInput.trim()) {
-                      setRoomBackground(customWallpaperInput.trim());
-                      toast('Custom wallpaper applied! Preview active ✨', 'info');
-                    }
-                  }}
-                  className="bg-white/10 hover:bg-white/20 border border-white/20 px-3 py-2 rounded-xl text-xs font-bold text-white cursor-pointer active:scale-95"
-                >
-                  Apply
-                </button>
-              </div>
+              {/* Gallery Upload Button */}
+              <input ref={galleryFileInputRef} type="file" accept="image/*" className="hidden" onChange={handleGalleryThemeUpload} />
+              <button
+                onClick={() => galleryFileInputRef.current?.click()}
+                disabled={isUploadingTheme}
+                className="w-full mt-1 bg-white/10 hover:bg-white/20 border border-white/20 px-3 py-2.5 rounded-xl text-xs font-bold text-white cursor-pointer active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {isUploadingTheme ? (
+                  <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Uploading...</>
+                ) : (
+                  <><ImageIcon className="w-3.5 h-3.5" /> Upload from Gallery</>
+                )}
+              </button>
             </div>
 
             {/* Room Title */}
@@ -3882,36 +3946,24 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
               </div>
             </div>
 
-            {/* Custom Audio Stream Input (Host Only) */}
+            {/* Play Song from Device (Host Only) */}
             {isCurrentUserHost && (
               <div className="pt-2 border-t border-white/10 flex flex-col gap-2">
                 <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
-                  <span>🔗 Stream Custom Audio (Direct MP3 URL)</span>
+                  <span>🎵 Play Song from Your Device</span>
                 </label>
-                <div className="flex flex-col gap-1.5">
-                  <input
-                    type="text"
-                    placeholder="Track Name (e.g. My Favorite Melody)"
-                    value={customAudioName}
-                    onChange={(e) => setCustomAudioName(e.target.value)}
-                    className="bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-400"
-                  />
-                  <div className="flex gap-1.5">
-                    <input
-                      type="text"
-                      placeholder="https://.../music.mp3"
-                      value={customAudioUrl}
-                      onChange={(e) => setCustomAudioUrl(e.target.value)}
-                      className="flex-1 bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-400"
-                    />
-                    <button
-                      onClick={handlePlayCustomAudio}
-                      className="bg-gradient-to-r from-amber-500 to-rose-500 hover:from-amber-400 hover:to-rose-400 px-3.5 py-2 rounded-xl text-xs font-black text-white cursor-pointer active:scale-95 shadow"
-                    >
-                      Stream
-                    </button>
-                  </div>
-                </div>
+                <input ref={deviceAudioFileInputRef} type="file" accept="audio/*" className="hidden" onChange={handleDeviceAudioUpload} />
+                <button
+                  onClick={() => deviceAudioFileInputRef.current?.click()}
+                  disabled={isUploadingAudio}
+                  className="w-full bg-gradient-to-r from-amber-500 to-rose-500 hover:from-amber-400 hover:to-rose-400 px-3.5 py-2.5 rounded-xl text-xs font-black text-white cursor-pointer active:scale-95 shadow flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isUploadingAudio ? (
+                    <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Uploading...</>
+                  ) : (
+                    <><UploadCloud className="w-3.5 h-3.5" /> Pick Song from Device</>
+                  )}
+                </button>
               </div>
             )}
 

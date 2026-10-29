@@ -327,6 +327,10 @@ export default function FriendSystem({ currentUser, onClose, onOpenChat }: Frien
                       <span className="text-zinc-400 text-[10px] font-bold px-3 py-1 bg-stone-100 rounded-full">
                         You
                       </span>
+                    ) : friends.some(f => String(f.id) === String(searchResult._id || searchResult.id) || (f.yoyoId && f.yoyoId === searchResult.yoyoId)) ? (
+                      <span className="text-emerald-700 text-[10px] font-black px-3 py-1.5 bg-emerald-50 border border-emerald-200 rounded-full flex items-center gap-1">
+                        🤝 Friends
+                      </span>
                     ) : requestStatus === 'sent' ? (
                       <span className="text-emerald-600 text-[10px] font-black px-3 py-1 bg-emerald-50 border border-emerald-200 rounded-full flex items-center gap-1">
                         <Check className="w-3 h-3" /> Sent

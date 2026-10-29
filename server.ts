@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import fs from "fs";
 import path from "path";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -12,6 +13,60 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+
+// Ensure public/uploads directory exists and serve files statically
+const UPLOADS_DIR = path.join(process.cwd(), "public", "uploads");
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+app.use("/uploads", express.static(UPLOADS_DIR));
+
+// Track when each user last opened/read their chats
+const userLastReadMap = new Map<string, number>();
+
+// Dedicated upload endpoint for user gallery images and device audio files
+app.post("/api/upload", (req: express.Request, res: express.Response) => {
+  try {
+    const { fileData, fileType, fileName } = req.body;
+    if (!fileData || typeof fileData !== 'string') {
+      res.status(400).json({ error: "No file data provided" });
+      return;
+    }
+
+    let ext = fileType === 'audio' ? 'mp3' : 'jpg';
+    let base64Content = fileData;
+    const match = fileData.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.*)$/);
+    if (match) {
+      const mime = match[1].toLowerCase();
+      base64Content = match[2];
+      if (mime.includes('image/png')) ext = 'png';
+      else if (mime.includes('image/jpeg') || mime.includes('image/jpg')) ext = 'jpg';
+      else if (mime.includes('image/webp')) ext = 'webp';
+      else if (mime.includes('image/gif')) ext = 'gif';
+      else if (mime.includes('audio/mpeg') || mime.includes('audio/mp3')) ext = 'mp3';
+      else if (mime.includes('audio/wav')) ext = 'wav';
+      else if (mime.includes('audio/ogg')) ext = 'ogg';
+      else if (mime.includes('audio/m4a') || mime.includes('audio/mp4') || mime.includes('audio/x-m4a')) ext = 'm4a';
+    }
+
+    const cleanBaseName = (fileName || `${fileType}_${Date.now()}`)
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .slice(0, 40);
+    const savedFileName = `${fileType}_${Date.now()}_${cleanBaseName}.${ext}`;
+    const filePath = path.join(UPLOADS_DIR, savedFileName);
+
+    fs.writeFileSync(filePath, Buffer.from(base64Content, 'base64'));
+
+    res.json({
+      success: true,
+      url: `/uploads/${savedFileName}`,
+      fileName: fileName || savedFileName
+    });
+  } catch (error) {
+    console.error('File upload error:', error);
+    res.status(500).json({ error: "Failed to upload file" });
+  }
+});
 
 // ⚡ SUPABASE REALTIME & HIGH-CONCURRENCY DATABASE (The ONLY Database)
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://efiiphktyjafxcoudvfj.supabase.co";
@@ -1798,37 +1853,68 @@ function sendToUserInRoom(roomId: string, targetUserId: string, data: any) {
 // --- REAL-TIME GLOBAL WEBSOCKET REGISTRY FOR DIRECT MESSAGES ---
 const globalUserSockets = new Map<string, Set<WebSocket>>();
 
-function registerUserSocket(userId: string, ws: WebSocket) {
+async function registerUserSocket(userId: string, ws: WebSocket) {
   if (!userId) return;
   const uid = String(userId);
   if (!globalUserSockets.has(uid)) {
     globalUserSockets.set(uid, new Set());
   }
   globalUserSockets.get(uid)!.add(ws);
+
+  // Also link aliases (id, _id, yoyoId) so notifications and chats arrive regardless of ID format used
+  try {
+    const u = await findUserById(uid);
+    if (u) {
+      const aliases = [u.id, (u as any)._id, u.yoyoId].filter(Boolean).map(String);
+      for (const alias of aliases) {
+        if (!globalUserSockets.has(alias)) {
+          globalUserSockets.set(alias, new Set());
+        }
+        globalUserSockets.get(alias)!.add(ws);
+      }
+    }
+  } catch {}
 }
 
 function unregisterUserSocket(userId: string, ws: WebSocket) {
   if (!userId) return;
   const uid = String(userId);
-  const sockets = globalUserSockets.get(uid);
-  if (sockets) {
-    sockets.delete(ws);
-    if (sockets.size === 0) {
-      globalUserSockets.delete(uid);
+  for (const [key, sockets] of globalUserSockets.entries()) {
+    if (sockets.has(ws)) {
+      sockets.delete(ws);
+      if (sockets.size === 0) {
+        globalUserSockets.delete(key);
+      }
     }
   }
 }
 
-function sendToUserGlobally(userId: string, data: any) {
-  const sockets = globalUserSockets.get(String(userId));
-  if (sockets && sockets.size > 0) {
-    const payload = JSON.stringify(data);
-    for (const ws of sockets) {
-      if (ws.readyState === WebSocket.OPEN) {
-        try {
-          ws.send(payload);
-        } catch (err) {
-          console.warn(`Failed to send DM via WS to user ${userId}:`, err);
+async function sendToUserGlobally(userId: string, data: any) {
+  const targetId = String(userId);
+  const sentSockets = new Set<WebSocket>();
+  const payload = JSON.stringify(data);
+
+  const idCandidates = [targetId];
+  try {
+    const u = await findUserById(targetId);
+    if (u) {
+      if (u.id) idCandidates.push(String(u.id));
+      if ((u as any)._id) idCandidates.push(String((u as any)._id));
+      if (u.yoyoId) idCandidates.push(String(u.yoyoId));
+    }
+  } catch {}
+
+  for (const cid of new Set(idCandidates)) {
+    const sockets = globalUserSockets.get(cid);
+    if (sockets) {
+      for (const ws of sockets) {
+        if (!sentSockets.has(ws) && ws.readyState === WebSocket.OPEN) {
+          sentSockets.add(ws);
+          try {
+            ws.send(payload);
+          } catch (err) {
+            console.warn(`Failed to send DM via WS to user ${cid}:`, err);
+          }
         }
       }
     }
@@ -2256,6 +2342,53 @@ app.get("/api/friends/:userId", async (req: express.Request, res: express.Respon
   }
 });
 
+// Check friendship status between two users
+app.get("/api/friends/status", async (req: express.Request, res: express.Response) => {
+  try {
+    const { user1, user2 } = req.query;
+    if (!user1 || !user2) {
+      res.json({ isFriend: false });
+      return;
+    }
+    const u1 = String(user1).trim();
+    const u2 = String(user2).trim();
+
+    if (u1 === u2) {
+      res.json({ isFriend: false, isSelf: true });
+      return;
+    }
+
+    if (isSupabaseConnected) {
+      const { data, error } = await supabase
+        .from('friend_requests')
+        .select('id')
+        .eq('status', 'accepted')
+        .or(`and(sender_id.eq.${u1},receiver_id.eq.${u2}),and(sender_id.eq.${u2},receiver_id.eq.${u1})`)
+        .limit(1);
+
+      const isFriend = !error && Boolean(data && data.length > 0);
+      res.json({ isFriend });
+      return;
+    }
+
+    const isFriend = inMemoryFriendRequests.some(fr => 
+      fr.status === 'accepted' && 
+      ((fr.senderId === u1 && fr.receiverId === u2) || (fr.senderId === u2 && fr.receiverId === u1))
+    );
+    res.json({ isFriend });
+  } catch (err) {
+    res.json({ isFriend: false });
+  }
+});
+
+// Mark DM as read for a user
+app.post("/api/dm/read/:userId", (req: express.Request, res: express.Response) => {
+  const { userId } = req.params;
+  const cleanId = String(userId).trim();
+  userLastReadMap.set(cleanId, Date.now());
+  res.json({ success: true, timestamp: Date.now() });
+});
+
 // Notification Badges / Counts Endpoint
 app.get("/api/notifications/counts/:userId", async (req: express.Request, res: express.Response) => {
   try {
@@ -2272,6 +2405,10 @@ app.get("/api/notifications/counts/:userId", async (req: express.Request, res: e
     let friendRequestsCount = 0;
     let unreadDMsCount = 0;
 
+    // Last read timestamp for DMs (from client or server map)
+    const clientSince = req.query.since ? Number(req.query.since) : null;
+    const lastReadTimestamp = clientSince || userLastReadMap.get(cleanId);
+
     if (isSupabaseConnected) {
       // 1. Count pending incoming friend requests
       const { count: frCount, error: frErr } = await supabase
@@ -2284,26 +2421,34 @@ app.get("/api/notifications/counts/:userId", async (req: express.Request, res: e
         friendRequestsCount = frCount;
       }
 
-      // 2. Count distinct conversation partners where latest message was received
-      const orFilter = idList.map(id => `receiver_id.eq.${id}`).join(',');
-      const { data: recentMsgs } = await supabase
-        .from('direct_messages')
-        .select('sender_id, created_at')
-        .or(orFilter)
-        .order('created_at', { ascending: false })
-        .limit(20);
+      // 2. Count unread DMs received after the user's last read time
+      if (lastReadTimestamp && lastReadTimestamp > 0) {
+        const sinceIso = new Date(lastReadTimestamp).toISOString();
+        const orFilter = idList.map(id => `receiver_id.eq.${id}`).join(',');
+        const { data: recentMsgs } = await supabase
+          .from('direct_messages')
+          .select('sender_id')
+          .or(orFilter)
+          .gt('created_at', sinceIso);
 
-      if (recentMsgs && recentMsgs.length > 0) {
-        const senders = new Set(recentMsgs.map(m => m.sender_id));
-        unreadDMsCount = senders.size;
+        if (recentMsgs && recentMsgs.length > 0) {
+          const senders = new Set(recentMsgs.map(m => m.sender_id));
+          unreadDMsCount = senders.size;
+        }
       }
     } else {
       friendRequestsCount = inMemoryFriendRequests.filter(fr => 
         idList.includes(String(fr.receiverId)) && fr.status === 'pending'
       ).length;
-      const recent = inMemoryDirectMessages.filter(m => idList.includes(String(m.receiverId)));
-      const senders = new Set(recent.map(m => m.senderId));
-      unreadDMsCount = senders.size;
+
+      if (lastReadTimestamp && lastReadTimestamp > 0) {
+        const recent = inMemoryDirectMessages.filter(m => 
+          idList.includes(String(m.receiverId)) && 
+          new Date(m.createdAt).getTime() > lastReadTimestamp
+        );
+        const senders = new Set(recent.map(m => m.senderId));
+        unreadDMsCount = senders.size;
+      }
     }
 
     res.json({
@@ -2325,6 +2470,7 @@ app.get("/api/dm/conversations/:userId", async (req: express.Request, res: expre
   try {
     const { userId } = req.params;
     const uid = String(userId);
+    userLastReadMap.set(uid, Date.now());
 
     let messages: any[] = [];
     if (isSupabaseConnected) {
@@ -2522,8 +2668,8 @@ app.post("/api/dm/send", async (req: express.Request, res: express.Response) => 
   }
 });
 
-// Delete a DM message
-app.delete("/api/dm/messages/:id", async (req: express.Request, res: express.Response) => {
+// Delete a DM message (support both singular and plural paths)
+app.delete(["/api/dm/messages/:id", "/api/dm/message/:id"], async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
     if (isSupabaseConnected) {

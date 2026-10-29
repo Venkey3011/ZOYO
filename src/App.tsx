@@ -211,13 +211,20 @@ export default function App() {
 
     const fetchNotifications = async () => {
       try {
-        const res = await fetch(`/api/notifications/counts/${uId}`);
+        let lastRead = localStorage.getItem('zoyo_last_read_chat');
+        if (!lastRead) {
+          lastRead = String(Date.now());
+          localStorage.setItem('zoyo_last_read_chat', lastRead);
+        }
+        const res = await fetch(`/api/notifications/counts/${uId}?since=${lastRead}`);
         if (res.ok) {
           const data = await res.json();
           if (data.success) {
             setInboxCount(data.friendRequests || 0);
             if (activeTabRef.current !== 'chat') {
               setUnreadMessagesCount(data.unreadDMs || 0);
+            } else {
+              setUnreadMessagesCount(0);
             }
           }
         }
@@ -527,6 +534,11 @@ export default function App() {
     }
     if (newTab === 'chat') {
       setUnreadMessagesCount(0);
+      localStorage.setItem('zoyo_last_read_chat', String(Date.now()));
+      const uId = currentUser._id || currentUser.id;
+      if (uId) {
+        fetch(`/api/dm/read/${uId}`, { method: 'POST' }).catch(() => {});
+      }
     }
     if (newTab !== activeTabRef.current) {
       setActiveTab(newTab);

@@ -526,27 +526,6 @@ export default function ProfileTab({
                 ))}
               </div>
             </div>
-
-            {/* Option C: Image URL Input */}
-            <form onSubmit={handleCustomUrlSubmit} className="flex flex-col gap-1.5 border-t border-zinc-100 pt-3">
-              <span className="text-[9px] font-black text-zinc-400 uppercase tracking-wider">Or paste an image web link</span>
-              <div className="flex gap-2">
-                <input
-                  type="url"
-                  placeholder="https://example.com/avatar.jpg"
-                  value={customUrlInput}
-                  onChange={(e) => setCustomUrlInput(e.target.value)}
-                  className="flex-1 bg-stone-50 border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-800 placeholder-zinc-400 focus:outline-none focus:border-rose-500 font-medium"
-                />
-                <button
-                  type="submit"
-                  disabled={!customUrlInput.trim()}
-                  className="bg-zinc-800 hover:bg-zinc-900 disabled:opacity-40 text-white px-3 py-2 rounded-xl font-black text-xs cursor-pointer transition-colors"
-                >
-                  Apply
-                </button>
-              </div>
-            </form>
           </div>
         </div>
       )}

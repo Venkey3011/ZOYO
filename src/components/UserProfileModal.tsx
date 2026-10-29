@@ -37,6 +37,7 @@ export default function UserProfileModal({
 }: UserProfileModalProps) {
   const [profileData, setProfileData] = useState<User | null>(user);
   const [friendReqSent, setFriendReqSent] = useState(false);
+  const [isAlreadyFriend, setIsAlreadyFriend] = useState(false);
   const [isSendingReq, setIsSendingReq] = useState(false);
   const [recentVisitors, setRecentVisitors] = useState<any[]>([]);
 
@@ -44,6 +45,7 @@ export default function UserProfileModal({
     if (!isOpen || !user) return;
     setProfileData(user);
     setFriendReqSent(false);
+    setIsAlreadyFriend(false);
 
     const targetId = user._id || user.id;
     const myId = currentUser._id || currentUser.id;
@@ -83,6 +85,18 @@ export default function UserProfileModal({
         }
       })
       .catch(() => {});
+
+    // Check friendship status
+    if (targetId && myId && targetId !== myId) {
+      fetch(`/api/friends/status?user1=${encodeURIComponent(String(myId))}&user2=${encodeURIComponent(String(targetId))}`)
+        .then(r => r.json())
+        .then(d => {
+          if (d?.isFriend) {
+            setIsAlreadyFriend(true);
+          }
+        })
+        .catch(() => {});
+    }
   }, [isOpen, user, currentUser]);
 
   if (!isOpen || !profileData) return null;
@@ -299,27 +313,33 @@ export default function UserProfileModal({
           <div className="w-full mt-4 flex gap-2 pt-2 border-t border-zinc-100">
             {!isMe ? (
               <>
-                <button
-                  onClick={handleSendFriendRequest}
-                  disabled={friendReqSent || isSendingReq}
-                  className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-black text-xs cursor-pointer transition-all active:scale-95 shadow-sm ${
-                    friendReqSent
-                      ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
-                      : 'bg-gradient-to-r from-rose-500 to-pink-600 text-white hover:opacity-95'
-                  }`}
-                >
-                  {friendReqSent ? (
-                    <>
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Request Sent</span>
-                    </>
-                  ) : (
-                    <>
-                      <UserPlus className="w-3.5 h-3.5" />
-                      <span>{isSendingReq ? 'Sending...' : 'Add Friend'}</span>
-                    </>
-                  )}
-                </button>
+                {isAlreadyFriend ? (
+                  <div className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-black text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-sm select-none">
+                    <span>🤝 Friends</span>
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleSendFriendRequest}
+                    disabled={friendReqSent || isSendingReq}
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-black text-xs cursor-pointer transition-all active:scale-95 shadow-sm ${
+                      friendReqSent
+                        ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                        : 'bg-gradient-to-r from-rose-500 to-pink-600 text-white hover:opacity-95'
+                    }`}
+                  >
+                    {friendReqSent ? (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Request Sent</span>
+                      </>
+                    ) : (
+                      <>
+                        <UserPlus className="w-3.5 h-3.5" />
+                        <span>{isSendingReq ? 'Sending...' : 'Add Friend'}</span>
+                      </>
+                    )}
+                  </button>
+                )}
 
                 {onOpenChat && (
                   <button

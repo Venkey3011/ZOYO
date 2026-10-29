@@ -148,6 +148,8 @@ export default function DirectMessages({ currentUser }: DirectMessagesProps) {
 
   useEffect(() => {
     fetchConversations();
+    const interval = setInterval(fetchConversations, 4000);
+    return () => clearInterval(interval);
   }, [myUserId]);
 
   // Fetch messages for a specific conversation
@@ -162,6 +164,16 @@ export default function DirectMessages({ currentUser }: DirectMessagesProps) {
       console.error('Failed to load messages:', e);
     }
   };
+
+  // Periodic background sync for active chat thread
+  useEffect(() => {
+    if (!activeDm) return;
+    const interval = setInterval(() => {
+      fetchMessages(activeDm.senderId);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [activeDm, myUserId]);
+
 
   // WebSocket real-time connection for instant message delivery
   useEffect(() => {

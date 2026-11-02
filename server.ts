@@ -6,7 +6,7 @@ import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
 import { AccessToken } from "livekit-server-sdk";
-import { createClient } from "@supabase/supabase-js";
+import mongoose, { Schema } from "mongoose";
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -68,32 +68,85 @@ app.post("/api/upload", (req: express.Request, res: express.Response) => {
   }
 });
 
-// ⚡ SUPABASE REALTIME & HIGH-CONCURRENCY DATABASE (The ONLY Database)
-const SUPABASE_URL = process.env.SUPABASE_URL || "https://efiiphktyjafxcoudvfj.supabase.co";
-const SUPABASE_KEY = process.env.SUPABASE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmaWlwaGt0eWphZnhjb3VkdmZqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MjU1NTIzMiwiZXhwIjoyMTA4MTMxMjMyfQ.S2cAnwoTnIMFwODVHsXLA0IvvnHmQ8ZSk7h3hJ6hWtM";
+// ⚡ MONGODB ATLAS — Ultra-Fast Primary Database
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://venkeyb3011_db_user:DcidxZRg2LaIen7i@zoyo.7ywyhcx.mongodb.net/?appName=ZOYO";
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: { persistSession: false },
-  db: { schema: 'public' }
-});
-
-let isSupabaseConnected = false;
+let isMongoConnected = false;
 
 // In-Memory cache for public rooms list to serve requests in <1ms
 let cachedPublicRoomsList: any[] | null = null;
 let cachedPublicRoomsTime = 0;
 
-// ─── Data Mappers: Supabase <-> ZOYO Models ──────────────────────────────
-function supabaseToUser(row: any): any {
+// ─── Mongoose Schemas & Models ────────────────────────────────────────────────
+const UserSchema = new Schema({
+  _id: { type: String, required: true },
+  name: String, username: String, nickname: String, password: String,
+  role: { type: String, default: 'user' },
+  avatar: String, level: { type: Number, default: 1 },
+  coins: { type: Number, default: 0 },
+  frame_id: String, bubble_id: String, badge: String,
+  bio: String, country: String, gender: String, date_of_birth: String,
+  is_blocked: { type: Boolean, default: false },
+  yoyo_id: String, email: String, phone_number: String,
+  recent_visitors: { type: Array, default: [] },
+  followers_count: { type: Number, default: 0 }, following_count: { type: Number, default: 0 },
+  gifts_count: { type: Number, default: 0 }, visitors_count: { type: Number, default: 0 },
+  family: String, vip_status: String, created_by: String, manager_id: String,
+  social_id: String, social_provider: String
+}, { timestamps: true, _id: false });
+
+const RoomSchema = new Schema({
+  _id: { type: String, required: true },
+  title: String, description: String, host: Schema.Types.Mixed,
+  theme: String, category: String,
+  online_count: { type: Number, default: 1 },
+  active_game: String, is_official_game: Boolean, game_prize_pool: Number,
+  background_url: String, room_image: String,
+  is_active: { type: Boolean, default: true },
+  is_private: Boolean, room_password: String,
+  invited_users: { type: Array, default: [] }, seats: { type: Array, default: [] },
+  online_users: { type: Array, default: [] }, chat_messages: { type: Array, default: [] }
+}, { timestamps: true, _id: false });
+
+const FriendRequestSchema = new Schema({
+  _id: { type: String, required: true },
+  sender_id: String, sender_name: String, sender_avatar: String, sender_yoyo_id: String,
+  receiver_id: String, receiver_name: String, receiver_avatar: String, receiver_yoyo_id: String,
+  status: { type: String, default: 'pending' }
+}, { timestamps: true, _id: false });
+
+const DirectMessageSchema = new Schema({
+  _id: { type: String, required: true },
+  sender_id: String, receiver_id: String,
+  text: String, media_type: String, duration: Number
+}, { timestamps: true, _id: false });
+
+const TransferLogSchema = new Schema({
+  sender_id: String, sender_name: String, sender_role: String,
+  receiver_id: String, receiver_name: String,
+  amount: Number, type: String, details: String, icon: String
+}, { timestamps: true });
+
+const CustomGameSchema = new Schema({
+  _id: { type: String, required: true },
+  name: String, category: String, icon: String,
+  min_players: Number, max_players: Number, description: String, added_by: String
+}, { timestamps: true, _id: false });
+
+const UserModel = mongoose.model('users', UserSchema);
+const RoomModel = mongoose.model('rooms', RoomSchema);
+const FriendRequestModel = mongoose.model('friend_requests', FriendRequestSchema);
+const DirectMessageModel = mongoose.model('direct_messages', DirectMessageSchema);
+const TransferLogModel = mongoose.model('transfer_logs', TransferLogSchema);
+const CustomGameModel = mongoose.model('custom_games', CustomGameSchema);
+
+// ─── Data Mappers: MongoDB <-> ZOYO Models ────────────────────────────────────
+function mongoToUser(row: any): any {
   if (!row) return null;
-  const rawId = (row.id && row.id !== 'undefined' && row.id !== 'null') 
-    ? String(row.id) 
-    : (row._id && row._id !== 'undefined' ? String(row._id) : (row.yoyo_id ? `u_${row.yoyo_id}` : `u_${row.name || Date.now()}`));
+  const rawId = String(row._id || row.id || (row.yoyo_id ? 'u_' + row.yoyo_id : 'u_' + Date.now()));
   return {
     ...row,
-    id: rawId,
-    _id: rawId,
-    userId: rawId,
+    id: rawId, _id: rawId, userId: rawId,
     name: row.name || 'User',
     username: row.username || (row.name ? row.name.toLowerCase().replace(/\s+/g, '') : ''),
     nickname: row.nickname || row.name || '',
@@ -110,7 +163,7 @@ function supabaseToUser(row: any): any {
     country: row.country || 'Global',
     gender: row.gender || 'Other',
     dateOfBirth: row.date_of_birth || row.dateOfBirth || '2005-01-01',
-    isBlocked: row.is_blocked !== undefined ? Boolean(row.is_blocked) : Boolean(row.isBlocked),
+    isBlocked: Boolean(row.is_blocked ?? row.isBlocked),
     recentVisitors: Array.isArray(row.recent_visitors) ? row.recent_visitors : (Array.isArray(row.recentVisitors) ? row.recentVisitors : []),
     followersCount: Number(row.followers_count || row.followersCount || 0),
     followingCount: Number(row.following_count || row.followingCount || 0),
@@ -125,9 +178,10 @@ function supabaseToUser(row: any): any {
   };
 }
 
-function userToSupabase(user: any): any {
+function userToMongo(user: any): any {
   if (!user) return null;
-  const supa: any = {
+  return {
+    _id: String(user.id || user._id || 'user_' + Date.now()),
     name: user.name,
     password: user.password || '',
     role: user.role || 'user',
@@ -140,27 +194,24 @@ function userToSupabase(user: any): any {
     bio: user.bio || 'Living life on ZOYO! 🌟',
     country: user.country || 'Global',
     gender: user.gender || 'Other',
-    date_of_birth: user.dateOfBirth || user.dateOfBirth || '2005-01-01',
+    dateOfBirth: user.dateOfBirth || user.date_of_birth || '2005-01-01',
     is_blocked: Boolean(user.isBlocked ?? user.is_blocked),
-    recent_visitors: user.recentVisitors || user.recent_visitors || []
+    recent_visitors: user.recentVisitors || user.recent_visitors || [],
+    yoyo_id: String(user.yoyoId || user.yoyo_id || ''),
+    email: user.email || '',
+    phone_number: user.phoneNumber || user.phone_number || '',
+    created_by: user.createdBy || 'system',
+    manager_id: user.managerId || 'none'
   };
-  if (user.id || user._id) {
-    supa.id = String(user.id || user._id);
-  }
-  if (user.yoyoId || user.yoyo_id) {
-    supa.yoyo_id = String(user.yoyoId || user.yoyo_id);
-  }
-  if (user.email) supa.email = user.email;
-  return supa;
 }
 
-function supabaseToRoom(row: any): any {
+function mongoToRoom(row: any): any {
   if (!row) return null;
   return {
     ...row,
-    id: String(row.id),
-    _id: String(row.id),
-    roomId: String(row.id),
+    id: String(row._id || row.id),
+    _id: String(row._id || row.id),
+    roomId: String(row._id || row.id),
     title: row.title || 'Voice Room',
     description: row.description || '',
     host: row.host || { id: 'host', name: 'Host', level: 1, coins: 0 },
@@ -179,15 +230,15 @@ function supabaseToRoom(row: any): any {
     seats: Array.isArray(row.seats) ? row.seats : [],
     onlineUsers: Array.isArray(row.online_users) ? row.online_users : (Array.isArray(row.onlineUsers) ? row.onlineUsers : []),
     chatMessages: Array.isArray(row.chat_messages) ? row.chat_messages : (Array.isArray(row.chatMessages) ? row.chatMessages : []),
-    createdAt: row.created_at || row.createdAt || new Date().toISOString()
+    createdAt: row.createdAt || row.created_at || new Date().toISOString()
   };
 }
 
-function roomToSupabase(room: any): any {
+function roomToMongo(room: any): any {
   if (!room) return null;
   const id = String(room.id || room._id || room.roomId || 'room_' + Date.now());
   return {
-    id,
+    _id: id,
     title: room.title || 'Voice Room',
     description: room.description || '',
     host: room.host || {},
@@ -198,6 +249,7 @@ function roomToSupabase(room: any): any {
     is_official_game: Boolean(room.isOfficialGame),
     game_prize_pool: Number(room.gamePrizePool || 0),
     background_url: room.backgroundUrl || '',
+    room_image: room.roomImage || '',
     is_active: room.isActive !== undefined ? Boolean(room.isActive) : true,
     is_private: Boolean(room.isPrivate),
     room_password: room.roomPassword || '',
@@ -315,22 +367,21 @@ const activeRoomsCache = new Map<string, any>();
 const roomSaveDebounceTimers = new Map<string, NodeJS.Timeout>();
 
 async function logTransfer(logData: any) {
-  if (isSupabaseConnected) {
-    const supaLog = {
-      sender_id: String(logData.senderId),
-      sender_name: logData.senderName,
-      sender_role: logData.senderRole,
-      receiver_id: String(logData.receiverId),
-      receiver_name: logData.receiverName,
-      amount: Number(logData.amount),
-      type: logData.type || 'transfer',
-      details: logData.details || '',
-      icon: logData.icon || '🪙'
-    };
+  if (isMongoConnected) {
     try {
-      await supabase.from('transfer_logs').insert(supaLog);
+      await TransferLogModel.create({
+        sender_id: String(logData.senderId),
+        sender_name: logData.senderName,
+        sender_role: logData.senderRole,
+        receiver_id: String(logData.receiverId),
+        receiver_name: logData.receiverName,
+        amount: Number(logData.amount),
+        type: logData.type || 'transfer',
+        details: logData.details || '',
+        icon: logData.icon || '🪙'
+      });
     } catch (e: any) {
-      console.warn('Supabase logTransfer error:', e.message || e);
+      console.warn('MongoDB logTransfer error:', e.message || e);
     }
   }
   inMemoryTransfers.push({
@@ -380,11 +431,11 @@ const inMemoryDB: InMemUser[] = [
     name: "Admin",
     username: "admin",
     nickname: "Admin",
-    password: "Admin123", // Preseeded static credentials for task requirements
+    password: "Admin123",
     role: "admin",
     avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80",
     level: 99,
-    coins: 999999999, // Infinite coins pre-filled
+    coins: 999999999,
     frameId: "frame_royal",
     bubbleId: "bubble_royal",
     badge: "👑 Owner",
@@ -443,7 +494,7 @@ function getCachedUser(key: string) {
 function setCachedUser(user: any) {
   if (!user) return;
   const raw = user.toObject ? user.toObject() : user;
-  const expiresAt = Date.now() + 15 * 60 * 1000; // 15-minute TTL for fast logins
+  const expiresAt = Date.now() + 15 * 60 * 1000;
   const entry = { user: raw, expiresAt };
   if (raw.id) activeUsersCache.set(String(raw.id).toLowerCase(), entry);
   if (raw._id) activeUsersCache.set(String(raw._id).toLowerCase(), entry);
@@ -463,41 +514,38 @@ function invalidateCachedUser(idOrKey: string) {
 // Pre-warm cache with in-memory users immediately
 inMemoryDB.forEach(u => setCachedUser(u));
 
-async function connectToSupabase() {
+async function connectToMongoDB() {
   try {
-    console.log("⚡ Connecting to Supabase as primary database...");
-    const { data: users, error } = await supabase.from('users').select('*').limit(500);
-    if (error) {
-      console.warn("⚠️ Supabase connection test returned error:", error.message);
-      if (SUPABASE_KEY.startsWith("sb_secret_")) {
-        console.warn("👉 Notice: The configured SUPABASE_KEY is a CLI Personal Token ('sb_secret_...'), NOT a Project API Key.");
-        console.warn("👉 Please copy your project's 'anon public' or 'service_role secret' key (starts with 'eyJ...') from:");
-        console.warn("   https://supabase.com/dashboard/project/efiiphktyjafxcoudvfj/settings/api");
-      }
-      console.warn("⚠️ Running in in-memory fallback mode.");
-      isSupabaseConnected = false;
-      return;
-    }
-    isSupabaseConnected = true;
-    console.log("🚀 Supabase connected successfully as the ONLY primary database!");
+    console.log("⚡ Connecting to MongoDB Atlas as primary database...");
+    mongoose.set('bufferCommands', false);
+    await mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 10000,
+      maxPoolSize: 20,
+      minPoolSize: 2
+    } as any);
+    isMongoConnected = true;
+    console.log("🚀 MongoDB Atlas connected successfully as primary database!");
 
-    // ⚡ Pre-warm user cache into RAM for 0ms sub-millisecond logins & queries
+    // Pre-warm user cache into RAM for 0ms sub-millisecond access
+    const users = await UserModel.find({}).lean() as any[];
     if (users && users.length > 0) {
       users.forEach((u: any) => {
-        const parsed = supabaseToUser(u);
+        const parsed = mongoToUser(u);
         setCachedUser(parsed);
-        const idx = inMemoryDB.findIndex(m => (m as any).id === parsed.id || m._id === parsed.id || m.name === parsed.name);
+        const idx = inMemoryDB.findIndex(m => m._id === parsed._id || m.name === parsed.name);
         if (idx !== -1) inMemoryDB[idx] = parsed;
         else inMemoryDB.push(parsed);
       });
-      console.log(`⚡ Pre-warmed ${users.length} users from Supabase into memory cache for instant 0ms access.`);
+      console.log(`⚡ Pre-warmed ${users.length} users from MongoDB into memory cache.`);
     }
 
-    // Check / Seed Admin user in Supabase if missing
-    const hasAdmin = users?.some((u: any) => u.name === 'Admin' || u.yoyo_id === '888888');
-    if (!hasAdmin) {
-      const adminPayload = userToSupabase({
-        id: 'user_admin',
+    // Seed Admin user in MongoDB if missing
+    const hasAdmin = inMemoryDB.some(u => u.name === 'Admin' || u.yoyoId === '888888');
+    const dbAdmin = await UserModel.findById('user_admin').lean();
+    if (!hasAdmin && !dbAdmin) {
+      await UserModel.create({
+        _id: 'user_admin',
         name: "Admin",
         username: "admin",
         nickname: "Admin",
@@ -506,56 +554,52 @@ async function connectToSupabase() {
         avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80",
         level: 99,
         coins: 999999999,
-        frameId: "frame_royal",
-        bubbleId: "bubble_royal",
+        frame_id: "frame_royal",
+        bubble_id: "bubble_royal",
         badge: "👑 Owner",
-        createdBy: "system",
-        managerId: "none",
-        isBlocked: false,
-        yoyoId: "888888",
+        created_by: "system",
+        manager_id: "none",
+        is_blocked: false,
+        yoyo_id: "888888",
         gender: "Male",
-        dateOfBirth: "1995-10-24",
+        date_of_birth: "1995-10-24",
         country: "Global"
       });
-      const { data: seededAdmin } = await supabase.from('users').insert(adminPayload).select().maybeSingle();
-      if (seededAdmin) {
-        setCachedUser(supabaseToUser(seededAdmin));
-        console.log("✅ Seeded Admin user in Supabase.");
-      }
+      console.log("✅ Seeded Admin user in MongoDB.");
     }
 
-    // ⚡ Pre-warm active rooms cache from Supabase
-    const { data: rooms } = await supabase.from('rooms').select('*').limit(200);
+    // Pre-warm active rooms cache from MongoDB
+    const rooms = await RoomModel.find({ is_active: true }).lean() as any[];
     if (rooms && rooms.length > 0) {
       rooms.forEach((r: any) => {
-        const parsed = supabaseToRoom(r);
+        const parsed = mongoToRoom(r);
         activeRoomsCache.set(String(parsed.id), parsed);
         const idx = inMemoryRooms.findIndex(m => m.id === parsed.id);
         if (idx !== -1) inMemoryRooms[idx] = parsed;
         else inMemoryRooms.push(parsed);
       });
-      const publicRooms = rooms.filter((r: any) => !r.is_private && r.is_active !== false).map((r: any) => sanitizeRoom(supabaseToRoom(r)));
+      const publicRooms = rooms.filter((r: any) => !r.is_private).map(mongoToRoom).map(sanitizeRoom);
       publicRooms.forEach((r: any) => { delete r.roomPassword; });
       cachedPublicRoomsList = publicRooms;
       cachedPublicRoomsTime = Date.now();
-      console.log(`⚡ Pre-warmed ${publicRooms.length} public rooms from Supabase into cache for instant 0ms load.`);
+      console.log(`⚡ Pre-warmed ${publicRooms.length} public rooms from MongoDB into cache.`);
     }
 
   } catch (err: any) {
-    console.error("❌ Supabase initialization error:", err.message || err);
+    console.error("❌ MongoDB connection error:", err.message || err);
     console.warn("⚠️ Falling back to in-memory mode.");
-    isSupabaseConnected = false;
+    isMongoConnected = false;
   }
 }
 
-connectToSupabase();
+connectToMongoDB();
 
 // Helper to query all users
 async function getUsers() {
-  if (isSupabaseConnected) {
-    const { data, error } = await supabase.from('users').select('*');
-    if (data && !error) {
-      return data.map(supabaseToUser);
+  if (isMongoConnected) {
+    const docs = await UserModel.find({}).lean() as any[];
+    if (docs) {
+      return docs.map(mongoToUser);
     }
   }
   return inMemoryDB.map(({ password, ...u }) => u);
@@ -575,16 +619,13 @@ async function findUserById(id: string) {
     return memUser;
   }
 
-  if (isSupabaseConnected) {
-    const { data } = await supabase
-      .from('users')
-      .select('*')
-      .or(`id.eq.${cleanId},yoyo_id.eq.${cleanId},name.ilike.${cleanId}`)
-      .limit(1)
-      .maybeSingle();
+  if (isMongoConnected) {
+    const doc = await UserModel.findOne({
+      $or: [{ _id: cleanId }, { yoyo_id: cleanId }, { name: new RegExp('^' + cleanId + '$', 'i') }]
+    }).lean();
 
-    if (data) {
-      const u = supabaseToUser(data);
+    if (doc) {
+      const u = mongoToUser(doc);
       setCachedUser(u);
       return u;
     }
@@ -612,16 +653,18 @@ async function findUserByName(name: string) {
     return memUser;
   }
 
-  if (isSupabaseConnected) {
-    const { data } = await supabase
-      .from('users')
-      .select('*')
-      .or(`name.ilike.${normalized},email.ilike.${normalized},yoyo_id.eq.${normalized}`)
-      .limit(1)
-      .maybeSingle();
+  if (isMongoConnected) {
+    const doc = await UserModel.findOne({
+      $or: [
+        { name: new RegExp('^' + normalized + '$', 'i') },
+        { username: normalized },
+        { email: normalized },
+        { yoyo_id: normalized }
+      ]
+    }).lean();
 
-    if (data) {
-      const u = supabaseToUser(data);
+    if (doc) {
+      const u = mongoToUser(doc);
       setCachedUser(u);
       return u;
     }
@@ -643,16 +686,10 @@ async function findUserByPhone(phone: string) {
     return memUser;
   }
 
-  if (isSupabaseConnected) {
-    const { data } = await supabase
-      .from('users')
-      .select('*')
-      .eq('phone_number', cleaned)
-      .limit(1)
-      .maybeSingle();
-
-    if (data) {
-      const u = supabaseToUser(data);
+  if (isMongoConnected) {
+    const doc = await UserModel.findOne({ phone_number: cleaned }).lean();
+    if (doc) {
+      const u = mongoToUser(doc);
       setCachedUser(u);
       return u;
     }
@@ -674,16 +711,10 @@ async function findUserByEmail(email: string) {
     return memUser;
   }
 
-  if (isSupabaseConnected) {
-    const { data } = await supabase
-      .from('users')
-      .select('*')
-      .ilike('email', cleaned)
-      .limit(1)
-      .maybeSingle();
-
-    if (data) {
-      const u = supabaseToUser(data);
+  if (isMongoConnected) {
+    const doc = await UserModel.findOne({ email: cleaned }).lean();
+    if (doc) {
+      const u = mongoToUser(doc);
       setCachedUser(u);
       return u;
     }
@@ -701,16 +732,13 @@ async function findUserBySocial(provider: string, socialId: string) {
     return memUser;
   }
 
-  if (isSupabaseConnected) {
-    const { data } = await supabase
-      .from('users')
-      .select('*')
-      .or(`id.eq.${socialId},email.ilike.${socialId}`)
-      .limit(1)
-      .maybeSingle();
+  if (isMongoConnected) {
+    const doc = await UserModel.findOne({
+      $or: [{ social_id: socialId }, { email: socialId }]
+    }).lean();
 
-    if (data) {
-      const u = supabaseToUser(data);
+    if (doc) {
+      const u = mongoToUser(doc);
       setCachedUser(u);
       return u;
     }
@@ -729,17 +757,20 @@ async function createUser(fullData: any) {
     userId: newUserId
   };
 
-  if (isSupabaseConnected) {
+  if (isMongoConnected) {
     try {
-      const supaPayload = userToSupabase(userObj);
-      const { data, error } = await supabase.from('users').insert(supaPayload).select().maybeSingle();
-      if (data && !error) {
-        createdUser = supabaseToUser(data);
-      } else if (error) {
-        console.warn('Supabase createUser warning:', error.message);
+      const doc = userToMongo(userObj);
+      const saved = await UserModel.create(doc);
+      if (saved) {
+        createdUser = mongoToUser((saved as any).toObject ? (saved as any).toObject() : saved);
       }
-    } catch (e) {
-      console.warn('Supabase createUser exception:', e);
+    } catch (e: any) {
+      if (e.code === 11000) {
+        const existing = await UserModel.findById(userObj.id).lean();
+        if (existing) createdUser = mongoToUser(existing);
+      } else {
+        console.warn('MongoDB createUser error:', e.message || e);
+      }
     }
   }
 
@@ -758,38 +789,40 @@ async function updateUser(id: string, updateData: any) {
   invalidateCachedUser(id);
   const cleanId = String(id);
   
-  if (isSupabaseConnected) {
+  if (isMongoConnected) {
     try {
-      const supaData: any = {};
-      if (updateData.name !== undefined) supaData.name = updateData.name;
-      if (updateData.coins !== undefined) supaData.coins = updateData.coins;
-      if (updateData.level !== undefined) supaData.level = updateData.level;
-      if (updateData.role !== undefined) supaData.role = updateData.role;
-      if (updateData.avatar !== undefined) supaData.avatar = updateData.avatar;
-      if (updateData.frameId !== undefined) supaData.frame_id = updateData.frameId;
-      if (updateData.bubbleId !== undefined) supaData.bubble_id = updateData.bubbleId;
-      if (updateData.badge !== undefined) supaData.badge = updateData.badge;
-      if (updateData.bio !== undefined) supaData.bio = updateData.bio;
-      if (updateData.country !== undefined) supaData.country = updateData.country;
-      if (updateData.gender !== undefined) supaData.gender = updateData.gender;
-      if (updateData.dateOfBirth !== undefined) supaData.date_of_birth = updateData.dateOfBirth;
-      if (updateData.isBlocked !== undefined) supaData.is_blocked = Boolean(updateData.isBlocked);
-      if (updateData.recentVisitors !== undefined) supaData.recent_visitors = updateData.recentVisitors;
+      const mongoUpdate: any = {};
+      if (updateData.name !== undefined) mongoUpdate.name = updateData.name;
+      if (updateData.coins !== undefined) mongoUpdate.coins = updateData.coins;
+      if (updateData.level !== undefined) mongoUpdate.level = updateData.level;
+      if (updateData.role !== undefined) mongoUpdate.role = updateData.role;
+      if (updateData.avatar !== undefined) mongoUpdate.avatar = updateData.avatar;
+      if (updateData.frameId !== undefined) mongoUpdate.frame_id = updateData.frameId;
+      if (updateData.bubbleId !== undefined) mongoUpdate.bubble_id = updateData.bubbleId;
+      if (updateData.badge !== undefined) mongoUpdate.badge = updateData.badge;
+      if (updateData.bio !== undefined) mongoUpdate.bio = updateData.bio;
+      if (updateData.country !== undefined) mongoUpdate.country = updateData.country;
+      if (updateData.gender !== undefined) mongoUpdate.gender = updateData.gender;
+      if (updateData.dateOfBirth !== undefined) mongoUpdate.date_of_birth = updateData.dateOfBirth;
+      if (updateData.isBlocked !== undefined) mongoUpdate.is_blocked = Boolean(updateData.isBlocked);
+      if (updateData.recentVisitors !== undefined) mongoUpdate.recent_visitors = updateData.recentVisitors;
+      if (updateData.visitorsCount !== undefined) mongoUpdate.visitors_count = updateData.visitorsCount;
+      if (updateData.managerId !== undefined) mongoUpdate.manager_id = updateData.managerId;
+      if (updateData.password !== undefined) mongoUpdate.password = updateData.password;
 
-      const { data, error } = await supabase
-        .from('users')
-        .update(supaData)
-        .or(`id.eq.${cleanId},yoyo_id.eq.${cleanId},name.eq.${cleanId}`)
-        .select()
-        .maybeSingle();
+      const doc = await UserModel.findOneAndUpdate(
+        { $or: [{ _id: cleanId }, { yoyo_id: cleanId }, { name: cleanId }] },
+        { $set: mongoUpdate },
+        { new: true }
+      ).lean();
 
-      if (data && !error) {
-        const u = supabaseToUser(data);
+      if (doc) {
+        const u = mongoToUser(doc);
         setCachedUser(u);
         return u;
       }
     } catch (err) {
-      console.warn(`[updateUser] Error updating user ${id} in Supabase:`, err);
+      console.warn(`[updateUser] Error updating user ${id} in MongoDB:`, err);
     }
   }
 
@@ -818,10 +851,10 @@ app.get("/api/version", (req, res) => {
 app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
-    database: "Supabase",
-    connected: isSupabaseConnected,
-    mode: isSupabaseConnected ? "Supabase (High-Concurrency Realtime)" : "In-Memory Fallback",
-    supabaseActive: isSupabaseConnected,
+    database: "MongoDB Atlas",
+    connected: isMongoConnected,
+    mode: isMongoConnected ? "MongoDB Atlas (High-Concurrency Realtime)" : "In-Memory Fallback",
+    mongoActive: isMongoConnected,
     cachedUsers: activeUsersCache.size,
     activeRooms: activeRoomsCache.size
   });
@@ -829,9 +862,9 @@ app.get("/api/health", (req, res) => {
 
 app.get("/api/db-status", (req, res) => {
   res.json({
-    connected: isSupabaseConnected,
-    mode: isSupabaseConnected ? "Supabase Cloud (Active)" : "In-Memory Fallback",
-    supabaseActive: isSupabaseConnected
+    connected: isMongoConnected,
+    mode: isMongoConnected ? "MongoDB Atlas Cloud (Active)" : "In-Memory Fallback",
+    mongoActive: isMongoConnected
   });
 });
 
@@ -1252,8 +1285,8 @@ app.post("/api/users/create-sub-user", async (req: express.Request, res: express
 app.delete("/api/users/:id", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-    if (isSupabaseConnected) {
-      await supabase.from('users').delete().or(`id.eq.${id},yoyo_id.eq.${id}`);
+    if (isMongoConnected) {
+      await UserModel.deleteOne({ $or: [{ _id: id }, { yoyo_id: id }] });
     }
     const idx = inMemoryDB.findIndex(u => u._id === id || (u as any).id === id);
     if (idx !== -1) {
@@ -1400,10 +1433,10 @@ app.post("/api/users/:id/coins", async (req: express.Request, res: express.Respo
 // Admin-Only Transfer Logs Ledger Endpoint
 app.get("/api/transfers", async (req: express.Request, res: express.Response) => {
   try {
-    if (isSupabaseConnected) {
-      const { data } = await supabase.from('transfer_logs').select('*').order('created_at', { ascending: false }).limit(200);
-      if (data) {
-        const mapped = data.map((d: any) => ({ id: d.id, senderId: d.sender_id, senderName: d.sender_name, senderRole: d.sender_role, receiverId: d.receiver_id, receiverName: d.receiver_name, amount: d.amount, type: d.type, details: d.details, icon: d.icon, timestamp: d.created_at }));
+    if (isMongoConnected) {
+      const docs = await TransferLogModel.find({}).sort({ createdAt: -1 }).limit(200).lean() as any[];
+      if (docs) {
+        const mapped = docs.map((d: any) => ({ id: String(d._id), senderId: d.sender_id, senderName: d.sender_name, senderRole: d.sender_role, receiverId: d.receiver_id, receiverName: d.receiver_name, amount: d.amount, type: d.type, details: d.details, icon: d.icon, timestamp: d.createdAt }));
         return res.json({ success: true, transfers: mapped });
       }
     }
@@ -1422,10 +1455,12 @@ app.get("/api/users/:id/transactions", async (req: express.Request, res: express
     const { id } = req.params;
     const limit = Math.min(parseInt(String(req.query.limit || '50')), 100);
     let logs: any[] = [];
-    if (isSupabaseConnected) {
-      const { data } = await supabase.from('transfer_logs').select('*').or(`sender_id.eq.${id},receiver_id.eq.${id}`).order('created_at', { ascending: false }).limit(limit);
-      if (data) {
-        logs = data.map((d: any) => ({ id: d.id, senderId: d.sender_id, senderName: d.sender_name, senderRole: d.sender_role, receiverId: d.receiver_id, receiverName: d.receiver_name, amount: d.amount, type: d.type, details: d.details, icon: d.icon, timestamp: d.created_at }));
+    if (isMongoConnected) {
+      const docs = await TransferLogModel.find({
+        $or: [{ sender_id: id }, { receiver_id: id }]
+      }).sort({ createdAt: -1 }).limit(limit).lean() as any[];
+      if (docs && docs.length > 0) {
+        logs = docs.map((d: any) => ({ id: String(d._id), senderId: d.sender_id, senderName: d.sender_name, senderRole: d.sender_role, receiverId: d.receiver_id, receiverName: d.receiver_name, amount: d.amount, type: d.type, details: d.details, icon: d.icon, timestamp: d.createdAt }));
       }
     }
     if (!logs || logs.length === 0) {
@@ -1670,10 +1705,10 @@ app.get("/api/catalog/games", async (req: express.Request, res: express.Response
       return;
     }
 
-    if (isSupabaseConnected) {
-      const { data } = await supabase.from('custom_games').select('*').order('created_at', { ascending: false });
-      const dbGames = (data || []).map((g: any) => ({
-        id: g.id,
+    if (isMongoConnected) {
+      const docs = await CustomGameModel.find({}).sort({ createdAt: -1 }).lean() as any[];
+      const dbGames = (docs || []).map((g: any) => ({
+        id: g._id,
         name: g.name,
         category: g.category,
         icon: g.icon,
@@ -1728,9 +1763,9 @@ app.post("/api/catalog/games", async (req: express.Request, res: express.Respons
       addedBy: addedBy || 'Staff'
     };
 
-    if (isSupabaseConnected) {
-      await supabase.from('custom_games').insert({
-        id: newGame.id,
+    if (isMongoConnected) {
+      await CustomGameModel.create({
+        _id: newGame.id,
         name: newGame.name,
         category: newGame.category,
         icon: newGame.icon,
@@ -1753,8 +1788,8 @@ app.post("/api/catalog/games", async (req: express.Request, res: express.Respons
 app.delete("/api/catalog/games/:id", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-    if (isSupabaseConnected) {
-      await supabase.from('custom_games').delete().eq('id', id);
+    if (isMongoConnected) {
+      await CustomGameModel.deleteOne({ _id: id });
     }
     const idx = inMemoryCustomGames.findIndex(g => g.id === id);
     if (idx !== -1) inMemoryCustomGames.splice(idx, 1);
@@ -1785,14 +1820,14 @@ app.patch("/api/catalog/games/:id", async (req: express.Request, res: express.Re
     if (entryFee !== undefined) updates.entryFee = Number(entryFee);
     if (prizePool !== undefined) updates.prizePool = Number(prizePool);
 
-    if (isSupabaseConnected) {
-      const supaUpdates: any = {};
-      if (updates.name) supaUpdates.name = updates.name;
-      if (updates.category) supaUpdates.category = updates.category;
-      if (updates.minPlayers) supaUpdates.min_players = updates.minPlayers;
-      if (updates.maxPlayers) supaUpdates.max_players = updates.maxPlayers;
-      if (updates.description) supaUpdates.description = updates.description;
-      await supabase.from('custom_games').update(supaUpdates).eq('id', id);
+    if (isMongoConnected) {
+      const mongoUpdates: any = {};
+      if (updates.name) mongoUpdates.name = updates.name;
+      if (updates.category) mongoUpdates.category = updates.category;
+      if (updates.minPlayers) mongoUpdates.min_players = updates.minPlayers;
+      if (updates.maxPlayers) mongoUpdates.max_players = updates.maxPlayers;
+      if (updates.description) mongoUpdates.description = updates.description;
+      await CustomGameModel.updateOne({ _id: id }, { $set: mongoUpdates });
     }
     cachedCatalogGames = null;
     const inMem = inMemoryCustomGames.find(g => g.id === id);
@@ -1931,36 +1966,18 @@ async function getRoom(id: string) {
     return sanitizeRoom(activeRoomsCache.get(cleanId));
   }
 
-  // 2. Query Supabase — try by UUID id first, then by title as fallback
-  if (isSupabaseConnected) {
+  // 2. Query MongoDB — match by id or roomId
+  if (isMongoConnected) {
     try {
-      // Primary: match by UUID id
-      let { data, error } = await supabase
-        .from('rooms')
-        .select('*')
-        .eq('id', cleanId)
-        .maybeSingle();
-
-      // Secondary fallback: match by title (exact) if primary found nothing
-      if ((!data || error) && cleanId.length < 36) {
-        const fallback = await supabase
-          .from('rooms')
-          .select('*')
-          .ilike('title', cleanId)
-          .limit(1)
-          .maybeSingle();
-        data = fallback.data;
-        error = fallback.error;
-      }
-
-      if (data && !error) {
-        const room = supabaseToRoom(data);
+      const doc = await RoomModel.findById(cleanId).lean();
+      if (doc) {
+        const room = mongoToRoom(doc);
         activeRoomsCache.set(cleanId, room);
         activeRoomsCache.set(String(room.id), room);
         return sanitizeRoom(room);
       }
     } catch (err) {
-      console.warn(`[getRoom] Supabase query error for ${cleanId}:`, err);
+      console.warn(`[getRoom] MongoDB query error for ${cleanId}:`, err);
     }
   }
 
@@ -1990,7 +2007,7 @@ async function saveRoom(room: any) {
     inMemoryRooms[memIdx] = { ...room };
   }
 
-  // 2. Debounced asynchronous persist to Supabase
+  // 2. Debounced asynchronous persist to MongoDB
   const existingTimer = roomSaveDebounceTimers.get(id);
   if (existingTimer) {
     clearTimeout(existingTimer);
@@ -1999,12 +2016,12 @@ async function saveRoom(room: any) {
   const timer = setTimeout(async () => {
     roomSaveDebounceTimers.delete(id);
     try {
-      if (isSupabaseConnected) {
-        const supaRow = roomToSupabase(room);
-        await supabase.from('rooms').upsert(supaRow);
+      if (isMongoConnected) {
+        const mongoRow = roomToMongo(room);
+        await RoomModel.findByIdAndUpdate(id, { $set: mongoRow }, { upsert: true });
       }
     } catch (err) {
-      console.warn(`[saveRoom] Failed to persist room ${id} to Supabase:`, err);
+      console.warn(`[saveRoom] Failed to persist room ${id} to MongoDB:`, err);
     }
   }, 200);
 
@@ -2123,49 +2140,48 @@ app.post("/api/friend-requests", async (req: express.Request, res: express.Respo
 
     const reqId = `fr_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
-    if (isSupabaseConnected) {
-      const { data: existing } = await supabase
-        .from('friend_requests')
-        .select('*')
-        .or(`and(sender_id.eq.${realSenderId},receiver_id.eq.${realReceiverId}),and(sender_id.eq.${realReceiverId},receiver_id.eq.${realSenderId})`)
-        .in('status', ['pending', 'accepted'])
-        .limit(1)
-        .maybeSingle();
+    if (isMongoConnected) {
+      const existing = await FriendRequestModel.findOne({
+        $or: [
+          { sender_id: realSenderId, receiver_id: realReceiverId },
+          { sender_id: realReceiverId, receiver_id: realSenderId }
+        ],
+        status: { $in: ['pending', 'accepted'] }
+      }).lean();
 
       if (existing) {
-        const msg = existing.status === 'accepted' ? "You are already friends!" : "Friend request already sent";
+        const msg = (existing as any).status === 'accepted' ? "You are already friends!" : "Friend request already sent";
         res.status(409).json({ error: msg });
         return;
       }
 
-      const { data: fr, error } = await supabase.from('friend_requests').insert({
-        id: reqId,
+      const fr = await FriendRequestModel.create({
+        _id: reqId,
         sender_id: realSenderId,
         sender_name: sName,
         sender_avatar: sAvatar,
         sender_yoyo_id: sYoyoId,
         receiver_id: realReceiverId,
         receiver_name: rName,
+        receiver_avatar: rAvatar,
         receiver_yoyo_id: rYoyoId,
         status: 'pending'
-      }).select().maybeSingle();
+      });
 
-      if (fr && !error) {
-        // Send real-time notification to receiver via WebSocket
+      if (fr) {
+        const frObj = (fr as any).toObject ? (fr as any).toObject() : fr;
         sendToUserGlobally(realReceiverId, {
           type: 'friend_request_received',
-          friendRequest: fr
+          friendRequest: frObj
         });
         if (rYoyoId && rYoyoId !== realReceiverId) {
           sendToUserGlobally(rYoyoId, {
             type: 'friend_request_received',
-            friendRequest: fr
+            friendRequest: frObj
           });
         }
-        res.json({ success: true, friendRequest: fr });
+        res.json({ success: true, friendRequest: frObj });
         return;
-      } else if (error) {
-        console.warn('Supabase friend_request insert error:', error);
       }
     }
 
@@ -2202,18 +2218,16 @@ app.get("/api/friend-requests/:userId/inbox", async (req: express.Request, res: 
       if (user.yoyoId && !idList.includes(String(user.yoyoId))) idList.push(String(user.yoyoId));
     }
 
-    if (isSupabaseConnected) {
-      const { data, error } = await supabase
-        .from('friend_requests')
-        .select('*')
-        .in('receiver_id', idList)
-        .eq('status', 'pending')
-        .order('created_at', { ascending: false });
+    if (isMongoConnected) {
+      const docs = await FriendRequestModel.find({
+        receiver_id: { $in: idList },
+        status: 'pending'
+      }).sort({ createdAt: -1 }).lean() as any[];
 
-      if (data && !error) {
-        const mapped = data.map((d: any) => ({
-          _id: d.id,
-          id: d.id,
+      if (docs) {
+        const mapped = docs.map((d: any) => ({
+          _id: d._id,
+          id: d._id,
           senderId: d.sender_id,
           senderName: d.sender_name,
           senderAvatar: d.sender_avatar,
@@ -2222,7 +2236,7 @@ app.get("/api/friend-requests/:userId/inbox", async (req: express.Request, res: 
           receiverName: d.receiver_name,
           receiverYoyoId: d.receiver_yoyo_id,
           status: d.status,
-          createdAt: d.created_at
+          createdAt: d.createdAt
         }));
         return res.json({ success: true, requests: mapped });
       }
@@ -2244,22 +2258,20 @@ app.post("/api/friend-requests/:requestId/respond", async (req: express.Request,
     if (!['accept', 'reject'].includes(action)) { res.status(400).json({ error: "action must be 'accept' or 'reject'" }); return; }
     const newStatus = action === 'accept' ? 'accepted' : 'rejected';
 
-    if (isSupabaseConnected) {
-      const { data, error } = await supabase
-        .from('friend_requests')
-        .update({ status: newStatus })
-        .eq('id', requestId)
-        .select()
-        .maybeSingle();
+    if (isMongoConnected) {
+      const doc = await FriendRequestModel.findByIdAndUpdate(
+        requestId,
+        { $set: { status: newStatus } },
+        { new: true }
+      ).lean() as any;
 
-      if (data && !error) {
-        // Realtime notify original sender
-        sendToUserGlobally(String(data.sender_id), {
+      if (doc) {
+        sendToUserGlobally(String(doc.sender_id), {
           type: 'friend_request_responded',
           action,
-          friendRequest: data
+          friendRequest: doc
         });
-        return res.json({ success: true, friendRequest: data });
+        return res.json({ success: true, friendRequest: doc });
       }
     }
 
@@ -2293,16 +2305,14 @@ app.get("/api/friends/:userId", async (req: express.Request, res: express.Respon
       if (user.yoyoId && !idList.includes(String(user.yoyoId))) idList.push(String(user.yoyoId));
     }
 
-    if (isSupabaseConnected) {
-      const orFilter = idList.map(id => `sender_id.eq.${id},receiver_id.eq.${id}`).join(',');
-      const { data } = await supabase
-        .from('friend_requests')
-        .select('*')
-        .eq('status', 'accepted')
-        .or(orFilter);
+    if (isMongoConnected) {
+      const docs = await FriendRequestModel.find({
+        status: 'accepted',
+        $or: [{ sender_id: { $in: idList } }, { receiver_id: { $in: idList } }]
+      }).lean() as any[];
 
-      if (data) {
-        const friends = await Promise.all(data.map(async (fr: any) => {
+      if (docs) {
+        const friends = await Promise.all(docs.map(async (fr: any) => {
           const isSender = idList.includes(String(fr.sender_id));
           const fId = isSender ? fr.receiver_id : fr.sender_id;
           const fName = isSender ? fr.receiver_name : fr.sender_name;
@@ -2358,16 +2368,16 @@ app.get("/api/friends/status", async (req: express.Request, res: express.Respons
       return;
     }
 
-    if (isSupabaseConnected) {
-      const { data, error } = await supabase
-        .from('friend_requests')
-        .select('id')
-        .eq('status', 'accepted')
-        .or(`and(sender_id.eq.${u1},receiver_id.eq.${u2}),and(sender_id.eq.${u2},receiver_id.eq.${u1})`)
-        .limit(1);
+    if (isMongoConnected) {
+      const doc = await FriendRequestModel.findOne({
+        status: 'accepted',
+        $or: [
+          { sender_id: u1, receiver_id: u2 },
+          { sender_id: u2, receiver_id: u1 }
+        ]
+      }).lean();
 
-      const isFriend = !error && Boolean(data && data.length > 0);
-      res.json({ isFriend });
+      res.json({ isFriend: Boolean(doc) });
       return;
     }
 
@@ -2409,30 +2419,23 @@ app.get("/api/notifications/counts/:userId", async (req: express.Request, res: e
     const clientSince = req.query.since ? Number(req.query.since) : null;
     const lastReadTimestamp = clientSince || userLastReadMap.get(cleanId);
 
-    if (isSupabaseConnected) {
+    if (isMongoConnected) {
       // 1. Count pending incoming friend requests
-      const { count: frCount, error: frErr } = await supabase
-        .from('friend_requests')
-        .select('id', { count: 'exact', head: true })
-        .in('receiver_id', idList)
-        .eq('status', 'pending');
-
-      if (!frErr && typeof frCount === 'number') {
-        friendRequestsCount = frCount;
-      }
+      friendRequestsCount = await FriendRequestModel.countDocuments({
+        receiver_id: { $in: idList },
+        status: 'pending'
+      });
 
       // 2. Count unread DMs received after the user's last read time
       if (lastReadTimestamp && lastReadTimestamp > 0) {
-        const sinceIso = new Date(lastReadTimestamp).toISOString();
-        const orFilter = idList.map(id => `receiver_id.eq.${id}`).join(',');
-        const { data: recentMsgs } = await supabase
-          .from('direct_messages')
-          .select('sender_id')
-          .or(orFilter)
-          .gt('created_at', sinceIso);
+        const sinceDate = new Date(lastReadTimestamp);
+        const recentMsgs = await DirectMessageModel.find({
+          receiver_id: { $in: idList },
+          createdAt: { $gt: sinceDate }
+        }, { sender_id: 1 }).lean() as any[];
 
         if (recentMsgs && recentMsgs.length > 0) {
-          const senders = new Set(recentMsgs.map(m => m.sender_id));
+          const senders = new Set(recentMsgs.map((m: any) => m.sender_id));
           unreadDMsCount = senders.size;
         }
       }
@@ -2473,22 +2476,20 @@ app.get("/api/dm/conversations/:userId", async (req: express.Request, res: expre
     userLastReadMap.set(uid, Date.now());
 
     let messages: any[] = [];
-    if (isSupabaseConnected) {
-      const { data } = await supabase
-        .from('direct_messages')
-        .select('*')
-        .or(`sender_id.eq.${uid},receiver_id.eq.${uid}`)
-        .order('created_at', { ascending: false });
+    if (isMongoConnected) {
+      const docs = await DirectMessageModel.find({
+        $or: [{ sender_id: uid }, { receiver_id: uid }]
+      }).sort({ createdAt: -1 }).lean() as any[];
 
-      if (data) {
-        messages = data.map((d: any) => ({
-          _id: d.id,
+      if (docs) {
+        messages = docs.map((d: any) => ({
+          _id: d._id,
           senderId: d.sender_id,
           receiverId: d.receiver_id,
           text: d.text,
           voice: d.media_type === 'voice',
           duration: d.duration || 0,
-          createdAt: d.created_at
+          createdAt: d.createdAt
         }));
       }
     } else {
@@ -2540,22 +2541,23 @@ app.get("/api/dm/messages/:userId/:friendId", async (req: express.Request, res: 
     const fid = String(friendId);
 
     let messages: any[] = [];
-    if (isSupabaseConnected) {
-      const { data } = await supabase
-        .from('direct_messages')
-        .select('*')
-        .or(`and(sender_id.eq.${uid},receiver_id.eq.${fid}),and(sender_id.eq.${fid},receiver_id.eq.${uid})`)
-        .order('created_at', { ascending: true });
+    if (isMongoConnected) {
+      const docs = await DirectMessageModel.find({
+        $or: [
+          { sender_id: uid, receiver_id: fid },
+          { sender_id: fid, receiver_id: uid }
+        ]
+      }).sort({ createdAt: 1 }).lean() as any[];
 
-      if (data) {
-        messages = data.map((d: any) => ({
-          id: String(d.id),
+      if (docs) {
+        messages = docs.map((d: any) => ({
+          id: String(d._id),
           senderId: String(d.sender_id),
           receiverId: String(d.receiver_id),
           text: d.text,
           voice: d.media_type === 'voice',
           duration: d.duration || 0,
-          timestamp: new Date(d.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          timestamp: new Date(d.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }));
         return res.json({ success: true, messages });
       }
@@ -2597,18 +2599,18 @@ app.post("/api/dm/send", async (req: express.Request, res: express.Response) => 
     const nowIso = new Date().toISOString();
     const msgId = `dm_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
-    if (isSupabaseConnected) {
-      const { data, error } = await supabase.from('direct_messages').insert({
-        id: msgId,
-        sender_id: String(senderId),
-        receiver_id: String(receiverId),
-        text: text.trim(),
-        media_type: isVoice ? 'voice' : 'text',
-        duration: duration || 0
-      }).select().maybeSingle();
-
-      if (error) {
-        console.warn('Supabase direct_message insert error:', error);
+    if (isMongoConnected) {
+      try {
+        await DirectMessageModel.create({
+          _id: msgId,
+          sender_id: String(senderId),
+          receiver_id: String(receiverId),
+          text: text.trim(),
+          media_type: isVoice ? 'voice' : 'text',
+          duration: duration || 0
+        });
+      } catch (e: any) {
+        console.warn('MongoDB direct_message insert error:', e.message || e);
       }
     }
 
@@ -2672,8 +2674,8 @@ app.post("/api/dm/send", async (req: express.Request, res: express.Response) => 
 app.delete(["/api/dm/messages/:id", "/api/dm/message/:id"], async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-    if (isSupabaseConnected) {
-      await supabase.from('direct_messages').delete().eq('id', id);
+    if (isMongoConnected) {
+      await DirectMessageModel.deleteOne({ _id: id });
     }
     const idx = inMemoryDirectMessages.findIndex(m => m._id === id);
     if (idx !== -1) inMemoryDirectMessages.splice(idx, 1);
@@ -2689,8 +2691,13 @@ app.delete("/api/dm/conversations/:userId/:friendId", async (req: express.Reques
     const { userId, friendId } = req.params;
     const uid = String(userId);
     const fid = String(friendId);
-    if (isSupabaseConnected) {
-      await supabase.from('direct_messages').delete().or(`and(sender_id.eq.${uid},receiver_id.eq.${fid}),and(sender_id.eq.${fid},receiver_id.eq.${uid})`);
+    if (isMongoConnected) {
+      await DirectMessageModel.deleteMany({
+        $or: [
+          { sender_id: uid, receiver_id: fid },
+          { sender_id: fid, receiver_id: uid }
+        ]
+      });
     }
     for (let i = inMemoryDirectMessages.length - 1; i >= 0; i--) {
       const m = inMemoryDirectMessages[i];
@@ -2715,9 +2722,9 @@ async function generateUniqueRoomId(): Promise<string> {
     attempts++;
     const candidate = Math.floor(100000 + Math.random() * 900000).toString();
     if (activeRoomsCache.has(candidate)) continue;
-    if (isSupabaseConnected) {
-      const { data } = await supabase.from('rooms').select('id').eq('id', candidate).maybeSingle();
-      if (!data) return candidate;
+    if (isMongoConnected) {
+      const doc = await RoomModel.findById(candidate).lean();
+      if (!doc) return candidate;
     } else {
       const existing = inMemoryRooms.find(r => r.roomId === candidate && r.isActive);
       if (!existing) return candidate;
@@ -2736,11 +2743,11 @@ app.get("/api/rooms", async (req: express.Request, res: express.Response) => {
       return;
     }
 
-    if (isSupabaseConnected) {
-      const { data, error } = await supabase.from('rooms').select('*').eq('is_active', true).eq('is_private', false).order('created_at', { ascending: false }).limit(50);
-      if (data && !error) {
-        const sanitizedRooms = data.map(r => {
-          const clean = sanitizeRoom(supabaseToRoom(r));
+    if (isMongoConnected) {
+      const docs = await RoomModel.find({ is_active: true, is_private: false }).sort({ createdAt: -1 }).limit(50).lean() as any[];
+      if (docs) {
+        const sanitizedRooms = docs.map((r: any) => {
+          const clean = sanitizeRoom(mongoToRoom(r));
           delete clean.roomPassword;
           return clean;
         });
@@ -2826,8 +2833,12 @@ app.post("/api/rooms", async (req: express.Request, res: express.Response) => {
       onlineUsers: [safeHost],
       chatMessages: [welcomeMsg]
     };
-    if (isSupabaseConnected) {
-      await supabase.from('rooms').insert(roomToSupabase(roomRaw));
+    if (isMongoConnected) {
+      try {
+        await RoomModel.create(roomToMongo(roomRaw));
+      } catch (e: any) {
+        console.warn('MongoDB create room error:', e.message || e);
+      }
     }
     const roomObj = sanitizeRoom(roomRaw);
     activeRoomsCache.set(generatedRoomId, roomObj);
@@ -3782,17 +3793,19 @@ async function gracefulShutdown(signal: string) {
 
   try {
     const savePromises: Promise<any>[] = [];
-    activeRoomsCache.forEach((room: any, key: string) => {
-      if (room && (key === room.id || key === room._id || key === room.roomId)) {
-        const row = roomToSupabase(room);
-        savePromises.push(
-          Promise.resolve(supabase.from('rooms').upsert(row))
-        );
+    if (isMongoConnected) {
+      activeRoomsCache.forEach((room: any, key: string) => {
+        if (room && (key === room.id || key === room._id || key === room.roomId)) {
+          savePromises.push(
+            RoomModel.findByIdAndUpdate(room.id, { $set: roomToMongo(room) }, { upsert: true }).exec()
+          );
+        }
+      });
+      if (savePromises.length > 0) {
+        await Promise.allSettled(savePromises);
+        console.log(`💾 Flushed ${savePromises.length} room states to MongoDB before exit.`);
       }
-    });
-    if (savePromises.length > 0) {
-      await Promise.allSettled(savePromises);
-      console.log(`💾 Flushed ${savePromises.length} room states to Supabase before exit.`);
+      await mongoose.disconnect();
     }
   } catch (_) {}
 

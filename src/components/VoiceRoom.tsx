@@ -156,6 +156,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
   // High-Speed WebRTC Mesh Peer Connections (<25ms audio)
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const candidateQueueRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
 
   // LiveKit Room ref (optional accelerator)
   const lkRoomRef = useRef<LiveKitRoom | null>(null);
@@ -490,6 +491,15 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           if (!pc) return;
           await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
 
+          // Flush any queued ICE candidates for this sender
+          const queued = candidateQueueRef.current.get(senderId);
+          if (queued && queued.length > 0) {
+            for (const cand of queued) {
+              try { await pc.addIceCandidate(new RTCIceCandidate(cand)); } catch (e) {}
+            }
+            candidateQueueRef.current.delete(senderId);
+          }
+
           // Ensure local mic tracks are added if we are currently seated as a speaker
           const localStream = micStreamRef.current || localStreamRef.current;
           if (localStream && pc.getSenders().length === 0) {
@@ -508,11 +518,26 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         } else if (signal.sdp.type === 'answer') {
           if (pc && pc.signalingState !== 'stable') {
             await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+            // Flush any queued ICE candidates
+            const queued = candidateQueueRef.current.get(senderId);
+            if (queued && queued.length > 0) {
+              for (const cand of queued) {
+                try { await pc.addIceCandidate(new RTCIceCandidate(cand)); } catch (e) {}
+              }
+              candidateQueueRef.current.delete(senderId);
+            }
           }
         }
       } else if (signal.candidate) {
-        if (pc && pc.remoteDescription) {
-          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          } catch (e) {}
+        } else {
+          // Queue candidate until remoteDescription is set
+          const q = candidateQueueRef.current.get(senderId) || [];
+          q.push(signal.candidate);
+          candidateQueueRef.current.set(senderId, q);
         }
       }
     } catch (err) {
@@ -1270,99 +1295,6 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     await handleSitSelfAtIndex(index);
   };
 
-  const handleSpawnPresetGuest = async () => {
-    if (selectedSeatIndex === null) return;
-    const index = selectedSeatIndex;
-
-    const names = ["Olivia", "William", "Lucas", "Sophia", "Mia", "Amelia", "Jack", "Maya", "Daniel"];
-    const nameSelected = names[Math.floor(Math.random() * names.length)] + " ⚡";
-    const levelSelected = Math.floor(Math.random() * 40) + 10;
-    const avatarSelected = PRESET_AVATARS[Math.floor(Math.random() * PRESET_AVATARS.length)];
-
-    const newGuest: User = {
-      id: `sim_${Date.now()}`,
-      name: nameSelected,
-      avatar: avatarSelected,
-      level: levelSelected,
-      coins: 1200,
-      frameId: Math.random() > 0.5 ? 'frame_neon' : 'none',
-      bubbleId: 'none',
-      badge: '🎤 Talker'
-    };
-
-    setShowSeatModal(false);
-    setSeats(prev => prev.map(s => s.index === index ? { ...s, user: newGuest, isTalking: false, isMuted: false } : s));
-
-    try {
-      const res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: newGuest, action: 'sit' })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && data.room?.seats) {
-          setSeats(data.room.seats);
-        }
-      }
-    } catch (err) {
-      console.warn('Failed to persist simulated guest seat:', err);
-    }
-
-    setChatMessages(prev => [...prev, {
-      id: String(Date.now()),
-      userId: 'system',
-      userName: 'System',
-      userLevel: 0,
-      message: `${nameSelected} entered Mic Seat ${index}!`,
-      type: 'system'
-    }]);
-  };
-
-  const handleCreateCustomGuest = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (selectedSeatIndex === null || !customGuestName.trim()) return;
-    const index = selectedSeatIndex;
-
-    const newGuest: User = {
-      id: `custom_${Date.now()}`,
-      name: customGuestName.trim(),
-      avatar: customGuestAvatar,
-      level: customGuestLevel,
-      coins: 1000,
-      frameId: 'none',
-      bubbleId: 'none',
-      badge: '🎖️ Member'
-    };
-
-    setShowSeatModal(false);
-    setSeats(prev => prev.map(s => s.index === index ? { ...s, user: newGuest, isTalking: false, isMuted: false } : s));
-
-    try {
-      const res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: newGuest, action: 'sit' })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && data.room?.seats) {
-          setSeats(data.room.seats);
-        }
-      }
-    } catch (err) {
-      console.warn('Failed to persist custom guest seat:', err);
-    }
-
-    setChatMessages(prev => [...prev, {
-      id: String(Date.now()),
-      userId: 'system',
-      userName: 'System',
-      userLevel: 0,
-      message: `${newGuest.name} was seated on Mic Seat ${index} by you!`,
-      type: 'system'
-    }]);
-  };
 
   const handleLeaveSeat = async (explicitIndex?: number) => {
     // Find where the user is actually seated in seats array
@@ -1458,57 +1390,49 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
   const handleToggleMuteSeat = () => {
     if (selectedSeatIndex === null) return;
-    setSeats(prev => prev.map(s => s.index === selectedSeatIndex ? { ...s, isMuted: !s.isMuted } : s));
-    setShowSeatModal(false);
-  };
+    const seat = seats[selectedSeatIndex];
+    if (!seat || !seat.user) return;
 
-  const handleForceSpeakSeat = () => {
-    if (selectedSeatIndex === null) return;
-    setSeats(prev => prev.map(s => s.index === selectedSeatIndex ? { ...s, isTalking: !s.isTalking } : s));
-    setShowSeatModal(false);
-  };
+    const seatUserId = String(seat.user._id || seat.user.id || (seat.user as any)?.userId || '');
+    const isMe = (mySeatIndex === selectedSeatIndex) || (Boolean(seatUserId) && seatUserId === currentUserId) || (seat.user.name === currentUser.name);
 
-  const handleForceBotMessage = (text: string) => {
-    if (selectedSeatIndex === null) return;
-    const speaker = seats[selectedSeatIndex].user;
-    if (!speaker) return;
+    if (isMe) {
+      toggleMyMic();
+      setShowSeatModal(false);
+      return;
+    }
 
-    setChatMessages(prev => [...prev, {
-      id: String(Date.now()),
-      userId: speaker.id,
-      userName: speaker.name,
-      userLevel: speaker.level,
-      message: text,
-      type: 'text'
-    }]);
-    setShowSeatModal(false);
-  };
-
-  const handleForceBotGift = (gift: Gift) => {
-    if (selectedSeatIndex === null) return;
-    const speaker = seats[selectedSeatIndex].user;
-    if (!speaker) return;
-
-    setChatMessages(prev => [...prev, {
-      id: String(Date.now()),
-      userId: speaker.id,
-      userName: speaker.name,
-      userLevel: speaker.level,
-      message: `sent ${gift.icon} ${gift.name} to you! 🎁`,
-      type: 'gift',
-      giftName: gift.name,
-      giftIcon: gift.icon,
-      giftCount: 1
-    }]);
-
-    setActiveGiftEffect(gift);
-    playSynthSound('gift');
-    setShowSeatModal(false);
-    setTimeout(() => setActiveGiftEffect(null), 3500);
+    if (isCurrentUserHost) {
+      const nextMuted = !seat.isMuted;
+      setSeats(prev => prev.map(s => s.index === selectedSeatIndex ? { ...s, isMuted: nextMuted, isTalking: false } : s));
+      sendWs('seat_status', { seatIndex: selectedSeatIndex, isMuted: nextMuted, isTalking: false });
+      toast(`${nextMuted ? 'Muted' : 'Unmuted'} ${seat.user.name} 🎙️`, 'info');
+      setShowSeatModal(false);
+    }
   };
 
   const toggleMyMic = () => {
     playSynthSound('tap');
+    if (mySeatIndex === null) {
+      toast('Take a mic seat first to join the live talk! 🎙️', 'info');
+      return;
+    }
+
+    // Connect mic stream if not already active (e.g. host at seat 0 on entry)
+    if (!micStreamRef.current) {
+      setIsMyMicMuted(false);
+      enableMicrophone()
+        .then(() => {
+          setSeats(prev => prev.map(s => s.index === mySeatIndex ? { ...s, isMuted: false, isTalking: false } : s));
+          sendWs('seat_status', { seatIndex: mySeatIndex, isMuted: false, isTalking: false });
+          toast('Microphone connected! 🎙️', 'success');
+        })
+        .catch(() => {
+          toast('Please allow microphone permissions to speak 🎙️', 'error');
+        });
+      return;
+    }
+
     const newMuted = !isMyMicMuted;
     setIsMyMicMuted(newMuted);
 
@@ -1525,6 +1449,9 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
     if (newMuted) {
       isSpeakingRef.current = false;
+      toast('Microphone muted 🔇', 'info');
+    } else {
+      toast('Microphone unmuted 🎙️', 'info');
     }
   };
 
@@ -2497,7 +2424,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                     alt={hostName}
                     className="w-full h-full object-cover"
                   />
-                  {seats && seats[0] && seats[0].isMuted && (
+                  {seats && seats[0] && (isCurrentUserHost && mySeatIndex === 0 ? isMyMicMuted : seats[0].isMuted) && (
                     <div className="absolute bottom-0 right-0 bg-rose-500 rounded-full p-0.5 border border-white shadow">
                       <MicOff className="w-2.5 h-2.5 text-white" />
                     </div>
@@ -2593,7 +2520,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                       <span className="text-white/60 text-xs font-bold">{seat.index}</span>
                     )}
 
-                    {hasUser && seat.isMuted && (
+                    {hasUser && (isMe ? isMyMicMuted : seat.isMuted) && (
                       <div className="absolute bottom-0 right-0 bg-rose-500 rounded-full p-0.5 border border-white shadow">
                         <MicOff className="w-2.5 h-2.5 text-white" />
                       </div>
@@ -3140,150 +3067,162 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
             {/* SEAT STATE CONTENT */}
             {seats[selectedSeatIndex].user ? (
               // Occupied Seat Options
-              <div className="flex flex-col gap-3 text-xs">
-                <div className="flex items-center justify-between bg-stone-50 border border-zinc-150 p-2.5 rounded-2xl shadow-inner">
-                  <div className="flex items-center gap-3">
-                    <img src={seats[selectedSeatIndex].user?.avatar} alt="" className="w-10 h-10 rounded-full object-cover" />
-                    <div>
-                      <h4 className="font-black text-zinc-800">{seats[selectedSeatIndex].user?.name}</h4>
-                      <p className="text-[10px] text-zinc-400">Badge: {seats[selectedSeatIndex].user?.badge} • Lvl {seats[selectedSeatIndex].user?.level}</p>
-                    </div>
-                  </div>
+              (() => {
+                const seatUser = seats[selectedSeatIndex].user!;
+                const seatUserId = String(seatUser._id || seatUser.id || (seatUser as any)?.userId || '');
+                const isMe = (mySeatIndex === selectedSeatIndex) || (Boolean(seatUserId) && seatUserId === currentUserId) || (seatUser.name === currentUser.name);
+                const isSeatMuted = isMe ? isMyMicMuted : Boolean(seats[selectedSeatIndex].isMuted);
 
-                  <button
-                    onClick={() => {
-                      if (seats[selectedSeatIndex].user) {
-                        setInspectedUser(seats[selectedSeatIndex].user);
-                        setShowUserProfileModal(true);
-                        setShowSeatModal(false);
-                      }
-                    }}
-                    className="p-1.5 bg-white border border-rose-200 hover:bg-rose-50 text-rose-600 rounded-xl text-[10px] font-black flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
-                    title="View Profile"
-                  >
-                    <Eye className="w-3.5 h-3.5" />
-                    <span>Profile</span>
-                  </button>
-                </div>
+                return (
+                  <div className="flex flex-col gap-3 text-xs">
+                    {/* User Profile Card */}
+                    <div className="flex items-center justify-between bg-stone-50 border border-zinc-150 p-3 rounded-2xl shadow-inner">
+                      <div className="flex items-center gap-3">
+                        <div className="relative">
+                          <img src={seatUser.avatar} alt="" className="w-11 h-11 rounded-full object-cover border-2 border-white shadow" />
+                          {isSeatMuted ? (
+                            <span className="absolute -bottom-0.5 -right-0.5 bg-rose-500 rounded-full p-0.5 border border-white shadow">
+                              <MicOff className="w-2.5 h-2.5 text-white" />
+                            </span>
+                          ) : (
+                            <span className="absolute -bottom-0.5 -right-0.5 bg-emerald-500 rounded-full p-0.5 border border-white shadow">
+                              <Mic className="w-2.5 h-2.5 text-white" />
+                            </span>
+                          )}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <h4 className="font-black text-zinc-800 text-sm">{seatUser.name}</h4>
+                            {isMe && (
+                              <span className="text-[9px] bg-rose-100 text-rose-700 font-black px-1.5 py-0.5 rounded-full">
+                                You
+                              </span>
+                            )}
+                            {selectedSeatIndex === 0 && (
+                              <span className="text-[9px] bg-amber-100 text-amber-700 font-black px-1.5 py-0.5 rounded-full">
+                                👑 Host
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-zinc-400 mt-0.5">
+                            Badge: {seatUser.badge || '🎤 Talker'} • Lvl {seatUser.level || 1}
+                          </p>
+                        </div>
+                      </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={handleToggleMuteSeat}
-                    className={`py-2 rounded-xl font-bold flex items-center justify-center gap-1 cursor-pointer transition-all ${
-                      seats[selectedSeatIndex].isMuted
-                        ? 'bg-rose-50 border border-rose-300 text-rose-600 shadow-sm'
-                        : 'bg-stone-50 border border-zinc-200 text-zinc-500 hover:bg-stone-100 shadow-sm'
-                    }`}
-                  >
-                    <MicOff className="w-3.5 h-3.5" />
-                    <span>{seats[selectedSeatIndex].isMuted ? "Unmute Guest" : "Mute Guest"}</span>
-                  </button>
-
-                  <button
-                    onClick={handleForceSpeakSeat}
-                    className={`py-2 rounded-xl font-bold flex items-center justify-center gap-1 cursor-pointer transition-all ${
-                      seats[selectedSeatIndex].isTalking
-                        ? 'bg-emerald-50 border border-emerald-300 text-emerald-600 shadow-sm'
-                        : 'bg-stone-50 border border-zinc-200 text-zinc-500 hover:bg-stone-100 shadow-sm'
-                    }`}
-                  >
-                    <Zap className="w-3.5 h-3.5 animate-pulse" />
-                    <span>{seats[selectedSeatIndex].isTalking ? "Force Silence" : "Force Speak"}</span>
-                  </button>
-                </div>
-
-                {/* Simulated Bot Commands (if guest is not the current user) */}
-                {(() => {
-                  const seatUser = seats[selectedSeatIndex].user;
-                  const seatUserId = String(seatUser?._id || seatUser?.id || (seatUser as any)?.userId || '');
-                  const isMe = seatUserId === currentUserId || seatUser?.name === currentUser.name;
-                  return !isMe;
-                })() && (
-                  <div className="flex flex-col gap-2.5 bg-stone-50 p-3 rounded-2xl border border-zinc-150 shadow-inner">
-                    <p className="font-black text-zinc-400 text-[10px] uppercase tracking-wider">Guest Bot Operations</p>
-                    
-                    {/* Bot messaging trigger */}
-                    <div className="flex gap-1.5">
-                      <input
-                        type="text"
-                        placeholder="Make guest say something..."
-                        id="botSpeakInput"
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            handleForceBotMessage((e.target as HTMLInputElement).value);
-                          }
-                        }}
-                        className="bg-white border border-zinc-200 rounded-lg px-2 py-1 text-[11px] text-zinc-800 flex-1 focus:outline-none focus:border-rose-500 shadow-sm"
-                      />
                       <button
                         onClick={() => {
-                          const val = (document.getElementById('botSpeakInput') as HTMLInputElement)?.value;
-                          if (val) handleForceBotMessage(val);
+                          setInspectedUser(seatUser);
+                          setShowUserProfileModal(true);
+                          setShowSeatModal(false);
                         }}
-                        className="bg-rose-600 text-white p-1 rounded-lg cursor-pointer"
+                        className="p-1.5 bg-white border border-rose-200 hover:bg-rose-50 text-rose-600 rounded-xl text-[10px] font-black flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
+                        title="View Profile"
                       >
-                        <Send className="w-3.5 h-3.5" />
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>Profile</span>
                       </button>
                     </div>
 
-                    {/* Bot gifting trigger */}
-                    <div>
-                      <p className="text-[9px] text-zinc-400 mb-1 font-bold">Force guest to send gift to you:</p>
-                      <div className="grid grid-cols-4 gap-1.5">
-                        {GIFTS.map((g) => (
-                          <button
-                            key={g.id}
-                            onClick={() => handleForceBotGift(g)}
-                            className="bg-white border border-zinc-250 rounded-lg py-1 text-[10px] hover:border-rose-500 shadow-sm text-zinc-700"
-                          >
-                            {g.icon}
-                          </button>
-                        ))}
+                    {/* Microphone Controls */}
+                    {isMe ? (
+                      // Current user controls their own microphone
+                      <div className="flex flex-col gap-2">
+                        <button
+                          onClick={() => {
+                            toggleMyMic();
+                            setShowSeatModal(false);
+                          }}
+                          className={`w-full py-3 rounded-2xl font-black text-xs flex items-center justify-center gap-2 cursor-pointer transition-all shadow-md active:scale-98 ${
+                            isMyMicMuted
+                              ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-emerald-500/25'
+                              : 'bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100/60'
+                          }`}
+                        >
+                          {isMyMicMuted ? (
+                            <>
+                              <Mic className="w-4 h-4 animate-bounce" />
+                              <span>🎤 Turn Mic On (Unmute Me)</span>
+                            </>
+                          ) : (
+                            <>
+                              <MicOff className="w-4 h-4" />
+                              <span>🔇 Mute My Mic</span>
+                            </>
+                          )}
+                        </button>
+
+                        <button
+                          onClick={() => handleLeaveSeat(selectedSeatIndex)}
+                          className="w-full bg-stone-100 hover:bg-rose-50 text-zinc-600 hover:text-rose-600 font-bold py-2.5 rounded-2xl cursor-pointer flex items-center justify-center gap-1.5 transition-all text-xs"
+                        >
+                          <Trash className="w-3.5 h-3.5" />
+                          <span>Leave Mic Seat</span>
+                        </button>
                       </div>
-                    </div>
-                  </div>
-                )}
+                    ) : (
+                      // Controls when viewing another user's seat
+                      <div className="flex flex-col gap-2">
+                        {/* Quick Gift Shortcut */}
+                        <button
+                          onClick={() => {
+                            setSelectedGiftRecipient(selectedSeatIndex);
+                            setShowGiftDrawer(true);
+                            setShowSeatModal(false);
+                          }}
+                          className="w-full py-2.5 rounded-2xl bg-gradient-to-r from-pink-500 to-rose-600 text-white font-black text-xs flex items-center justify-center gap-2 shadow-md shadow-pink-500/20 cursor-pointer active:scale-98"
+                        >
+                          <span>🎁 Send Gift to {seatUser.name}</span>
+                        </button>
 
-                {/* Current user sitting on this seat -> Leave Seat */}
-                {(() => {
-                  const seatUser = seats[selectedSeatIndex].user;
-                  const seatUserId = String(seatUser?._id || seatUser?.id || (seatUser as any)?.userId || '');
-                  const isMe = seatUserId === currentUserId || seatUser?.name === currentUser.name;
-                  return isMe;
-                })() && (
-                  <button
-                    onClick={handleLeaveSeat}
-                    className="w-full mt-1 bg-rose-50 border border-rose-200 text-rose-600 font-bold py-2.5 rounded-xl hover:bg-rose-100/50 cursor-pointer flex items-center justify-center gap-1.5 shadow-sm active:scale-98 transition-all"
-                  >
-                    <Trash className="w-4 h-4" />
-                    <span>Leave Seat</span>
-                  </button>
-                )}
+                        {/* Host controls for other seated users */}
+                        {isCurrentUserHost && (
+                          <div className="flex flex-col gap-2 pt-2 border-t border-zinc-150">
+                            <button
+                              onClick={handleToggleMuteSeat}
+                              className={`py-2 rounded-xl font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-all ${
+                                seats[selectedSeatIndex].isMuted
+                                  ? 'bg-emerald-50 border border-emerald-300 text-emerald-700'
+                                  : 'bg-stone-50 border border-zinc-200 text-zinc-600 hover:bg-stone-100'
+                              }`}
+                            >
+                              {seats[selectedSeatIndex].isMuted ? (
+                                <>
+                                  <Mic className="w-3.5 h-3.5 text-emerald-600" />
+                                  <span>Unmute {seatUser.name}</span>
+                                </>
+                              ) : (
+                                <>
+                                  <MicOff className="w-3.5 h-3.5 text-rose-500" />
+                                  <span>Mute {seatUser.name}</span>
+                                </>
+                              )}
+                            </button>
 
-                {/* Host controls for kicking someone else from seat or room */}
-                {isCurrentUserHost && selectedSeatIndex > 0 && seats[selectedSeatIndex].user && (() => {
-                  const seatUser = seats[selectedSeatIndex].user;
-                  const seatUserId = String(seatUser?._id || seatUser?.id || (seatUser as any)?.userId || '');
-                  return seatUserId !== currentUserId && seatUser?.name !== currentUser.name;
-                })() && (
-                  <div className="flex flex-col gap-2 pt-2 border-t border-zinc-150">
-                    <button
-                      onClick={() => handleKickUserFromSeat(selectedSeatIndex, seats[selectedSeatIndex].user!)}
-                      className="w-full bg-rose-600 hover:bg-rose-700 text-white font-black py-2.5 rounded-xl cursor-pointer flex items-center justify-center gap-1.5 shadow-md shadow-rose-600/20 active:scale-98 transition-all"
-                    >
-                      <UserX className="w-4 h-4" />
-                      <span>Kick from Mic Seat {selectedSeatIndex}</span>
-                    </button>
-                    <button
-                      onClick={() => handleKickUserFromRoom(seats[selectedSeatIndex].user!)}
-                      className="w-full bg-zinc-900 hover:bg-black text-rose-400 font-bold py-2 rounded-xl cursor-pointer flex items-center justify-center gap-1.5 text-xs active:scale-98 transition-all"
-                    >
-                      <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
-                      <span>Kick from Room 🚷</span>
-                    </button>
+                            {selectedSeatIndex > 0 && (
+                              <button
+                                onClick={() => handleKickUserFromSeat(selectedSeatIndex, seatUser)}
+                                className="w-full bg-rose-600 hover:bg-rose-700 text-white font-black py-2 rounded-xl cursor-pointer flex items-center justify-center gap-1.5 shadow-md shadow-rose-600/20 active:scale-98 transition-all"
+                              >
+                                <UserX className="w-3.5 h-3.5" />
+                                <span>Kick from Mic Seat</span>
+                              </button>
+                            )}
+
+                            <button
+                              onClick={() => handleKickUserFromRoom(seatUser)}
+                              className="w-full bg-zinc-900 hover:bg-black text-rose-400 font-bold py-2 rounded-xl cursor-pointer flex items-center justify-center gap-1.5 text-xs active:scale-98 transition-all"
+                            >
+                              <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                              <span>Kick from Room 🚷</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()
             ) : (
               // Empty Seat — clean confirmation UI
               <div className="flex flex-col gap-4 text-xs">

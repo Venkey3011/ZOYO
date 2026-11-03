@@ -3,7 +3,7 @@ import { User, Room } from '../types';
 import { PRESET_AVATARS } from '../data';
 import { 
   Shield, Users, Coins, RefreshCw, 
-  Search, Lock, Unlock, UserPlus, FileText, ArrowRightLeft,
+  Search, Lock, Unlock, Ban, UserPlus, FileText, ArrowRightLeft,
   Sparkles, Gift, Gamepad2, Palette, Trash2, Plus 
 } from 'lucide-react';
 
@@ -404,7 +404,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
 
   // Trigger Confirmation: Account Block / Unblock
   const handleToggleBlock = (userId: string, currentBlockedStatus: boolean) => {
-    const targetUser = users.find(u => (u._id || u.id) === userId);
+    const targetUser = users.find(u => (u._id || u.id) === userId || String(u._id) === String(userId) || String(u.id) === String(userId));
     if (!targetUser) return;
 
     if (currentUser.role !== 'admin' && currentUser.role !== 'manager' && currentUser.role !== 'coin_seller') {
@@ -417,7 +417,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       return;
     }
 
-    const actionText = currentBlockedStatus ? 'UNBLOCK' : 'BLOCK';
+    const actionText = currentBlockedStatus ? 'UNLOCK' : 'LOCK';
     setConfirmModal({
       isOpen: true,
       title: `Confirm Account ${actionText}`,
@@ -433,21 +433,42 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
   const executeToggleBlock = async (userId: string, currentBlockedStatus: boolean) => {
     setErrorMsg('');
     setSuccessMsg('');
+    const newStatus = !currentBlockedStatus;
+
+    // Optimistically update local users state for immediate UI responsiveness (<1ms)
+    setUsers(prev => prev.map(u => 
+      ((u._id || u.id) === userId || String(u._id) === String(userId) || String(u.id) === String(userId))
+        ? { ...u, isBlocked: newStatus }
+        : u
+    ));
+
     try {
       const res = await fetch(`/api/users/${userId}/block`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isBlocked: !currentBlockedStatus })
+        body: JSON.stringify({ isBlocked: newStatus })
       });
       const data = await res.json();
       if (data.success) {
-        setSuccessMsg(`Account for ${data.user.name} was successfully ${!currentBlockedStatus ? 'BLOCKED' : 'UNBLOCKED'}!`);
+        setSuccessMsg(`Account for ${data.user.name} was successfully ${newStatus ? 'LOCKED' : 'UNLOCKED'}!`);
         fetchData();
       } else {
-        setErrorMsg(data.error || 'Failed to modify block status.');
+        // Rollback optimistic update on server error
+        setUsers(prev => prev.map(u => 
+          ((u._id || u.id) === userId || String(u._id) === String(userId) || String(u.id) === String(userId))
+            ? { ...u, isBlocked: currentBlockedStatus }
+            : u
+        ));
+        setErrorMsg(data.error || 'Failed to modify lock status.');
       }
     } catch (err) {
-      setErrorMsg('Connection error.');
+      // Rollback on network failure
+      setUsers(prev => prev.map(u => 
+        ((u._id || u.id) === userId || String(u._id) === String(userId) || String(u.id) === String(userId))
+          ? { ...u, isBlocked: currentBlockedStatus }
+          : u
+      ));
+      setErrorMsg('Connection error modifying lock status.');
     }
   };
 
@@ -901,18 +922,20 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                   return (
                     <div 
                       key={uId}
-                      className="bg-white border border-zinc-200 rounded-2xl p-3 flex items-center justify-between gap-2 shadow-sm"
+                      className={`border rounded-2xl p-3 flex items-center justify-between gap-2 shadow-sm transition-all ${
+                        isBlocked ? 'bg-rose-50/40 border-rose-200' : 'bg-white border-zinc-200'
+                      }`}
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
                         <div className="relative shrink-0">
                           <img 
                             src={user.avatar} 
                             alt={user.name} 
-                            className={`w-9 h-9 rounded-full object-cover border ${isBlocked ? 'border-rose-400 opacity-50' : 'border-zinc-200'}`}
+                            className={`w-9 h-9 rounded-full object-cover border ${isBlocked ? 'border-rose-400 opacity-60 grayscale-[25%]' : 'border-zinc-200'}`}
                           />
                           {isBlocked && (
-                            <div className="absolute -top-1 -right-1 bg-rose-500 text-white rounded-full p-0.5 text-[7px] font-black border border-white">
-                              🚫
+                            <div className="absolute -top-1 -right-1 bg-rose-600 text-white rounded-full p-1 text-[8px] font-black border-2 border-white shadow flex items-center justify-center">
+                              <Lock className="w-2.5 h-2.5 stroke-[3]" />
                             </div>
                           )}
                         </div>
@@ -932,26 +955,46 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                       </div>
 
                       <div className="shrink-0 flex items-center gap-1.5">
-                        <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${
+                        <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full flex items-center gap-1 ${
                           isBlocked 
-                            ? 'bg-rose-50 text-rose-600 border border-rose-200' 
+                            ? 'bg-rose-100 text-rose-700 border border-rose-300' 
                             : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                         }`}>
-                          {isBlocked ? 'Blocked' : 'Active'}
+                          {isBlocked ? (
+                            <>
+                              <Lock className="w-2.5 h-2.5 text-rose-600" />
+                              <span>Locked</span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                              <span>Active</span>
+                            </>
+                          )}
                         </span>
                         
                         {!isSelf && (
                           <button
                             onClick={() => handleToggleBlock(uId, isBlocked)}
                             disabled={user.name === 'Admin'}
-                            className={`p-1.5 rounded-xl border text-xs cursor-pointer transition-all ${
+                            className={`px-2 py-1.5 rounded-xl border text-[10px] font-bold cursor-pointer transition-all active:scale-95 flex items-center gap-1 shadow-sm ${
                               isBlocked 
-                                ? 'bg-emerald-50 border-emerald-200 text-emerald-600 hover:bg-emerald-100' 
-                                : 'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100'
+                                ? 'bg-emerald-500 border-emerald-600 text-white hover:bg-emerald-600 shadow-emerald-500/20' 
+                                : 'bg-white border-rose-300 text-rose-600 hover:bg-rose-50'
                             }`}
-                            title={isBlocked ? 'Unblock User' : 'Block User'}
+                            title={isBlocked ? 'Unlock User Account' : 'Lock User Account'}
                           >
-                            {isBlocked ? <Unlock className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
+                            {isBlocked ? (
+                              <>
+                                <Unlock className="w-3.5 h-3.5 stroke-[2.5]" />
+                                <span>Unlock</span>
+                              </>
+                            ) : (
+                              <>
+                                <Ban className="w-3.5 h-3.5 stroke-[2.5]" />
+                                <span>Lock</span>
+                              </>
+                            )}
                           </button>
                         )}
                       </div>
@@ -1050,12 +1093,13 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                         </div>
 
                         <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${
+                          isBlocked ? 'bg-rose-100 text-rose-700 border border-rose-300 font-black' :
                           user.role === 'admin' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
                           user.role === 'manager' ? 'bg-purple-50 text-purple-700 border border-purple-200' :
                           user.role === 'coin_seller' ? 'bg-cyan-50 text-cyan-700 border border-cyan-200' :
                           'bg-zinc-100 text-zinc-500'
                         }`}>
-                          {user.role || 'user'}
+                          {isBlocked ? '🔒 Locked' : (user.role || 'user')}
                         </span>
                       </div>
 

@@ -79,21 +79,37 @@ let cachedPublicRoomsTime = 0;
 
 // ─── Mongoose Schemas & Models ────────────────────────────────────────────────
 const UserSchema = new Schema({
-  _id: { type: String, required: true },
+  _id: { type: Schema.Types.Mixed },
   name: String, username: String, nickname: String, password: String,
   role: { type: String, default: 'user' },
   avatar: String, level: { type: Number, default: 1 },
   coins: { type: Number, default: 0 },
-  frame_id: String, bubble_id: String, badge: String,
+  frame_id: String, frameId: String, bubble_id: String, bubbleId: String, badge: String,
   bio: String, country: String, gender: String, date_of_birth: String,
   is_blocked: { type: Boolean, default: false },
-  yoyo_id: String, email: String, phone_number: String,
+  isBlocked: { type: Boolean, default: false },
+  yoyo_id: String, yoyoId: String, email: String, phone_number: String,
   recent_visitors: { type: Array, default: [] },
   followers_count: { type: Number, default: 0 }, following_count: { type: Number, default: 0 },
   gifts_count: { type: Number, default: 0 }, visitors_count: { type: Number, default: 0 },
   family: String, vip_status: String, created_by: String, manager_id: String,
   social_id: String, social_provider: String
-}, { timestamps: true, _id: false });
+}, { timestamps: true, strict: false });
+
+function buildUserQuery(id: string) {
+  const cleanId = String(id).trim();
+  const conditions: any[] = [
+    { _id: cleanId },
+    { yoyo_id: cleanId },
+    { yoyoId: cleanId },
+    { name: new RegExp(`^${cleanId}$`, 'i') },
+    { username: cleanId }
+  ];
+  if (mongoose.Types.ObjectId.isValid(cleanId) && cleanId.length === 24) {
+    conditions.push({ _id: new mongoose.Types.ObjectId(cleanId) });
+  }
+  return { $or: conditions };
+}
 
 const RoomSchema = new Schema({
   _id: { type: String, required: true },
@@ -163,7 +179,7 @@ function mongoToUser(row: any): any {
     country: row.country || 'Global',
     gender: row.gender || 'Other',
     dateOfBirth: row.date_of_birth || row.dateOfBirth || '2005-01-01',
-    isBlocked: Boolean(row.is_blocked ?? row.isBlocked),
+    isBlocked: Boolean(row.isBlocked || row.is_blocked),
     recentVisitors: Array.isArray(row.recent_visitors) ? row.recent_visitors : (Array.isArray(row.recentVisitors) ? row.recentVisitors : []),
     followersCount: Number(row.followers_count || row.followersCount || 0),
     followingCount: Number(row.following_count || row.followingCount || 0),
@@ -195,7 +211,8 @@ function userToMongo(user: any): any {
     country: user.country || 'Global',
     gender: user.gender || 'Other',
     dateOfBirth: user.dateOfBirth || user.date_of_birth || '2005-01-01',
-    is_blocked: Boolean(user.isBlocked ?? user.is_blocked),
+    is_blocked: Boolean(user.isBlocked || user.is_blocked),
+    isBlocked: Boolean(user.isBlocked || user.is_blocked),
     recent_visitors: user.recentVisitors || user.recent_visitors || [],
     yoyo_id: String(user.yoyoId || user.yoyo_id || ''),
     email: user.email || '',
@@ -599,7 +616,13 @@ async function getUsers() {
   if (isMongoConnected) {
     const docs = await UserModel.find({}).lean() as any[];
     if (docs) {
-      return docs.map(mongoToUser);
+      const mapped = docs.map(mongoToUser);
+      for (const memUser of inMemoryDB) {
+        if (!mapped.some(u => String(u._id) === String(memUser._id) || String(u.id) === String((memUser as any).id) || u.name === memUser.name)) {
+          mapped.push(memUser);
+        }
+      }
+      return mapped;
     }
   }
   return inMemoryDB.map(({ password, ...u }) => u);
@@ -613,23 +636,25 @@ async function findUserById(id: string) {
   const cached = getCachedUser(cleanId);
   if (cached) return cached;
 
+  if (isMongoConnected) {
+    try {
+      const doc = await UserModel.findOne(buildUserQuery(cleanId)).lean();
+      if (doc) {
+        const u = mongoToUser(doc);
+        setCachedUser(u);
+        return u;
+      }
+    } catch (err) {
+      console.warn(`[findUserById] Mongo query error for ${cleanId}:`, err);
+    }
+  }
+
   const memUser = inMemoryDB.find(u => u._id === cleanId || (u as any).id === cleanId || u.yoyoId === cleanId || u.name.toLowerCase() === cleanId.toLowerCase());
   if (memUser) {
     setCachedUser(memUser);
     return memUser;
   }
 
-  if (isMongoConnected) {
-    const doc = await UserModel.findOne({
-      $or: [{ _id: cleanId }, { yoyo_id: cleanId }, { name: new RegExp('^' + cleanId + '$', 'i') }]
-    }).lean();
-
-    if (doc) {
-      const u = mongoToUser(doc);
-      setCachedUser(u);
-      return u;
-    }
-  }
   return null;
 }
 
@@ -787,7 +812,7 @@ async function createUser(fullData: any) {
 
 async function updateUser(id: string, updateData: any) {
   invalidateCachedUser(id);
-  const cleanId = String(id);
+  const cleanId = String(id).trim();
   
   if (isMongoConnected) {
     try {
@@ -797,21 +822,36 @@ async function updateUser(id: string, updateData: any) {
       if (updateData.level !== undefined) mongoUpdate.level = updateData.level;
       if (updateData.role !== undefined) mongoUpdate.role = updateData.role;
       if (updateData.avatar !== undefined) mongoUpdate.avatar = updateData.avatar;
-      if (updateData.frameId !== undefined) mongoUpdate.frame_id = updateData.frameId;
-      if (updateData.bubbleId !== undefined) mongoUpdate.bubble_id = updateData.bubbleId;
+      if (updateData.frameId !== undefined) {
+        mongoUpdate.frame_id = updateData.frameId;
+        mongoUpdate.frameId = updateData.frameId;
+      }
+      if (updateData.bubbleId !== undefined) {
+        mongoUpdate.bubble_id = updateData.bubbleId;
+        mongoUpdate.bubbleId = updateData.bubbleId;
+      }
       if (updateData.badge !== undefined) mongoUpdate.badge = updateData.badge;
       if (updateData.bio !== undefined) mongoUpdate.bio = updateData.bio;
       if (updateData.country !== undefined) mongoUpdate.country = updateData.country;
       if (updateData.gender !== undefined) mongoUpdate.gender = updateData.gender;
-      if (updateData.dateOfBirth !== undefined) mongoUpdate.date_of_birth = updateData.dateOfBirth;
-      if (updateData.isBlocked !== undefined) mongoUpdate.is_blocked = Boolean(updateData.isBlocked);
+      if (updateData.dateOfBirth !== undefined) {
+        mongoUpdate.date_of_birth = updateData.dateOfBirth;
+        mongoUpdate.dateOfBirth = updateData.dateOfBirth;
+      }
+      if (updateData.isBlocked !== undefined) {
+        mongoUpdate.is_blocked = Boolean(updateData.isBlocked);
+        mongoUpdate.isBlocked = Boolean(updateData.isBlocked);
+      }
       if (updateData.recentVisitors !== undefined) mongoUpdate.recent_visitors = updateData.recentVisitors;
       if (updateData.visitorsCount !== undefined) mongoUpdate.visitors_count = updateData.visitorsCount;
-      if (updateData.managerId !== undefined) mongoUpdate.manager_id = updateData.managerId;
+      if (updateData.managerId !== undefined) {
+        mongoUpdate.manager_id = updateData.managerId;
+        mongoUpdate.managerId = updateData.managerId;
+      }
       if (updateData.password !== undefined) mongoUpdate.password = updateData.password;
 
       const doc = await UserModel.findOneAndUpdate(
-        { $or: [{ _id: cleanId }, { yoyo_id: cleanId }, { name: cleanId }] },
+        buildUserQuery(cleanId),
         { $set: mongoUpdate },
         { new: true }
       ).lean();
@@ -819,6 +859,10 @@ async function updateUser(id: string, updateData: any) {
       if (doc) {
         const u = mongoToUser(doc);
         setCachedUser(u);
+        const index = inMemoryDB.findIndex(m => String(m._id) === String(u._id) || String((m as any).id) === String(u.id) || m.name === u.name || m.yoyoId === u.yoyoId);
+        if (index !== -1) {
+          inMemoryDB[index] = { ...inMemoryDB[index], ...u };
+        }
         return u;
       }
     } catch (err) {
@@ -1285,10 +1329,11 @@ app.post("/api/users/create-sub-user", async (req: express.Request, res: express
 app.delete("/api/users/:id", async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
+    invalidateCachedUser(id);
     if (isMongoConnected) {
-      await UserModel.deleteOne({ $or: [{ _id: id }, { yoyo_id: id }] });
+      await UserModel.deleteOne(buildUserQuery(id));
     }
-    const idx = inMemoryDB.findIndex(u => u._id === id || (u as any).id === id);
+    const idx = inMemoryDB.findIndex(u => u._id === id || (u as any).id === id || u.name === id || u.yoyoId === id);
     if (idx !== -1) {
       inMemoryDB.splice(idx, 1);
     }

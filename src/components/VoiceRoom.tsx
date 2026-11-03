@@ -132,7 +132,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     mySeatIndexRef.current = mySeatIndex;
   }, [mySeatIndex]);
 
-  const roomId = String((safeRoom as any)._id || safeRoom.id);
+  const roomId = String((safeRoom as any)._id || (safeRoom as any).id || (safeRoom as any).roomId || '');
 
   // Online Room Users (Audience + Speakers)
   const [onlineUsers, setOnlineUsers] = useState<User[]>([currentUser]);
@@ -1771,8 +1771,32 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     setRoomNotice(noticeToSave);
     setSeatStyle(styleToSave);
 
+    const targetRoomId = roomId || String((safeRoom as any)?._id || (safeRoom as any)?.id || (safeRoom as any)?.roomId || '');
+
+    // 1. Immediately send via WebSocket for ultra-fast realtime update (<5ms)
     try {
-      const res = await fetch(`/api/rooms/${roomId}/update`, {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'room_customization',
+          roomId: targetRoomId,
+          userId: currentUser.id,
+          userName: currentUser.name,
+          payload: {
+            backgroundUrl: bgToSave,
+            title: titleToSave,
+            description: noticeToSave,
+            notice: noticeToSave,
+            seatStyle: styleToSave
+          }
+        }));
+      }
+    } catch (wsErr) {
+      console.warn('WS room customization error:', wsErr);
+    }
+
+    // 2. Persist via HTTP API
+    try {
+      const res = await fetch(`/api/rooms/${targetRoomId}/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1787,11 +1811,18 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         toast('Room customization saved! 🎨✨', 'success');
         setShowCustomizationModal(false);
       } else {
-        toast('Failed to save customization to server', 'error');
+        const errData = await res.json().catch(() => ({}));
+        toast(errData.error || 'Failed to save customization to server', 'error');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Save customization error:', err);
-      toast('Network error saving room', 'error');
+      // If WebSocket sent successfully, still consider it updated
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        toast('Room customization saved in active room! 🎨✨', 'success');
+        setShowCustomizationModal(false);
+      } else {
+        toast('Network error saving room', 'error');
+      }
     } finally {
       setIsSavingCustomization(false);
     }

@@ -1966,10 +1966,12 @@ async function getRoom(id: string) {
     return sanitizeRoom(activeRoomsCache.get(cleanId));
   }
 
-  // 2. Query MongoDB — match by id or roomId
+  // 2. Query MongoDB — match by id, _id, roomId, or title
   if (isMongoConnected) {
     try {
-      const doc = await RoomModel.findById(cleanId).lean();
+      const doc = await RoomModel.findOne({
+        $or: [{ _id: cleanId }, { roomId: cleanId }, { title: cleanId }]
+      }).lean();
       if (doc) {
         const room = mongoToRoom(doc);
         activeRoomsCache.set(cleanId, room);
@@ -1982,7 +1984,7 @@ async function getRoom(id: string) {
   }
 
   // 3. Fallback to inMemoryRooms
-  const room = inMemoryRooms.find(r => r.id === cleanId || r.roomId === cleanId);
+  const room = inMemoryRooms.find(r => r.id === cleanId || r.roomId === cleanId || (r as any)._id === cleanId || r.title === cleanId);
   if (room) {
     activeRoomsCache.set(cleanId, room);
     if (room.id) activeRoomsCache.set(String(room.id), room);
@@ -2886,7 +2888,15 @@ app.post("/api/rooms/:id/update", async (req: express.Request, res: express.Resp
   try {
     const { id } = req.params;
     const updates = req.body;
-    const room = await getRoom(id);
+    let room = await getRoom(id);
+    if (!room) {
+      for (const [key, r] of activeRoomsCache.entries()) {
+        if (key.includes(id) || r.id === id || r._id === id || r.roomId === id) {
+          room = r;
+          break;
+        }
+      }
+    }
     if (!room) {
       res.status(404).json({ error: "Room not found" });
       return;
@@ -2894,10 +2904,17 @@ app.post("/api/rooms/:id/update", async (req: express.Request, res: express.Resp
     Object.assign(room, updates);
     await saveRoom(room);
     const sanitized = sanitizeRoom(room);
-    broadcastToRoom(id, {
+    const targetRoomId = String(room.id || room._id || id);
+    broadcastToRoom(targetRoomId, {
       type: 'room_updated',
       room: sanitized
     });
+    if (targetRoomId !== id) {
+      broadcastToRoom(id, {
+        type: 'room_updated',
+        room: sanitized
+      });
+    }
     res.json({ success: true, room: sanitized });
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
@@ -3698,6 +3715,21 @@ async function startServer() {
             musicState: payload,
             senderName: userName
           });
+        } else if (type === 'room_customization') {
+          const room = await getRoom(roomId);
+          if (room) {
+            if (payload?.backgroundUrl !== undefined) room.backgroundUrl = payload.backgroundUrl;
+            if (payload?.title !== undefined) room.title = payload.title;
+            if (payload?.description !== undefined) room.description = payload.description;
+            if (payload?.notice !== undefined) room.notice = payload.notice;
+            if (payload?.seatStyle !== undefined) room.seatStyle = payload.seatStyle;
+            await saveRoom(room);
+            const sanitized = sanitizeRoom(room);
+            broadcastToRoom(roomId, {
+              type: 'room_updated',
+              room: sanitized
+            });
+          }
         }
       } catch (err) {
         console.error('Error processing WS message:', err);

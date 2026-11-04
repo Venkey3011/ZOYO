@@ -111,18 +111,33 @@ function buildUserQuery(id: string) {
   return { $or: conditions };
 }
 
+function buildRoomQuery(id: string) {
+  const cleanId = String(id).trim();
+  const conditions: any[] = [
+    { _id: cleanId },
+    { roomId: cleanId },
+    { id: cleanId },
+    { title: cleanId }
+  ];
+  if (mongoose.Types.ObjectId.isValid(cleanId) && cleanId.length === 24) {
+    conditions.push({ _id: new mongoose.Types.ObjectId(cleanId) });
+  }
+  return { $or: conditions };
+}
+
 const RoomSchema = new Schema({
-  _id: { type: String, required: true },
-  title: String, description: String, host: Schema.Types.Mixed,
+  _id: { type: Schema.Types.Mixed },
+  title: String, description: String, notice: String, host: Schema.Types.Mixed,
   theme: String, category: String,
   online_count: { type: Number, default: 1 },
   active_game: String, is_official_game: Boolean, game_prize_pool: Number,
-  background_url: String, room_image: String,
+  background_url: String, backgroundUrl: String, room_image: String, roomImage: String,
+  seat_style: { type: String, default: 'sofa' }, seatStyle: { type: String, default: 'sofa' },
   is_active: { type: Boolean, default: true },
   is_private: Boolean, room_password: String,
   invited_users: { type: Array, default: [] }, seats: { type: Array, default: [] },
   online_users: { type: Array, default: [] }, chat_messages: { type: Array, default: [] }
-}, { timestamps: true, _id: false });
+}, { timestamps: true, strict: false });
 
 const FriendRequestSchema = new Schema({
   _id: { type: String, required: true },
@@ -224,13 +239,16 @@ function userToMongo(user: any): any {
 
 function mongoToRoom(row: any): any {
   if (!row) return null;
+  const rawId = String(row._id || row.id || row.roomId || '');
   return {
     ...row,
-    id: String(row._id || row.id),
-    _id: String(row._id || row.id),
-    roomId: String(row._id || row.id),
+    id: rawId,
+    _id: rawId,
+    roomId: rawId,
     title: row.title || 'Voice Room',
-    description: row.description || '',
+    description: row.description || row.notice || '',
+    notice: row.notice || row.description || '',
+    seatStyle: row.seat_style || row.seatStyle || 'sofa',
     host: row.host || { id: 'host', name: 'Host', level: 1, coins: 0 },
     theme: row.theme || 'neon',
     category: row.category || 'chat',
@@ -254,10 +272,14 @@ function mongoToRoom(row: any): any {
 function roomToMongo(room: any): any {
   if (!room) return null;
   const id = String(room.id || room._id || room.roomId || 'room_' + Date.now());
+  const bg = room.backgroundUrl || room.background_url || '';
+  const noticeText = room.notice || room.description || '';
+  const seatStyle = room.seatStyle || room.seat_style || 'sofa';
   return {
     _id: id,
     title: room.title || 'Voice Room',
-    description: room.description || '',
+    description: room.description || noticeText,
+    notice: noticeText,
     host: room.host || {},
     theme: room.theme || 'neon',
     category: room.category || 'chat',
@@ -265,8 +287,12 @@ function roomToMongo(room: any): any {
     active_game: room.activeGame || 'none',
     is_official_game: Boolean(room.isOfficialGame),
     game_prize_pool: Number(room.gamePrizePool || 0),
-    background_url: room.backgroundUrl || '',
-    room_image: room.roomImage || '',
+    background_url: bg,
+    backgroundUrl: bg,
+    room_image: room.roomImage || room.room_image || '',
+    roomImage: room.roomImage || room.room_image || '',
+    seat_style: seatStyle,
+    seatStyle: seatStyle,
     is_active: room.isActive !== undefined ? Boolean(room.isActive) : true,
     is_private: Boolean(room.isPrivate),
     room_password: room.roomPassword || '',
@@ -2011,16 +2037,16 @@ async function getRoom(id: string) {
     return sanitizeRoom(activeRoomsCache.get(cleanId));
   }
 
-  // 2. Query MongoDB — match by id, _id, roomId, or title
+  // 2. Query MongoDB — robust multi-field query matching ObjectId, id, roomId, or title
   if (isMongoConnected) {
     try {
-      const doc = await RoomModel.findOne({
-        $or: [{ _id: cleanId }, { roomId: cleanId }, { title: cleanId }]
-      }).lean();
+      const doc = await RoomModel.findOne(buildRoomQuery(cleanId)).lean();
       if (doc) {
         const room = mongoToRoom(doc);
         activeRoomsCache.set(cleanId, room);
         activeRoomsCache.set(String(room.id), room);
+        if (room._id) activeRoomsCache.set(String(room._id), room);
+        if (room.roomId) activeRoomsCache.set(String(room.roomId), room);
         return sanitizeRoom(room);
       }
     } catch (err) {
@@ -2048,8 +2074,9 @@ async function saveRoom(room: any) {
   activeRoomsCache.set(id, room);
   if (room.id) activeRoomsCache.set(String(room.id), room);
   if (room._id) activeRoomsCache.set(String(room._id), room);
+  if (room.roomId) activeRoomsCache.set(String(room.roomId), room);
 
-  const memIdx = inMemoryRooms.findIndex(r => r.id === id || r.roomId === id);
+  const memIdx = inMemoryRooms.findIndex(r => r.id === id || r.roomId === id || (r as any)._id === id);
   if (memIdx !== -1) {
     inMemoryRooms[memIdx] = { ...room };
   }
@@ -2065,7 +2092,7 @@ async function saveRoom(room: any) {
     try {
       if (isMongoConnected) {
         const mongoRow = roomToMongo(room);
-        await RoomModel.findByIdAndUpdate(id, { $set: mongoRow }, { upsert: true });
+        await RoomModel.findOneAndUpdate(buildRoomQuery(id), { $set: mongoRow }, { upsert: true });
       }
     } catch (err) {
       console.warn(`[saveRoom] Failed to persist room ${id} to MongoDB:`, err);

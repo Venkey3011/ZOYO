@@ -363,14 +363,13 @@ export default function App() {
     gamePrizePool?: number,
     roomImage?: string
   ) => {
-    const backgroundUrl =
-      theme === 'neon'
-        ? 'linear-gradient(135deg, #1e1b4b 0%, #311042 100%)'
-        : theme === 'pink'
-        ? 'linear-gradient(135deg, #471825 0%, #1c0911 100%)'
-        : theme === 'royal'
-        ? 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)'
-        : 'linear-gradient(135deg, #090d16 0%, #121c33 100%)';
+    const themeWallpaperMap: Record<string, string> = {
+      neon: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=1200&auto=format&fit=crop&q=80',
+      pink: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=1200&auto=format&fit=crop&q=80',
+      royal: 'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=1200&auto=format&fit=crop&q=80',
+      cosmic: 'https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?w=1200&auto=format&fit=crop&q=80'
+    };
+    const backgroundUrl = themeWallpaperMap[theme] || 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=1200&auto=format&fit=crop&q=80';
 
     const roomData = {
       title,

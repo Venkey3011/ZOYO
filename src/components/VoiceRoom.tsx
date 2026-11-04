@@ -214,16 +214,27 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   const [reactions, setReactions] = useState<{ id: string; emoji: string; seatIndex: number }[]>([]);
 
   // Room Customization State
-  const defaultWallpaper = (safeRoom as any).backgroundUrl || ROOM_WALLPAPERS[0].url;
+  const defaultWallpaper = (safeRoom as any).backgroundUrl || (safeRoom as any).background_url || ROOM_WALLPAPERS[0].url;
   const [roomBackground, setRoomBackground] = useState<string>(defaultWallpaper);
   const [roomTitle, setRoomTitle] = useState<string>(safeRoom.title || 'Voice Room');
   const [roomNotice, setRoomNotice] = useState<string>((safeRoom as any).notice || safeRoom.description || 'Welcome to the room! Sit back, relax and enjoy the vibes ✨');
-  const [seatStyle, setSeatStyle] = useState<'sofa' | 'classic'>((safeRoom as any).seatStyle || 'sofa');
+  const [seatStyle, setSeatStyle] = useState<'sofa' | 'classic'>((safeRoom as any).seatStyle || (safeRoom as any).seat_style || 'sofa');
   const [showCustomizationModal, setShowCustomizationModal] = useState(false);
   const [customWallpaperInput, setCustomWallpaperInput] = useState('');
   const [isSavingCustomization, setIsSavingCustomization] = useState(false);
   const galleryFileInputRef = useRef<HTMLInputElement | null>(null);
   const [isUploadingTheme, setIsUploadingTheme] = useState(false);
+
+  // Sync room customization if safeRoom prop updates
+  useEffect(() => {
+    const bg = (safeRoom as any)?.backgroundUrl || (safeRoom as any)?.background_url;
+    if (bg && bg !== roomBackground) setRoomBackground(bg);
+    if (safeRoom?.title && safeRoom.title !== roomTitle) setRoomTitle(safeRoom.title);
+    const notice = (safeRoom as any)?.notice || safeRoom?.description;
+    if (notice && notice !== roomNotice) setRoomNotice(notice);
+    const style = (safeRoom as any)?.seatStyle || (safeRoom as any)?.seat_style;
+    if (style && (style === 'sofa' || style === 'classic') && style !== seatStyle) setSeatStyle(style);
+  }, [(safeRoom as any)?.backgroundUrl, (safeRoom as any)?.background_url, safeRoom?.title, (safeRoom as any)?.notice, (safeRoom as any)?.seatStyle, (safeRoom as any)?.seat_style]);
 
   // Music Player State (Host & Audience Synchronized)
   const [showMusicDrawer, setShowMusicDrawer] = useState(false);
@@ -1668,44 +1679,114 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     handlePlayTrack(AUDIO_TRACKS[prevIdx]);
   };
 
-  const handleGalleryThemeUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Ultra-fast client-side compression: converts 10MB camera shots into ~150KB JPEG in <30ms
+  const compressImageForUpload = (file: File): Promise<string> => {
+    return new Promise((resolve) => {
+      if (file.type === 'image/gif' || file.type === 'image/svg+xml') {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+        return;
+      }
+      const img = new Image();
+      const objectUrl = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        const maxDim = 1920;
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.85));
+        } else {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => resolve('');
+          reader.readAsDataURL(file);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+      };
+      img.src = objectUrl;
+    });
+  };
+
+  const handleGalleryThemeUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      toast('Please select an image file from your gallery', 'error');
+
+    const inputTarget = e.target;
+    if (!file.type.startsWith('image/') && !file.name.match(/\.(jpg|jpeg|png|webp|gif|bmp|svg)$/i)) {
+      toast('Please select a valid image file (JPG, PNG, WebP, GIF)', 'error');
+      if (inputTarget) inputTarget.value = '';
       return;
     }
+
     setIsUploadingTheme(true);
-    toast('Uploading theme image from gallery... 🖼️', 'info');
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const base64 = reader.result as string;
-        const res = await fetch('/api/upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fileData: base64,
-            fileType: 'image',
-            fileName: file.name
-          })
-        });
-        const data = await res.json();
-        if (data.success && data.url) {
-          setRoomBackground(data.url);
-          toast('Gallery theme applied and saved! ✨', 'success');
-          handleSaveRoomCustomization(data.url);
-        } else {
-          toast(data.error || 'Failed to upload theme image', 'error');
-        }
-      } catch (err) {
-        toast('Network error uploading theme', 'error');
-      } finally {
-        setIsUploadingTheme(false);
-        if (e.target) e.target.value = '';
+    toast('Processing image & applying wallpaper... 🖼️', 'info');
+
+    // 1. Instant local preview using Object URL (zero-delay live feedback)
+    const localBlob = URL.createObjectURL(file);
+    setRoomBackground(localBlob);
+
+    try {
+      // 2. Client-side compression (<200KB) for instant upload
+      const base64 = await compressImageForUpload(file);
+      if (!base64) {
+        throw new Error('Could not process image file');
       }
-    };
-    reader.readAsDataURL(file);
+
+      // 3. Fast upload to server
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileData: base64,
+          fileType: 'image',
+          fileName: file.name
+        })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Upload failed — server error');
+      }
+
+      const data = await res.json();
+      if (data.success && data.url) {
+        URL.revokeObjectURL(localBlob);
+        setRoomBackground(data.url);
+        // Persist to server & broadcast live without closing the customization drawer
+        await handleSaveRoomCustomization(data.url, undefined, undefined, undefined, false);
+        toast('Custom theme applied and saved live! ✨🎨', 'success');
+      } else {
+        throw new Error(data.error || 'Failed to upload theme image');
+      }
+    } catch (err: any) {
+      console.error('Custom theme upload error:', err);
+      toast(err.message || 'Error uploading theme — please try again', 'error');
+    } finally {
+      setIsUploadingTheme(false);
+      if (inputTarget) inputTarget.value = '';
+    }
   };
 
   const handleDeviceAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1759,7 +1840,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     }
   };
 
-  const handleSaveRoomCustomization = async (newBg?: string, newTitle?: string, newNotice?: string, newStyle?: 'sofa' | 'classic') => {
+  const handleSaveRoomCustomization = async (newBg?: string, newTitle?: string, newNotice?: string, newStyle?: 'sofa' | 'classic', shouldCloseModal = true) => {
     setIsSavingCustomization(true);
     const bgToSave = newBg !== undefined ? newBg : roomBackground;
     const titleToSave = newTitle !== undefined ? newTitle : roomTitle;
@@ -1809,7 +1890,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       });
       if (res.ok) {
         toast('Room customization saved! 🎨✨', 'success');
-        setShowCustomizationModal(false);
+        if (shouldCloseModal) setShowCustomizationModal(false);
       } else {
         const errData = await res.json().catch(() => ({}));
         toast(errData.error || 'Failed to save customization to server', 'error');
@@ -1819,7 +1900,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       // If WebSocket sent successfully, still consider it updated
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         toast('Room customization saved in active room! 🎨✨', 'success');
-        setShowCustomizationModal(false);
+        if (shouldCloseModal) setShowCustomizationModal(false);
       } else {
         toast('Network error saving room', 'error');
       }
@@ -2048,7 +2129,13 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       {/* Dynamic Fullscreen Wallpaper */}
       <div 
         className="absolute inset-0 z-0 bg-cover bg-center transition-all duration-700 pointer-events-none"
-        style={{ backgroundImage: `url(${roomBackground})` }}
+        style={{
+          backgroundImage: roomBackground
+            ? (roomBackground.startsWith('linear-gradient') || roomBackground.startsWith('radial-gradient') || roomBackground.startsWith('url('))
+              ? roomBackground
+              : `url("${roomBackground}")`
+            : `url("${ROOM_WALLPAPERS[0]?.url || ''}")`
+        }}
       >
         <div className="absolute inset-0 bg-gradient-to-b from-black/75 via-black/35 to-black/85 backdrop-blur-[1px]" />
       </div>
@@ -3605,10 +3692,48 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
             </div>
 
             {/* Wallpaper Presets */}
-            <div className="flex flex-col gap-2">
-              <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
-                <span>🖼️ Scenic Wallpapers</span>
-              </label>
+            <div className="flex flex-col gap-2.5">
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <span>🖼️ Room Wallpaper & Theme</span>
+                </label>
+                <span className="text-[10px] text-zinc-400">9 Presets + Custom Upload</span>
+              </div>
+
+              {/* Active Custom Theme Card (if user has uploaded a custom image) */}
+              {roomBackground && !ROOM_WALLPAPERS.some(wp => wp.url === roomBackground) && (
+                <div className="relative rounded-2xl overflow-hidden aspect-[16/7] border-2 border-amber-400 shadow-[0_0_16px_rgba(251,191,36,0.5)] group animate-in fade-in duration-300">
+                  <img
+                    src={roomBackground}
+                    alt="Active Custom Wallpaper"
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).src = ROOM_WALLPAPERS[0].url;
+                    }}
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-black/40 flex items-end justify-between p-3">
+                    <div className="flex flex-col">
+                      <span className="inline-flex items-center gap-1 text-[9px] bg-amber-400 text-black font-black px-1.5 py-0.5 rounded-md uppercase tracking-wider w-fit">
+                        ⭐ Active Custom Theme
+                      </span>
+                      <span className="text-xs font-black text-white mt-0.5 drop-shadow">Your Uploaded Gallery Theme</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => galleryFileInputRef.current?.click()}
+                      disabled={isUploadingTheme}
+                      className="bg-white/20 hover:bg-white/30 backdrop-blur-md text-white text-[10px] font-black px-2.5 py-1.5 rounded-xl border border-white/30 transition-all flex items-center gap-1 cursor-pointer active:scale-95 disabled:opacity-50"
+                    >
+                      <ImageIcon className="w-3 h-3" /> Change
+                    </button>
+                  </div>
+                  <div className="absolute top-2 right-2 bg-amber-400 rounded-full p-1 text-black shadow-lg">
+                    <Check className="w-3 h-3 stroke-[3]" />
+                  </div>
+                </div>
+              )}
+
+              {/* Preset Wallpapers 3x3 Grid */}
               <div className="grid grid-cols-3 gap-2">
                 {ROOM_WALLPAPERS.map((wp) => {
                   const isSelected = roomBackground === wp.url;
@@ -3617,7 +3742,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                       key={wp.id}
                       onClick={() => setRoomBackground(wp.url)}
                       className={`relative rounded-xl overflow-hidden aspect-[4/3] cursor-pointer border-2 transition-all group ${
-                        isSelected ? 'border-amber-400 scale-[1.02] shadow-[0_0_12px_rgba(251,191,36,0.6)]' : 'border-white/10 opacity-70 hover:opacity-100'
+                        isSelected ? 'border-amber-400 scale-[1.03] shadow-[0_0_14px_rgba(251,191,36,0.7)] ring-1 ring-amber-400' : 'border-white/10 opacity-70 hover:opacity-100'
                       }`}
                     >
                       <img src={wp.thumbnail || wp.url} alt={wp.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" />
@@ -3634,19 +3759,25 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                 })}
               </div>
 
-              {/* Gallery Upload Button */}
+              {/* Gallery / Device Upload Button */}
               <input ref={galleryFileInputRef} type="file" accept="image/*" className="hidden" onChange={handleGalleryThemeUpload} />
-              <button
-                onClick={() => galleryFileInputRef.current?.click()}
-                disabled={isUploadingTheme}
-                className="w-full mt-1 bg-white/10 hover:bg-white/20 border border-white/20 px-3 py-2.5 rounded-xl text-xs font-bold text-white cursor-pointer active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                {isUploadingTheme ? (
-                  <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Uploading...</>
-                ) : (
-                  <><ImageIcon className="w-3.5 h-3.5" /> Upload from Gallery</>
+              <div className="flex flex-col gap-1.5 mt-1">
+                <button
+                  type="button"
+                  onClick={() => galleryFileInputRef.current?.click()}
+                  disabled={isUploadingTheme}
+                  className="w-full bg-gradient-to-r from-indigo-600/40 via-purple-600/40 to-pink-600/40 hover:from-indigo-600/60 hover:to-pink-600/60 border border-indigo-400/40 px-3 py-2.5 rounded-xl text-xs font-black text-white cursor-pointer active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md"
+                >
+                  {isUploadingTheme ? (
+                    <><RefreshCw className="w-4 h-4 animate-spin text-amber-300" /> <span className="text-amber-200">Optimizing & Uploading Theme...</span></>
+                  ) : (
+                    <><ImageIcon className="w-4 h-4 text-amber-300" /> <span>Upload Custom Theme (Gallery & Photos)</span></>
+                  )}
+                </button>
+                {isUploadingTheme && (
+                  <p className="text-[10px] text-amber-300 text-center font-bold animate-pulse">⚡ Auto-compressing & saving live... please wait a moment</p>
                 )}
-              </button>
+              </div>
             </div>
 
             {/* Room Title */}

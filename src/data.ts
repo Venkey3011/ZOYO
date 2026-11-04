@@ -63,38 +63,66 @@ export const AUDIO_TRACKS = [
 export const ROOM_WALLPAPERS = [
   {
     id: 'wp_mountain',
-    name: 'Alpine Highway & Peak',
+    name: 'Alpine Highway',
     category: 'Scenic',
     url: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=1200&auto=format&fit=crop&q=80',
     thumbnail: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=200&auto=format&fit=crop&q=80'
   },
   {
     id: 'wp_neon',
-    name: 'Cyber Neon Metropolis',
+    name: 'Cyber Neon',
     category: 'Cyber',
     url: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=1200&auto=format&fit=crop&q=80',
     thumbnail: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=200&auto=format&fit=crop&q=80'
   },
   {
     id: 'wp_galaxy',
-    name: 'Cosmic Starlight Realm',
+    name: 'Cosmic Starlight',
     category: 'Space',
     url: 'https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?w=1200&auto=format&fit=crop&q=80',
     thumbnail: 'https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?w=200&auto=format&fit=crop&q=80'
   },
   {
     id: 'wp_sunset',
-    name: 'Golden Sunset Coast',
+    name: 'Golden Sunset',
     category: 'Nature',
     url: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=1200&auto=format&fit=crop&q=80',
     thumbnail: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=200&auto=format&fit=crop&q=80'
   },
   {
     id: 'wp_luxury',
-    name: 'Imperial Golden Palace',
+    name: 'Golden Palace',
     category: 'Royal',
     url: 'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=1200&auto=format&fit=crop&q=80',
     thumbnail: 'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=200&auto=format&fit=crop&q=80'
+  },
+  {
+    id: 'wp_forest',
+    name: 'Mystic Forest',
+    category: 'Nature',
+    url: 'https://images.unsplash.com/photo-1448375240586-882707db888b?w=1200&auto=format&fit=crop&q=80',
+    thumbnail: 'https://images.unsplash.com/photo-1448375240586-882707db888b?w=200&auto=format&fit=crop&q=80'
+  },
+  {
+    id: 'wp_aurora',
+    name: 'Northern Lights',
+    category: 'Space',
+    url: 'https://images.unsplash.com/photo-1531366936337-7c912a4589a7?w=1200&auto=format&fit=crop&q=80',
+    thumbnail: 'https://images.unsplash.com/photo-1531366936337-7c912a4589a7?w=200&auto=format&fit=crop&q=80'
+  },
+  {
+    id: 'wp_city',
+    name: 'City Skyline',
+    category: 'Urban',
+    url: 'https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?w=1200&auto=format&fit=crop&q=80',
+    thumbnail: 'https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?w=200&auto=format&fit=crop&q=80'
+  },
+  {
+    id: 'wp_desert',
+    name: 'Desert Dunes',
+    category: 'Scenic',
+    url: 'https://images.unsplash.com/photo-1509316785289-025f5b846b35?w=1200&auto=format&fit=crop&q=80',
+    thumbnail: 'https://images.unsplash.com/photo-1509316785289-025f5b846b35?w=200&auto=format&fit=crop&q=80'
   }
 ];
 

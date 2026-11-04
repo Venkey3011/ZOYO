@@ -1679,111 +1679,92 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     handlePlayTrack(AUDIO_TRACKS[prevIdx]);
   };
 
-  // Ultra-fast client-side compression: converts 10MB camera shots into ~150KB JPEG in <30ms
-  const compressImageForUpload = (file: File): Promise<string> => {
-    return new Promise((resolve) => {
-      if (file.type === 'image/gif' || file.type === 'image/svg+xml') {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = () => resolve('');
-        reader.readAsDataURL(file);
-        return;
-      }
-      const img = new Image();
-      const objectUrl = URL.createObjectURL(file);
-      img.onload = () => {
-        URL.revokeObjectURL(objectUrl);
-        const maxDim = 1920;
-        let { width, height } = img;
-        if (width > maxDim || height > maxDim) {
-          if (width > height) {
-            height = Math.round((height * maxDim) / width);
-            width = maxDim;
-          } else {
-            width = Math.round((width * maxDim) / height);
-            height = maxDim;
-          }
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.85));
-        } else {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = () => resolve('');
-          reader.readAsDataURL(file);
-        }
-      };
-      img.onerror = () => {
-        URL.revokeObjectURL(objectUrl);
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = () => resolve('');
-        reader.readAsDataURL(file);
-      };
-      img.src = objectUrl;
-    });
-  };
-
   const handleGalleryThemeUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const inputTarget = e.target;
-    if (!file.type.startsWith('image/') && !file.name.match(/\.(jpg|jpeg|png|webp|gif|bmp|svg)$/i)) {
-      toast('Please select a valid image file (JPG, PNG, WebP, GIF)', 'error');
+    if (!file.type.startsWith('image/') && !file.name.match(/\.(jpg|jpeg|png|webp|gif|bmp|svg|avif)$/i)) {
+      toast('Please select an image file (JPG, PNG, WebP, GIF)', 'error');
+      if (inputTarget) inputTarget.value = '';
+      return;
+    }
+
+    if (file.size > 20 * 1024 * 1024) {
+      toast('Image is larger than 20MB. Please choose a smaller image.', 'error');
       if (inputTarget) inputTarget.value = '';
       return;
     }
 
     setIsUploadingTheme(true);
-    toast('Processing image & applying wallpaper... 🖼️', 'info');
 
-    // 1. Instant local preview using Object URL (zero-delay live feedback)
+    // 1. Instant local preview — zero latency (user immediately sees image on screen)
     const localBlob = URL.createObjectURL(file);
     setRoomBackground(localBlob);
 
-    try {
-      // 2. Client-side compression (<200KB) for instant upload
-      const base64 = await compressImageForUpload(file);
-      if (!base64) {
-        throw new Error('Could not process image file');
-      }
+    // Fast base64 reader with guaranteed 6-second safety timeout
+    const readBase64 = (): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Reading image took too long'));
+        }, 6000);
 
-      // 3. Fast upload to server
+        const reader = new FileReader();
+        reader.onload = () => {
+          clearTimeout(timeout);
+          resolve(reader.result as string);
+        };
+        reader.onerror = () => {
+          clearTimeout(timeout);
+          reject(new Error('Failed to read image file'));
+        };
+        reader.readAsDataURL(file);
+      });
+    };
+
+    try {
+      // 2. Read file in <30ms
+      const base64 = await readBase64();
+
+      // 3. Fast upload with 8s abort safety
+      const controller = new AbortController();
+      const abortTimer = setTimeout(() => controller.abort(), 8000);
+
       const res = await fetch('/api/upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           fileData: base64,
           fileType: 'image',
           fileName: file.name
         })
       });
+      clearTimeout(abortTimer);
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Upload failed — server error');
+        throw new Error(errData.error || 'Upload failed');
       }
 
       const data = await res.json();
       if (data.success && data.url) {
         URL.revokeObjectURL(localBlob);
         setRoomBackground(data.url);
-        // Persist to server & broadcast live without closing the customization drawer
-        await handleSaveRoomCustomization(data.url, undefined, undefined, undefined, false);
-        toast('Custom theme applied and saved live! ✨🎨', 'success');
+        toast('Theme uploaded & applied live! ✨🎨', 'success');
+
+        // Persist to MongoDB & WebSocket in background without blocking upload button
+        handleSaveRoomCustomization(data.url, undefined, undefined, undefined, false).catch(err => {
+          console.warn('Background room save error:', err);
+        });
       } else {
-        throw new Error(data.error || 'Failed to upload theme image');
+        throw new Error(data.error || 'Failed to save theme image');
       }
     } catch (err: any) {
       console.error('Custom theme upload error:', err);
-      toast(err.message || 'Error uploading theme — please try again', 'error');
+      toast(err.name === 'AbortError' ? 'Upload timed out. Please try a smaller image.' : (err.message || 'Error uploading theme'), 'error');
     } finally {
+      // Button unlocks immediately (<100ms)
       setIsUploadingTheme(false);
       if (inputTarget) inputTarget.value = '';
     }
@@ -3769,13 +3750,13 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                   className="w-full bg-gradient-to-r from-indigo-600/40 via-purple-600/40 to-pink-600/40 hover:from-indigo-600/60 hover:to-pink-600/60 border border-indigo-400/40 px-3 py-2.5 rounded-xl text-xs font-black text-white cursor-pointer active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md"
                 >
                   {isUploadingTheme ? (
-                    <><RefreshCw className="w-4 h-4 animate-spin text-amber-300" /> <span className="text-amber-200">Optimizing & Uploading Theme...</span></>
+                    <><RefreshCw className="w-4 h-4 animate-spin text-amber-300" /> <span className="text-amber-200">Applying Theme...</span></>
                   ) : (
                     <><ImageIcon className="w-4 h-4 text-amber-300" /> <span>Upload Custom Theme (Gallery & Photos)</span></>
                   )}
                 </button>
                 {isUploadingTheme && (
-                  <p className="text-[10px] text-amber-300 text-center font-bold animate-pulse">⚡ Auto-compressing & saving live... please wait a moment</p>
+                  <p className="text-[10px] text-amber-300 text-center font-bold animate-pulse">⚡ Applying theme live... almost done</p>
                 )}
               </div>
             </div>

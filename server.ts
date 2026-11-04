@@ -25,7 +25,7 @@ app.use("/uploads", express.static(UPLOADS_DIR));
 const userLastReadMap = new Map<string, number>();
 
 // Dedicated upload endpoint for user gallery images and device audio files
-app.post("/api/upload", (req: express.Request, res: express.Response) => {
+app.post("/api/upload", async (req: express.Request, res: express.Response) => {
   try {
     const { fileData, fileType, fileName } = req.body;
     if (!fileData || typeof fileData !== 'string') {
@@ -55,7 +55,7 @@ app.post("/api/upload", (req: express.Request, res: express.Response) => {
     const savedFileName = `${fileType}_${Date.now()}_${cleanBaseName}.${ext}`;
     const filePath = path.join(UPLOADS_DIR, savedFileName);
 
-    fs.writeFileSync(filePath, Buffer.from(base64Content, 'base64'));
+    await fs.promises.writeFile(filePath, Buffer.from(base64Content, 'base64'));
 
     res.json({
       success: true,
@@ -3632,6 +3632,14 @@ async function startServer() {
             roomClients.set(roomId, new Set());
           }
 
+          // Clean up any stale client with same socket or same userId
+          const existingSet = roomClients.get(roomId)!;
+          for (const existing of existingSet) {
+            if (existing.ws === ws || (existing.userId === String(userId) && existing.ws.readyState !== WebSocket.OPEN)) {
+              existingSet.delete(existing);
+            }
+          }
+
           clientInfo = {
             ws,
             userId: String(userId),
@@ -3641,8 +3649,8 @@ async function startServer() {
             level: payload?.level
           };
 
-          roomClients.get(roomId)!.add(clientInfo);
-          console.log(`🔌 [WS] User ${userName} (${userId}) joined room ${roomId}. Room clients: ${roomClients.get(roomId)!.size}`);
+          existingSet.add(clientInfo);
+          console.log(`🔌 [WS] User ${userName} (${userId}) joined room ${roomId}. Room clients: ${existingSet.size}`);
 
           // Get latest room data
           const room = await getRoom(roomId);

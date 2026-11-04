@@ -26,50 +26,64 @@
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
     <script>
-      // Register Service Worker for Instant Updates & Mobile Installation
+      // Service Worker for Instant Updates & Mobile Installation (Production only)
       if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
-            .then((registration) => {
-              console.log('✅ [PWA] Service Worker registered:', registration.scope);
-
-              // Check for updates on interval and whenever page gains focus
-              setInterval(() => {
-                registration.update().catch(() => {});
-              }, 60 * 1000); // Check every 60s
-
-              document.addEventListener('visibilitychange', () => {
-                if (document.visibilityState === 'visible') {
-                  registration.update().catch(() => {});
-                }
-              });
-
-              // When an update is found
-              registration.onupdatefound = () => {
-                const installingWorker = registration.installing;
-                if (!installingWorker) return;
-                installingWorker.onstatechange = () => {
-                  if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                    console.log('🚀 [PWA] New update installed! Dispatching event...');
-                    window.dispatchEvent(new CustomEvent('zoyo-update-available'));
-                  }
-                };
-              };
-            })
-            .catch((err) => {
-              console.warn('[PWA] Service Worker registration failed:', err);
-            });
-
-          // Listen for controlling service worker change to reload seamlessly
-          let refreshing = false;
-          navigator.serviceWorker.addEventListener('controllerchange', () => {
-            if (!refreshing) {
-              refreshing = true;
-              console.log('🔄 [PWA] Reloading with new version...');
-              window.location.reload();
+        if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+          // In development on localhost, unregister existing service worker to prevent chunk cache corruption
+          navigator.serviceWorker.getRegistrations().then((registrations) => {
+            for (const registration of registrations) {
+              registration.unregister();
             }
           });
-        });
+          if ('caches' in window) {
+            caches.keys().then((names) => {
+              for (const name of names) caches.delete(name);
+            });
+          }
+        } else {
+          window.addEventListener('load', () => {
+            navigator.serviceWorker.register('/sw.js')
+              .then((registration) => {
+                console.log('✅ [PWA] Service Worker registered:', registration.scope);
+
+                // Check for updates on interval and whenever page gains focus
+                setInterval(() => {
+                  registration.update().catch(() => {});
+                }, 60 * 1000); // Check every 60s
+
+                document.addEventListener('visibilitychange', () => {
+                  if (document.visibilityState === 'visible') {
+                    registration.update().catch(() => {});
+                  }
+                });
+
+                // When an update is found
+                registration.onupdatefound = () => {
+                  const installingWorker = registration.installing;
+                  if (!installingWorker) return;
+                  installingWorker.onstatechange = () => {
+                    if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                      console.log('🚀 [PWA] New update installed! Dispatching event...');
+                      window.dispatchEvent(new CustomEvent('zoyo-update-available'));
+                    }
+                  };
+                };
+              })
+              .catch((err) => {
+                console.warn('[PWA] Service Worker registration failed:', err);
+              });
+
+            // Listen for controlling service worker change to reload seamlessly
+            let refreshing = false;
+            navigator.serviceWorker.addEventListener('controllerchange', () => {
+              if (!refreshing) {
+                refreshing = true;
+                console.log('🔄 [PWA] Reloading with new version...');
+                window.location.reload();
+              }
+            });
+          });
+        }
       }
     </script>
   </body>

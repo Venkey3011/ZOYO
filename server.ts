@@ -3828,14 +3828,19 @@ async function startServer() {
     });
   });
 
-  if (process.env.NODE_ENV !== "production") {
+  const distPath = path.join(process.cwd(), 'dist');
+  const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
+  const useViteDev = (process.env.NODE_ENV !== "production" && process.env.SERVE_VITE === "true") || !hasDist;
+
+  if (useViteDev) {
+    console.log("⚡ Starting Vite dev middleware...");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    console.log("🚀 Serving optimized production bundle from /dist...");
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));

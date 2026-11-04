@@ -16,6 +16,9 @@ export default defineConfig(() => {
       outDir: path.resolve(__dirname, 'dist'),
       emptyOutDir: true,
     },
+    optimizeDeps: {
+      include: ['react', 'react-dom', 'lucide-react', 'motion', 'livekit-client'],
+    },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify - file watching is disabled to prevent flickering during agent edits.

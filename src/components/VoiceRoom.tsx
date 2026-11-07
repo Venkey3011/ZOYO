@@ -774,7 +774,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
     // Notify backend
     try {
-      await fetch(`/api/rooms/${roomId}/seat/${seatIndex}`, {
+      await fetch(`/api/rooms/${encodeURIComponent(roomId)}/seat/${seatIndex}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1244,30 +1244,29 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     // Start microphone in parallel so audio doesn't block UI
     enableMicrophone().catch(err => console.warn('Mic enable warn:', err));
 
-    // Send WebSocket notification immediately
+    // Send WebSocket notification immediately (<1ms)
+    sendWs('seat_action', { seatIndex: index, action: 'sit', user: optimisticUser });
     sendWs('seat_status', { seatIndex: index, isTalking: false, isMuted: false });
 
     try {
       let res: Response | null = null;
       try {
-        res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+        res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/seat/${index}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user: optimisticUser, action: 'sit' })
+          body: JSON.stringify({ user: optimisticUser, action: 'sit' }),
+          signal: controller.signal
         });
+        clearTimeout(timeoutId);
       } catch (networkErr) {
-        // Transient network retry after short pause
-        await new Promise(r => setTimeout(r, 600));
-        res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user: optimisticUser, action: 'sit' })
-        });
+        console.warn('HTTP seat sync network notice, falling back to WS:', networkErr);
       }
 
       const data = await res?.json().catch(() => null);
 
-      if (!res?.ok || !data?.success) {
+      if (res && (!res.ok || !data?.success)) {
         const errorMsg = data?.error || `Server error (${res?.status || '500'})`;
         toast(`Could not sit in seat: ${errorMsg}`, 'error');
         setSeats(prevSeats);
@@ -1275,7 +1274,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         return;
       }
 
-      if (data.room?.seats && Array.isArray(data.room.seats)) {
+      if (data?.room?.seats && Array.isArray(data.room.seats)) {
         const rawSeats = data.room.seats;
         const sanitized = Array.from({ length: 9 }, (_, i) => {
           const s = rawSeats.find((item: any) => item && item.index === i) || rawSeats[i];
@@ -1288,13 +1287,17 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         });
         setSeats(sanitized);
         setMySeatIndex(index);
-        toast(`You are now seated on Mic Seat ${index}! 🎙️`, 'success');
       }
+      toast(`You are now seated on Mic Seat ${index}! 🎙️`, 'success');
     } catch (err: any) {
-      console.error('Error sitting in seat:', err);
-      setSeats(prevSeats);
-      setMySeatIndex(prevMySeat);
-      toast(`Could not connect to seat service: ${err?.message || 'Network reconnecting...'}`, 'error');
+      console.warn('Seat sitting note:', err);
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        toast(`Seated on Mic Seat ${index}! 🎙️`, 'success');
+      } else {
+        setSeats(prevSeats);
+        setMySeatIndex(prevMySeat);
+        toast(`Could not connect to seat service: ${err?.message || 'Network reconnecting...'}`, 'error');
+      }
     }
   };
 
@@ -1347,22 +1350,26 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     disableMicrophone();
     setIsMyMicMuted(true);
 
+    // Broadcast seat action over WebSocket instantly (<1ms)
+    sendWs('seat_action', { seatIndex: index, action: 'leave', user: leavingUser });
+    sendWs('seat_status', { seatIndex: index, isTalking: false, isMuted: false });
+
     // Call server to persist the vacancy and broadcast seats_updated to all clients
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
       let res: Response | null = null;
       try {
-        res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
+        res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/seat/${index}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'leave', user: leavingUser })
+          body: JSON.stringify({ action: 'leave', user: leavingUser }),
+          signal: controller.signal
         });
       } catch (netErr) {
-        await new Promise(r => setTimeout(r, 600));
-        res = await fetch(`/api/rooms/${roomId}/seat/${index}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'leave', user: leavingUser })
-        });
+        console.warn('HTTP leave seat network warning, WS sync active:', netErr);
+      } finally {
+        clearTimeout(timeoutId);
       }
       const data = await res?.json().catch(() => null);
 
@@ -1378,14 +1385,10 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           };
         });
         setSeats(sanitized);
-        toast(`You left Mic Seat ${index}`, 'info');
       }
     } catch (err) {
-      console.warn('Failed to persist leaving seat to server:', err);
+      console.warn('Failed to persist leaving seat via HTTP:', err);
     }
-
-    // Broadcast seat status update via WebSocket
-    sendWs('seat_status', { seatIndex: index, isTalking: false, isMuted: false });
 
     toast(`${leavingUser.name || 'You'} left Mic Seat ${index}`, 'info');
 

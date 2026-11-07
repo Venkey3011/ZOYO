@@ -561,11 +561,27 @@ async function connectToMongoDB() {
   try {
     console.log("⚡ Connecting to MongoDB Atlas as primary database...");
     mongoose.set('bufferCommands', false);
+
+    mongoose.connection.on('error', (err) => {
+      console.warn('⚠️ MongoDB connection warning:', err?.message || err);
+    });
+    mongoose.connection.on('disconnected', () => {
+      console.warn('⚠️ MongoDB socket disconnected — continuing from memory cache.');
+      isMongoConnected = false;
+    });
+    mongoose.connection.on('reconnected', () => {
+      console.log('🚀 MongoDB reconnected successfully!');
+      isMongoConnected = true;
+    });
+
     await mongoose.connect(MONGODB_URI, {
       serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 10000,
+      socketTimeoutMS: 15000,
+      connectTimeoutMS: 10000,
       maxPoolSize: 20,
-      minPoolSize: 2
+      minPoolSize: 2,
+      retryWrites: true,
+      retryReads: true
     } as any);
     isMongoConnected = true;
     console.log("🚀 MongoDB Atlas connected successfully as primary database!");
@@ -2032,15 +2048,33 @@ async function getRoom(id: string) {
   if (!id) return null;
   const cleanId = String(id).trim();
 
-  // 1. Check in-memory active rooms cache for instantaneous 0ms retrieval
+  // 1. Direct hit in activeRoomsCache (<0.01ms)
   if (activeRoomsCache.has(cleanId)) {
     return sanitizeRoom(activeRoomsCache.get(cleanId));
   }
 
-  // 2. Query MongoDB — robust multi-field query matching ObjectId, id, roomId, or title
-  if (isMongoConnected) {
+  // 2. Scan activeRoomsCache values for match on id, _id, roomId, or title (<0.05ms)
+  for (const r of activeRoomsCache.values()) {
+    if (r && (String(r.id) === cleanId || String(r._id) === cleanId || String(r.roomId) === cleanId || r.title === cleanId)) {
+      activeRoomsCache.set(cleanId, r);
+      return sanitizeRoom(r);
+    }
+  }
+
+  // 3. Check inMemoryRooms RAM store immediately (<0.1ms)
+  const memRoom = inMemoryRooms.find(r => r && (String(r.id) === cleanId || String(r.roomId) === cleanId || String((r as any)._id) === cleanId || r.title === cleanId));
+  if (memRoom) {
+    activeRoomsCache.set(cleanId, memRoom);
+    return sanitizeRoom(memRoom);
+  }
+
+  // 4. Query MongoDB Atlas with strict 2-second timeout guard so network issues never hang requests!
+  if (isMongoConnected && mongoose.connection.readyState === 1) {
     try {
-      const doc = await RoomModel.findOne(buildRoomQuery(cleanId)).lean();
+      const doc = await Promise.race([
+        RoomModel.findOne(buildRoomQuery(cleanId)).lean(),
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('MongoDB query timeout (2s)')), 2000))
+      ]);
       if (doc) {
         const room = mongoToRoom(doc);
         activeRoomsCache.set(cleanId, room);
@@ -2049,17 +2083,9 @@ async function getRoom(id: string) {
         if (room.roomId) activeRoomsCache.set(String(room.roomId), room);
         return sanitizeRoom(room);
       }
-    } catch (err) {
-      console.warn(`[getRoom] MongoDB query error for ${cleanId}:`, err);
+    } catch (err: any) {
+      console.warn(`[getRoom] MongoDB note for ${cleanId}:`, err?.message || err);
     }
-  }
-
-  // 3. Fallback to inMemoryRooms
-  const room = inMemoryRooms.find(r => r.id === cleanId || r.roomId === cleanId || (r as any)._id === cleanId || r.title === cleanId);
-  if (room) {
-    activeRoomsCache.set(cleanId, room);
-    if (room.id) activeRoomsCache.set(String(room.id), room);
-    return sanitizeRoom(room);
   }
 
   return null;
@@ -2079,9 +2105,11 @@ async function saveRoom(room: any) {
   const memIdx = inMemoryRooms.findIndex(r => r.id === id || r.roomId === id || (r as any)._id === id);
   if (memIdx !== -1) {
     inMemoryRooms[memIdx] = { ...room };
+  } else {
+    inMemoryRooms.push({ ...room });
   }
 
-  // 2. Debounced asynchronous persist to MongoDB
+  // 2. Debounced asynchronous persist to MongoDB with timeout guard
   const existingTimer = roomSaveDebounceTimers.get(id);
   if (existingTimer) {
     clearTimeout(existingTimer);
@@ -2090,12 +2118,15 @@ async function saveRoom(room: any) {
   const timer = setTimeout(async () => {
     roomSaveDebounceTimers.delete(id);
     try {
-      if (isMongoConnected) {
+      if (isMongoConnected && mongoose.connection.readyState === 1) {
         const mongoRow = roomToMongo(room);
-        await RoomModel.findOneAndUpdate(buildRoomQuery(id), { $set: mongoRow }, { upsert: true });
+        await Promise.race([
+          RoomModel.findOneAndUpdate(buildRoomQuery(id), { $set: mongoRow }, { upsert: true }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('MongoDB save timeout (2.5s)')), 2500))
+        ]);
       }
-    } catch (err) {
-      console.warn(`[saveRoom] Failed to persist room ${id} to MongoDB:`, err);
+    } catch (err: any) {
+      console.warn(`[saveRoom] Background persist note for ${id}:`, err?.message || err);
     }
   }, 200);
 
@@ -3715,6 +3746,60 @@ async function startServer() {
             audioData: payload?.audioData,
             seatIndex: payload?.seatIndex
           }, ws);
+        } else if (type === 'seat_action') {
+          // Instant seat sit / leave action over WebSocket (<1ms)
+          const { seatIndex, action, user } = payload || {};
+          const room = await getRoom(roomId);
+          if (room) {
+            const sIdx = parseInt(seatIndex);
+            if (!isNaN(sIdx) && sIdx >= 0 && sIdx <= 8) {
+              const rawSeats = Array.isArray(room.seats) ? room.seats : [];
+              room.seats = Array.from({ length: 9 }, (_, i) => {
+                const existing = rawSeats.find((s: any) => s && s.index === i) || rawSeats[i];
+                return {
+                  index: i,
+                  user: (i === 0 && !existing?.user) ? (room.host || null) : (existing?.user || null),
+                  isMuted: Boolean(existing?.isMuted),
+                  isTalking: Boolean(existing?.isTalking)
+                };
+              });
+
+              if (action === 'sit' && user) {
+                const newUserId = String(user._id || user.id || user.userId || '');
+                const safeUser = { ...user, id: newUserId, _id: newUserId, userId: newUserId };
+                // Clear any other guest seat occupied by this user
+                room.seats.forEach((s: any) => {
+                  if (!s || s.index === 0 || s.index === sIdx) return;
+                  if (s.user) {
+                    const sUid = String(s.user._id || s.user.id || s.user.userId || '');
+                    if ((newUserId && sUid && sUid === newUserId) || (user.name && s.user.name === user.name)) {
+                      s.user = null;
+                      s.isTalking = false;
+                      s.isMuted = false;
+                    }
+                  }
+                });
+                room.seats[sIdx] = { index: sIdx, user: safeUser, isMuted: false, isTalking: false };
+                addOnlineUserToRoom(room, safeUser);
+              } else if (action === 'leave' && sIdx > 0) {
+                room.seats[sIdx] = { index: sIdx, user: null, isMuted: false, isTalking: false };
+              }
+
+              if (room.seats[0] && room.host) room.seats[0].user = room.host;
+              room.onlineCount = Math.max(room.onlineUsers?.length || 1, room.seats.filter((s: any) => s && s.user).length);
+              await saveRoom(room);
+
+              const eventPayload = {
+                type: 'seats_updated',
+                seats: room.seats,
+                onlineCount: room.onlineCount
+              };
+              broadcastToRoom(roomId, eventPayload);
+              if (room.roomId && room.roomId !== roomId) {
+                broadcastToRoom(room.roomId, eventPayload);
+              }
+            }
+          }
         } else if (type === 'seat_status') {
           // Live microphone speech detection or mute toggle
           // Only persist mute changes to DB — isTalking fires many times/sec and must NOT hit DB

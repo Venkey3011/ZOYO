@@ -846,6 +846,14 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
     const connect = () => {
       if (!isMounted) return;
+
+      // Close any stale socket before opening a new one to prevent duplicate registrations
+      const existing = wsRef.current;
+      if (existing && existing.readyState !== WebSocket.CLOSED && existing.readyState !== WebSocket.CLOSING) {
+        existing.onclose = null; // prevent triggering reconnect from this close
+        existing.close();
+      }
+
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/ws`;
       console.log(`🔌 [WS] Connecting to ${wsUrl} for room ${roomId}`);
@@ -977,13 +985,39 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
             }
           } else if (data.type === 'user_kicked_from_seat') {
             if (data.seats && Array.isArray(data.seats)) {
-              setSeats(data.seats);
+              // Run same sanitization as seats_updated so the cleared slot renders properly
+              const rawSeats = data.seats;
+              const sanitized = Array.from({ length: 9 }, (_, i) => {
+                const s = rawSeats.find((item: any) => item && item.index === i) || rawSeats[i];
+                return {
+                  index: i,
+                  user: (i === 0 && !s?.user) ? safeRoom.host : (s?.user || null),
+                  isMuted: Boolean(s?.isMuted),
+                  isTalking: Boolean(s?.isTalking)
+                };
+              });
+              setSeats(sanitized);
+              // Update mySeatIndex for everyone — if our seat is now null we were displaced
+              const guestSeat = sanitized.slice(1).find((s: any) => s.user && (String(s.user._id || s.user.id) === currentUserId || s.user.name === currentUser.name));
+              const found = guestSeat || (isCurrentUserHost ? sanitized[0] : null);
+              if (!found && mySeatIndexRef.current !== null && mySeatIndexRef.current !== 0) {
+                disableMicrophone();
+                setMySeatIndex(null);
+              } else if (found) {
+                setMySeatIndex(found.index);
+              }
             }
-            if (String(data.kickedUserId) === currentUserId) {
+            const kickedId = String(data.kickedUserId);
+            if (kickedId === currentUserId) {
               disableMicrophone();
               setMySeatIndex(null);
               toast('You have been kicked from the seat by the host 👑🚫', 'error');
             } else {
+              // Close WebRTC for kicked user so their audio stops
+              const pc = peerConnectionsRef.current.get(kickedId);
+              if (pc) { try { pc.close(); } catch (e) {} peerConnectionsRef.current.delete(kickedId); }
+              const audio = remoteAudiosRef.current.get(kickedId);
+              if (audio) { try { audio.pause(); audio.remove(); } catch (e) {} remoteAudiosRef.current.delete(kickedId); }
               toast(`${data.kickedUserName || 'Guest'} was kicked from seat ${data.seatIndex} by ${data.kickedBy || 'Host'}`, 'info');
             }
           } else if (data.type === 'user_kicked_from_room') {
@@ -1113,6 +1147,11 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       ws.onclose = () => {
         console.log(`🔌 [WS] Disconnected from room ${roomId}`);
         if (isMounted) {
+          if (reconnectAttempts >= 10) {
+            console.warn('[WS] Max reconnect attempts reached. Please refresh the page.');
+            toast('Connection lost. Please refresh the page to reconnect. 🔄', 'error');
+            return;
+          }
           // Auto-reconnect with exponential backoff (max 8s)
           const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 8000);
           reconnectAttempts++;

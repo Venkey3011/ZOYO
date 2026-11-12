@@ -3663,11 +3663,16 @@ async function startServer() {
             roomClients.set(roomId, new Set());
           }
 
-          // Clean up any stale client with same socket or same userId
+          // Aggressively deduplicate: remove ALL prior registrations for this userId (or this exact socket)
+          // This prevents reconnect storms from accumulating N entries for the same user
           const existingSet = roomClients.get(roomId)!;
           for (const existing of existingSet) {
-            if (existing.ws === ws || (existing.userId === String(userId) && existing.ws.readyState !== WebSocket.OPEN)) {
+            if (existing.ws === ws || existing.userId === String(userId)) {
               existingSet.delete(existing);
+              // Close the stale socket if it's still open
+              if (existing.ws !== ws && existing.ws.readyState === WebSocket.OPEN) {
+                try { existing.ws.close(); } catch (e) {}
+              }
             }
           }
 

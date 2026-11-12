@@ -6,7 +6,8 @@ import {
   Trophy, Sparkles, X, Gift as GiftIcon, Flame, Play, Pause,
   CornerDownRight, RefreshCw, Smile, Zap, MessageSquare, Award, UserPlus, Trash, VolumeX, MessageSquareDashed,
   Share2, Copy, Eye, UserX, ShieldAlert, Palette, Music, Volume2, Disc, SkipForward, SkipBack, Sliders, Check, ExternalLink,
-  Upload, FileAudio, Image as ImageIcon, LogOut, UploadCloud
+  Upload, FileAudio, Image as ImageIcon, LogOut, UploadCloud,
+  Gamepad2, LayoutGrid, Sofa, MessageCircle, Package
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from './Toast';
@@ -182,7 +183,17 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   const [showUserProfileModal, setShowUserProfileModal] = useState(false);
   const [activeTrack, setActiveTrack] = useState<typeof AUDIO_TRACKS[0] | null>(null);
   const [isTrackPlaying, setIsTrackPlaying] = useState(false);
-  const [isMyMicMuted, setIsMyMicMuted] = useState(false);
+  const [isMyMicMuted, setIsMyMicMuted] = useState<boolean>(() => {
+    const s = initialSeats.find(seat => seat.user && (
+      String(seat.user._id || seat.user.id || (seat.user as any).userId || '') === currentUserId ||
+      (seat.user.name && seat.user.name === currentUser.name)
+    ));
+    return Boolean(s?.isMuted);
+  });
+  const isMyMicMutedRef = useRef<boolean>(isMyMicMuted);
+  useEffect(() => {
+    isMyMicMutedRef.current = isMyMicMuted;
+  }, [isMyMicMuted]);
 
   // Fetch dynamic catalog gifts published by Admin or Managers
   useEffect(() => {
@@ -229,6 +240,13 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   const galleryFileInputRef = useRef<HTMLInputElement | null>(null);
   const [isUploadingTheme, setIsUploadingTheme] = useState(false);
 
+  // Model Look UI state toggles
+  const [isChatInputOpen, setIsChatInputOpen] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showToolsMenu, setShowToolsMenu] = useState(false);
+  const [showGameHub, setShowGameHub] = useState(false);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
+
   // Sync room customization if safeRoom prop updates
   useEffect(() => {
     const bg = (safeRoom as any)?.backgroundUrl || (safeRoom as any)?.background_url;
@@ -253,8 +271,24 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
   // Intercept hardware / gesture back button to close any open modal or drawer in VoiceRoom
   useEffect(() => {
-    if (showGiftDrawer || showAudienceModal || showSeatModal || showUserProfileModal || showInvitePanel || showCustomizationModal || showMusicDrawer) {
+    if (showGiftDrawer || showAudienceModal || showSeatModal || showUserProfileModal || showInvitePanel || showCustomizationModal || showMusicDrawer || isChatInputOpen || showEmojiPicker || showToolsMenu || showGameHub) {
       return registerBackHandler(() => {
+        if (isChatInputOpen) {
+          setIsChatInputOpen(false);
+          return true;
+        }
+        if (showEmojiPicker) {
+          setShowEmojiPicker(false);
+          return true;
+        }
+        if (showToolsMenu) {
+          setShowToolsMenu(false);
+          return true;
+        }
+        if (showGameHub) {
+          setShowGameHub(false);
+          return true;
+        }
         if (showCustomizationModal) {
           setShowCustomizationModal(false);
           return true;
@@ -286,7 +320,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         return false;
       });
     }
-  }, [showGiftDrawer, showAudienceModal, showSeatModal, showUserProfileModal, showInvitePanel, showCustomizationModal, showMusicDrawer]);
+  }, [showGiftDrawer, showAudienceModal, showSeatModal, showUserProfileModal, showInvitePanel, showCustomizationModal, showMusicDrawer, isChatInputOpen, showEmojiPicker, showToolsMenu, showGameHub]);
 
   // Sound Synthesizer (AudioContext)
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -687,15 +721,21 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         }
 
         const currentSeat = mySeatIndexRef.current;
-        if (currentSeat !== null && !isMyMicMuted) {
+        if (currentSeat !== null && isMyMicMutedRef.current) {
+          if (isSpeakingRef.current) {
+            isSpeakingRef.current = false;
+            setSeats(prev => prev.map(s => s.index === currentSeat ? { ...s, isTalking: false } : s));
+            sendWs('seat_status', { seatIndex: currentSeat, isTalking: false });
+          }
+        } else if (currentSeat !== null && !isMyMicMutedRef.current) {
           if (level > 12 && !isSpeakingRef.current) {
             isSpeakingRef.current = true;
             setSeats(prev => prev.map(s => s.index === currentSeat ? { ...s, isTalking: true } : s));
-            sendWs('seat_status', { seatIndex: currentSeat, isTalking: true, isMuted: false });
+            sendWs('seat_status', { seatIndex: currentSeat, isTalking: true });
           } else if (level <= 12 && isSpeakingRef.current) {
             isSpeakingRef.current = false;
             setSeats(prev => prev.map(s => s.index === currentSeat ? { ...s, isTalking: false } : s));
-            sendWs('seat_status', { seatIndex: currentSeat, isTalking: false, isMuted: false });
+            sendWs('seat_status', { seatIndex: currentSeat, isTalking: false });
           }
         }
 
@@ -1061,6 +1101,34 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
               }
               return s;
             }));
+
+            // If the mute update targets current user's seat, sync audio tracks and state
+            if (seatIndex === mySeatIndexRef.current && isMuted !== undefined) {
+              setIsMyMicMuted(Boolean(isMuted));
+              isMyMicMutedRef.current = Boolean(isMuted);
+
+              const activeStream = micStreamRef.current || localStreamRef.current;
+              if (activeStream) {
+                activeStream.getAudioTracks().forEach(track => {
+                  track.enabled = !isMuted;
+                });
+              }
+              peerConnectionsRef.current.forEach(pc => {
+                pc.getSenders().forEach(sender => {
+                  if (sender.track && sender.track.kind === 'audio') {
+                    sender.track.enabled = !isMuted;
+                  }
+                });
+              });
+
+              if (isMuted) {
+                isSpeakingRef.current = false;
+                setMyVoiceLevel(0);
+                toast('Your microphone has been muted 🔇', 'info');
+              } else {
+                toast('Your microphone has been unmuted 🎙️', 'info');
+              }
+            }
           } else if (data.type === 'chat_message') {
             if (data.message) {
               setChatMessages(prev => {
@@ -1496,14 +1564,24 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       return;
     }
 
-    const newMuted = !isMyMicMuted;
+    const newMuted = !isMyMicMutedRef.current;
     setIsMyMicMuted(newMuted);
+    isMyMicMutedRef.current = newMuted;
 
-    if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach(track => {
+    const activeStream = micStreamRef.current || localStreamRef.current;
+    if (activeStream) {
+      activeStream.getAudioTracks().forEach(track => {
         track.enabled = !newMuted;
       });
     }
+
+    peerConnectionsRef.current.forEach(pc => {
+      pc.getSenders().forEach(sender => {
+        if (sender.track && sender.track.kind === 'audio') {
+          sender.track.enabled = !newMuted;
+        }
+      });
+    });
 
     if (mySeatIndex !== null) {
       setSeats(prev => prev.map(s => s.index === mySeatIndex ? { ...s, isMuted: newMuted, isTalking: false } : s));
@@ -1512,6 +1590,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
     if (newMuted) {
       isSpeakingRef.current = false;
+      setMyVoiceLevel(0);
       toast('Microphone muted 🔇', 'info');
     } else {
       toast('Microphone unmuted 🎙️', 'info');
@@ -2380,107 +2459,127 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         )}
       </AnimatePresence>
 
-      {/* Frosted Glass Room Header */}
+      {/* Modern Capsule Room Header matching exact screenshot model */}
       <div 
         id="voiceRoom_header" 
-        className="h-14 px-3 flex items-center justify-between border-b border-white/10 z-10 bg-black/40 backdrop-blur-md shrink-0 text-white"
-        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+        className="px-3 pt-2 pb-1.5 flex items-center justify-between z-20 shrink-0 text-white select-none"
+        style={{ paddingTop: 'max(8px, env(safe-area-inset-top, 8px))' }}
       >
-        <div className="flex items-center gap-2 min-w-0">
-          <button 
-            id="voiceRoom_backBtn"
-            onClick={onLeave}
-            className="text-white/80 hover:text-white p-1.5 rounded-full hover:bg-white/10 cursor-pointer transition-colors"
-          >
-            <ChevronLeft className="w-5 h-5" />
-          </button>
-          <div className="min-w-0">
-            <h2 className="text-xs font-black text-white truncate max-w-[130px] sm:max-w-[180px] flex items-center gap-1">
-              {(safeRoom as any).isPrivate && <span title="Private Room">🔒</span>}
-              <span className="truncate">{roomTitle}</span>
-            </h2>
-            <div className="flex items-center gap-1.5 mt-0.5">
-              <span className="text-[9px] text-amber-300 font-bold truncate max-w-[80px]">Host: {safeRoom.host.name}</span>
-              <span className="text-[8px] bg-white/20 text-white px-1.5 py-0.2 rounded font-black backdrop-blur-sm">Lvl {safeRoom.host.level}</span>
-              {(safeRoom as any).roomId && (
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(String((safeRoom as any).roomId));
-                    toast(`Room code #${(safeRoom as any).roomId} copied! 📋`, 'success');
-                  }}
-                  className="text-[8px] bg-amber-400/20 border border-amber-400/40 text-amber-300 px-1.5 py-0.2 rounded font-mono font-bold cursor-pointer hover:bg-amber-400/30"
-                  title="Click to copy Room Code"
-                >
-                  #{(safeRoom as any).roomId}
-                </button>
-              )}
+        {/* Left capsule: Level Badge + Title & Host + ID & Audience count */}
+        <div className="flex items-center gap-2 bg-black/40 backdrop-blur-md border border-white/15 rounded-full py-1 pl-1.5 pr-3 shadow-lg min-w-0 max-w-[210px] sm:max-w-[240px]">
+          <span className="bg-gradient-to-r from-amber-400 via-amber-500 to-yellow-500 text-zinc-950 font-black text-[9px] px-2 py-0.5 rounded-full shadow-sm shrink-0 uppercase tracking-tighter">
+            Lv.{safeRoom.host?.level || 1}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1">
+              {(safeRoom as any).isPrivate && <span className="text-[10px]">🔒</span>}
+              <h2 className="text-[11px] font-black text-white truncate leading-tight">
+                {roomTitle || safeRoom.host?.name || 'Voice Room'}
+              </h2>
+            </div>
+            <div className="flex items-center gap-2 text-[9px] text-white/70 leading-none mt-0.5">
+              <span 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const code = String((safeRoom as any).roomId || safeRoom.id || '');
+                  navigator.clipboard.writeText(code);
+                  toast(`ID ${code} copied! 📋`, 'success');
+                }}
+                className="cursor-pointer hover:text-amber-300 font-mono flex items-center gap-0.5"
+                title="Tap to copy Room ID"
+              >
+                ID: {(safeRoom as any).roomId || safeRoom.id}
+              </span>
+              <span 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowAudienceModal(true);
+                }}
+                className="cursor-pointer hover:text-white flex items-center gap-0.5"
+              >
+                👤 {uniqueParticipants.length}
+              </span>
             </div>
           </div>
         </div>
 
+        {/* Center / Right controls */}
         <div className="flex items-center gap-1.5 shrink-0">
-          {/* Host Customization Button */}
+          {/* Mood / Reaction quick launcher */}
+          <button
+            onClick={() => {
+              triggerFlyReaction('🥰', mySeatIndex !== null ? mySeatIndex : 0);
+              playSynthSound('tap');
+            }}
+            className="w-8 h-8 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center text-sm shadow cursor-pointer active:scale-90 transition-transform"
+            title="Express Mood"
+          >
+            🥰
+          </button>
+
+          {/* Gold Trophy Pill */}
+          <div 
+            onClick={() => setShowGiftDrawer(true)}
+            className="flex items-center gap-1 bg-gradient-to-r from-amber-500/80 to-yellow-500/80 backdrop-blur-md text-zinc-950 px-2.5 py-1 rounded-full text-[10px] font-black shadow-md cursor-pointer hover:opacity-95 active:scale-95 transition-all"
+            title="Room Popularity / Prize Pool"
+          >
+            <span>🏆</span>
+            <span>{(safeRoom as any).gamePrizePool ? `${((safeRoom as any).gamePrizePool / 1000).toFixed(2)}K` : '2.67M'}</span>
+          </div>
+
+          {/* Room Toolbox / Customize */}
           {isCurrentUserHost && (
             <button
               onClick={() => setShowCustomizationModal(true)}
-              className="flex items-center gap-1 text-[10px] bg-amber-500/25 hover:bg-amber-500/35 border border-amber-400/40 text-amber-300 font-black px-2 py-1 rounded-full shadow-sm cursor-pointer transition-all active:scale-95"
-              title="Customize Room Background, Title & Layout"
+              className="w-8 h-8 rounded-full bg-black/40 hover:bg-white/15 backdrop-blur-md border border-white/20 flex items-center justify-center text-white shadow cursor-pointer active:scale-90 transition-all"
+              title="Room Settings & Theme"
             >
-              <Palette className="w-3 h-3" />
-              <span>Theme</span>
+              <Palette className="w-3.5 h-3.5" />
             </button>
           )}
 
-          {/* Room Music Button */}
+          {/* Share Room Button */}
           <button
-            onClick={() => setShowMusicDrawer(true)}
-            className={`flex items-center gap-1 text-[10px] border px-2 py-1 rounded-full shadow-sm cursor-pointer transition-all active:scale-95 ${
-              isTrackPlaying
-                ? 'bg-rose-500/30 border-rose-400/60 text-rose-300 font-black animate-pulse'
-                : 'bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold'
-            }`}
-            title="Room Music Player"
+            onClick={() => {
+              const code = String((safeRoom as any).roomId || safeRoom.id || '');
+              navigator.clipboard.writeText(`${window.location.origin}/#room=${code}`);
+              toast('Room link copied to clipboard! 🔗', 'success');
+            }}
+            className="w-8 h-8 rounded-full bg-black/40 hover:bg-white/15 backdrop-blur-md border border-white/20 flex items-center justify-center text-white shadow cursor-pointer active:scale-90 transition-all"
+            title="Share Room"
           >
-            <Music className="w-3 h-3" />
-            <span>Music</span>
+            <Share2 className="w-3.5 h-3.5" />
           </button>
 
-          {/* Online Audience Count */}
-          <button
-            onClick={() => setShowAudienceModal(true)}
-            className="flex items-center gap-1 text-[10px] bg-white/10 hover:bg-white/20 border border-white/20 text-white font-black px-2 py-1 rounded-full shadow-sm cursor-pointer transition-colors"
-            title="View participants"
-          >
-            <Users className="w-3 h-3" />
-            <span>{uniqueParticipants.length}</span>
-          </button>
-
-          {/* Exit Room Button */}
+          {/* Exit / Close Room Button */}
           <button 
             id="voiceRoom_exitBtn"
             onClick={onLeave}
-            className="bg-rose-600 hover:bg-rose-700 text-white font-black text-[10px] px-2.5 py-1 rounded-full shadow-sm cursor-pointer active:scale-95 transition-all"
+            className="w-8 h-8 rounded-full bg-black/40 hover:bg-rose-600/80 backdrop-blur-md border border-white/20 flex items-center justify-center text-white/90 hover:text-white shadow cursor-pointer active:scale-90 transition-all"
+            title="Exit Room"
           >
-            Exit
+            <X className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* Room Announcement / Notice Banner */}
-      <div className="z-10 px-4 py-1.5 flex items-center justify-between bg-black/40 backdrop-blur-md border-b border-white/10 text-white text-[10px] shrink-0">
-        <div className="flex items-center gap-1.5 truncate flex-1 mr-2">
-          <span className="text-amber-400 text-xs">📢</span>
-          <span className="truncate font-semibold text-white/90">{roomNotice}</span>
+      {/* Floating Announcement Ticker (Glassmorphic) */}
+      {roomNotice && (
+        <div className="z-10 px-4 py-1 flex items-center justify-between text-white text-[10px] shrink-0">
+          <div className="flex items-center gap-1.5 truncate max-w-[85%] bg-black/30 backdrop-blur-md px-2.5 py-0.5 rounded-full border border-white/10">
+            <span className="text-amber-400 text-xs">📢</span>
+            <span className="truncate font-medium text-white/90">{roomNotice}</span>
+          </div>
+          {isCurrentUserHost && (
+            <button
+              onClick={() => setShowCustomizationModal(true)}
+              className="text-[9px] text-amber-300 hover:text-amber-200 font-bold ml-1 cursor-pointer"
+            >
+              Edit
+            </button>
+          )}
         </div>
-        {isCurrentUserHost && (
-          <button
-            onClick={() => setShowCustomizationModal(true)}
-            className="text-[9px] text-amber-300 hover:text-amber-200 underline font-black shrink-0 cursor-pointer"
-          >
-            Edit
-          </button>
-        )}
-      </div>
+      )}
 
       {/* Floating Vinyl Music Disc Widget */}
       {isTrackPlaying && activeTrack && (
@@ -2523,82 +2622,107 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       )}
 
       {/* Core Grid / Stage Area: Seats Panel */}
-      <div id="voiceRoom_seatsArea" className="flex-1 overflow-y-auto px-4 py-2 scrollbar-none flex flex-col gap-3.5 z-10 min-h-0 pb-20">
+      <div id="voiceRoom_seatsArea" className="flex-1 overflow-y-auto px-3 py-1 scrollbar-none flex flex-col gap-2 z-10 min-h-0 select-none pb-28">
         
-        {/* The Host Seat (Featured Top - Golden Throne) */}
-        {(() => {
-          const hostAvatar = (seats && seats[0] && seats[0].user?.avatar) || safeRoom.host?.avatar || PRESET_AVATARS[0];
-          const hostName = (seats && seats[0] && seats[0].user?.name) || safeRoom.host?.name || "Host";
-
-          return (
-            <div className="flex flex-col items-center shrink-0 mt-1">
-              <div className="relative">
-                {seats && seats[0] && seats[0].user && seats[0].isTalking && (
-                  <div className="absolute inset-0 rounded-full bg-amber-400/40 animate-ping border-2 border-amber-400/60 scale-125 pointer-events-none"></div>
-                )}
-
-                {/* Golden Crown badge above host */}
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-30 text-base drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] animate-bounce">
-                  👑
-                </div>
-
-                <div
-                  onClick={() => {
-                    setSelectedSeatIndex(0);
-                    const hostUser = seats?.[0]?.user || safeRoom.host;
-                    if (isCurrentUserHost) {
-                      setInspectedUser(currentUser);
-                      setShowUserProfileModal(true);
-                    } else if (hostUser) {
-                      setInspectedUser(hostUser);
-                      setShowUserProfileModal(true);
-                    }
-                  }}
-                  className="relative z-20 w-16 h-16 rounded-full overflow-hidden border-2 border-amber-400 cursor-pointer flex items-center justify-center bg-zinc-900 shadow-[0_0_15px_rgba(251,191,36,0.4)] hover:scale-105 transition-transform"
-                  title={`Host: ${hostName}`}
-                >
-                  <img
-                    src={hostAvatar}
-                    alt={hostName}
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).src = `https://api.dicebear.com/7.x/thumbs/svg?seed=${encodeURIComponent(hostName || 'Host')}`;
-                    }}
-                    className="w-full h-full object-cover"
-                  />
-                  {seats && seats[0] && (isCurrentUserHost && mySeatIndex === 0 ? isMyMicMuted : seats[0].isMuted) && (
-                    <div className="absolute bottom-0 right-0 bg-rose-500 rounded-full p-0.5 border border-white shadow">
-                      <MicOff className="w-2.5 h-2.5 text-white" />
-                    </div>
-                  )}
-                </div>
-
-                {reactions.filter(r => r.seatIndex === 0).map(reaction => (
-                  <motion.div
-                    key={reaction.id}
-                    initial={{ y: 0, opacity: 1, scale: 0.5 }}
-                    animate={{ y: -70, opacity: 0, scale: 1.5 }}
-                    transition={{ duration: 1.5 }}
-                    className="absolute inset-0 flex items-center justify-center text-2xl pointer-events-none z-30"
-                  >
-                    {reaction.emoji}
-                  </motion.div>
-                ))}
-              </div>
-
-              <div className="flex items-center gap-1.5 mt-1.5">
-                <span className="text-[9px] bg-gradient-to-r from-amber-500 to-yellow-400 text-zinc-950 font-black px-2 py-0.5 rounded-full uppercase tracking-wider shadow">
-                  👑 Host
-                </span>
-                <span className="text-[11px] font-black text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] truncate max-w-[100px]">
-                  {hostName}
-                </span>
+        {/* Upper Sub-Header: Treasure Chest card on left + Host Throne Seat 0 in center */}
+        <div className="relative flex items-center justify-center min-h-[90px] pt-1">
+          {/* Treasure chest progress card on left */}
+          <div 
+            onClick={() => setShowGiftDrawer(true)}
+            className="absolute left-1 top-2 flex items-center gap-1.5 bg-black/40 backdrop-blur-md border border-white/15 px-2 py-1.5 rounded-2xl cursor-pointer hover:bg-black/55 shadow-md active:scale-95 transition-all z-20"
+            title="Treasure Box: Tap to send gifts & unlock rewards!"
+          >
+            <div className="w-7 h-7 rounded-xl bg-gradient-to-tr from-amber-600 via-yellow-500 to-amber-400 flex items-center justify-center text-sm shadow shrink-0">
+              📦
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[8px] font-black text-amber-300 leading-tight">1.99K/2.00K</span>
+              <div className="w-14 h-1.5 bg-white/20 rounded-full overflow-hidden mt-0.5">
+                <div className="w-[95%] h-full bg-gradient-to-r from-amber-400 to-yellow-300 rounded-full" />
               </div>
             </div>
-          );
-        })()}
+          </div>
 
-        {/* 8 Guests Seats Grid (Sofa Lounge or Classic Mic) */}
-        <div className="grid grid-cols-4 gap-x-2.5 gap-y-3.5 px-3 py-3.5 bg-black/40 backdrop-blur-md border border-white/15 rounded-3xl shadow-2xl shrink-0">
+          {/* Center Host Throne Seat 0 (Floating directly on wallpaper) */}
+          {(() => {
+            const hostAvatar = (seats && seats[0] && seats[0].user?.avatar) || safeRoom.host?.avatar || PRESET_AVATARS[0];
+            const hostName = (seats && seats[0] && seats[0].user?.name) || safeRoom.host?.name || "Host";
+
+            return (
+              <div className="flex flex-col items-center shrink-0">
+                <div className="relative">
+                  {seats && seats[0] && seats[0].user && seats[0].isTalking && (
+                    <div className="absolute inset-0 rounded-full bg-amber-400/40 animate-ping border-2 border-amber-400/60 scale-125 pointer-events-none" />
+                  )}
+
+                  {/* Golden Crown badge above host */}
+                  <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 z-30 text-base drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] animate-bounce">
+                    👑
+                  </div>
+
+                  <div
+                    onClick={() => {
+                      setSelectedSeatIndex(0);
+                      const hostUser = seats?.[0]?.user || safeRoom.host;
+                      if (isCurrentUserHost) {
+                        setInspectedUser(currentUser);
+                        setShowUserProfileModal(true);
+                      } else if (hostUser) {
+                        setInspectedUser(hostUser);
+                        setShowUserProfileModal(true);
+                      }
+                    }}
+                    className="relative z-20 w-16 h-16 rounded-full overflow-hidden border-2 border-amber-400 cursor-pointer flex items-center justify-center bg-zinc-900 shadow-[0_0_18px_rgba(251,191,36,0.5)] hover:scale-105 transition-transform"
+                    title={`Host: ${hostName}`}
+                  >
+                    <img
+                      src={hostAvatar}
+                      alt={hostName}
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).src = `https://api.dicebear.com/7.x/thumbs/svg?seed=${encodeURIComponent(hostName || 'Host')}`;
+                      }}
+                      className="w-full h-full object-cover"
+                    />
+                    {seats && seats[0] && (isCurrentUserHost && mySeatIndex === 0 ? isMyMicMuted : seats[0].isMuted) && (
+                      <div className="absolute bottom-0 right-0 bg-rose-500 rounded-full p-0.5 border border-white shadow">
+                        <MicOff className="w-2.5 h-2.5 text-white" />
+                      </div>
+                    )}
+                  </div>
+
+                  {reactions.filter(r => r.seatIndex === 0).map(reaction => (
+                    <motion.div
+                      key={reaction.id}
+                      initial={{ y: 0, opacity: 1, scale: 0.5 }}
+                      animate={{ y: -70, opacity: 0, scale: 1.5 }}
+                      transition={{ duration: 1.5 }}
+                      className="absolute inset-0 flex items-center justify-center text-2xl pointer-events-none z-30"
+                    >
+                      {reaction.emoji}
+                    </motion.div>
+                  ))}
+                </div>
+
+                <div className="flex flex-col items-center mt-1">
+                  <span className="text-[11px] font-black text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)] truncate max-w-[120px]">
+                    {hostName}
+                  </span>
+                  <div className="flex items-center gap-1 mt-0.5">
+                    <span className="text-[8px] bg-gradient-to-r from-purple-500 to-indigo-600 text-white font-black px-1.5 py-0.2 rounded-full uppercase tracking-wider shadow">
+                      VIP 3
+                    </span>
+                    <span className="text-[8px] bg-gradient-to-r from-amber-400 to-yellow-500 text-zinc-950 font-black px-1.5 py-0.2 rounded-full shadow-sm flex items-center gap-0.5">
+                      ⭐ 45
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+
+        {/* 8 Guests Seats Grid: FLOATING FREELY ON WALLPAPER (NO BACKGROUND BOX) */}
+        <div className="grid grid-cols-4 gap-x-3 gap-y-3 px-2 py-1 shrink-0">
           {seats && Array.isArray(seats) && seats.slice(1).map((seat) => {
             const hasUser = Boolean(seat.user && (seat.user.id || (seat.user as any)._id || seat.user.name));
             const seatUid = seat.user ? String(seat.user.id || (seat.user as any)._id || '') : '';
@@ -2612,11 +2736,11 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                     <span 
                       className="absolute inset-0 rounded-full bg-emerald-400/50 animate-pulse border-2 border-emerald-400 pointer-events-none"
                       style={{ transform: `scale(${1 + myVoiceLevel / 100})` }}
-                    ></span>
+                    />
                   )}
 
                   {hasUser && !isMe && seat.isTalking && (
-                    <span className="absolute inset-0 rounded-full bg-emerald-500/40 animate-ping border-2 border-emerald-400 scale-125 pointer-events-none"></span>
+                    <span className="absolute inset-0 rounded-full bg-emerald-500/40 animate-ping border-2 border-emerald-400 scale-125 pointer-events-none" />
                   )}
 
                   <div 
@@ -2633,15 +2757,13 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                     }}
                     className={`relative z-20 cursor-pointer transition-all hover:scale-105 active:scale-95 ${
                       hasUser
-                        ? `w-12 h-12 rounded-full overflow-hidden flex items-center justify-center ${
+                        ? `w-13 h-13 rounded-full overflow-hidden flex items-center justify-center ${
                             seat.user?.frameId === 'frame_neon' ? 'border-2 border-indigo-400 shadow-[0_0_10px_rgba(99,102,241,0.6)] animate-pulse' :
                             seat.user?.frameId === 'frame_pink' ? 'border-2 border-pink-400 shadow-[0_0_10px_rgba(244,114,182,0.6)]' :
                             seat.user?.frameId === 'frame_royal' ? 'border-2 border-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.6)]' : 
                             'border-2 border-white/60 bg-zinc-900 shadow-md'
                           }`
-                        : seatStyle === 'sofa'
-                          ? 'w-12 h-12 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/20 hover:border-amber-400/60 shadow-lg flex flex-col items-center justify-center group'
-                          : 'w-11 h-11 rounded-full border border-dashed border-white/30 bg-white/10 hover:bg-white/20 flex items-center justify-center'
+                        : 'w-13 h-13 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/20 hover:border-amber-400/60 shadow-lg flex flex-col items-center justify-center group backdrop-blur-sm'
                     }`}
                   >
                     {hasUser ? (
@@ -2653,15 +2775,13 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                         }}
                         className="w-full h-full object-cover" 
                       />
-                    ) : seatStyle === 'sofa' ? (
+                    ) : (
                       <div className="flex flex-col items-center justify-center pointer-events-none">
-                        <span className="text-base group-hover:scale-110 transition-transform">🛋️</span>
+                        <Sofa className="w-5 h-5 text-white/70 group-hover:text-amber-300 transition-colors" />
                         <span className="text-[8px] font-black text-amber-300/90 tracking-tighter leading-none mt-0.5">
                           No.{seat.index}
                         </span>
                       </div>
-                    ) : (
-                      <span className="text-white/60 text-xs font-bold">{seat.index}</span>
                     )}
 
                     {hasUser && (isMe ? isMyMicMuted : seat.isMuted) && (
@@ -2684,81 +2804,23 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                   ))}
                 </div>
 
-                <div className="text-center mt-1 w-full px-1 min-w-0">
-                  <p className={`text-[9px] truncate drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] ${
+                <div className="text-center mt-1 w-full px-0.5 min-w-0">
+                  <p className={`text-[9px] truncate drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] max-w-[64px] mx-auto ${
                     isMe ? 'text-amber-400 font-black' : hasUser ? 'text-white font-bold' : 'text-white/60 font-medium'
                   }`}>
-                    {hasUser ? seat.user?.name : "Empty"}
+                    {hasUser ? seat.user?.name : `Seat ${seat.index}`}
                   </p>
                   {hasUser && (
-                    <span className="text-[7px] bg-white/20 text-white/90 px-1 py-0.2 rounded font-bold backdrop-blur-sm">
-                      Lvl {seat.user?.level}
-                    </span>
+                    <div className="flex items-center justify-center gap-0.5 mt-0.5">
+                      <span className="text-[7px] bg-gradient-to-r from-amber-400 to-yellow-500 text-zinc-950 px-1 py-0.2 rounded-full font-black shadow-sm">
+                        ⭐ {seat.user?.coins ? Math.min(seat.user.coins, 99) : seat.index * 12}
+                      </span>
+                    </div>
                   )}
                 </div>
               </div>
             );
           })}
-        </div>
-
-        {/* Backing Music Player Mini Bar */}
-        <div className="bg-black/40 backdrop-blur-md border border-white/15 rounded-2xl p-2.5 flex items-center justify-between shrink-0 text-xs shadow-lg text-white">
-          <div 
-            onClick={() => setShowMusicDrawer(true)}
-            className="flex items-center gap-2.5 min-w-0 cursor-pointer hover:opacity-90 transition-opacity flex-1"
-          >
-            <div className={`w-8 h-8 rounded-full bg-gradient-to-tr from-amber-500 to-rose-500 flex items-center justify-center text-sm shadow ${isTrackPlaying ? 'animate-spin' : ''}`} style={{ animationDuration: '4s' }}>
-              🎵
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
-                <p className="text-[9px] text-amber-300 font-black uppercase tracking-wider">Room Music</p>
-                {isTrackPlaying && (
-                  <span className="flex h-1.5 w-1.5 relative">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
-                  </span>
-                )}
-              </div>
-              <p className="text-[11px] text-white font-black truncate max-w-[140px]">
-                {activeTrack ? activeTrack.name : "Tap to Play Music"}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={handleTogglePlayPause}
-              className={`p-2 rounded-xl text-[10px] font-black cursor-pointer transition-all shadow ${
-                isTrackPlaying
-                  ? 'bg-rose-600 hover:bg-rose-500 text-white animate-pulse'
-                  : 'bg-white/15 hover:bg-white/25 text-white border border-white/20'
-              }`}
-              title={isTrackPlaying ? "Pause" : "Play"}
-            >
-              {isTrackPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 fill-white" />}
-            </button>
-            <button
-              onClick={() => setShowMusicDrawer(true)}
-              className="p-2 rounded-xl text-[10px] bg-white/15 hover:bg-white/25 text-white border border-white/20 font-black cursor-pointer shadow transition-all"
-              title="Open Music Player Library"
-            >
-              <Sliders className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-
-        {/* Dedicated Gift Action Bar */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => {
-              setSelectedGiftRecipient(0);
-              setShowGiftDrawer(true);
-            }}
-            className="flex-1 py-2.5 px-4 rounded-2xl text-xs font-black bg-gradient-to-r from-pink-500 via-rose-500 to-amber-500 hover:from-pink-600 hover:to-amber-600 text-white flex items-center justify-center gap-2 shadow-md border border-pink-500/20 cursor-pointer active:scale-98 transition-all"
-          >
-            <GiftIcon className="w-4 h-4 fill-white" />
-            <span>Send Animated Gift 🎁</span>
-          </button>
         </div>
 
         {/* --- DYNAMIC GAME DRAWERS --- */}
@@ -2986,116 +3048,406 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           )}
         </AnimatePresence>
 
-        {/* Live Chat Message Logs */}
-        <div id="voiceRoom_chatMessages" className="flex-1 min-h-[140px] max-h-[220px] bg-white border border-zinc-200 rounded-3xl p-3.5 overflow-y-auto flex flex-col gap-2.5 scrollbar-none shadow-inner">
-          {chatMessages.map((msg) => {
-            const isGift = msg.type === 'gift';
-            const isSystem = msg.type === 'system';
-            const isRoll = msg.type === 'roll';
+        {/* Floating Left-Aligned Chat Stream & Right Promo Buttons Area */}
+        <div className="relative mt-auto w-full flex items-end justify-between gap-2 z-20 pointer-events-none px-1">
+          {/* Left-Aligned Floating Chat Stream (Exact match to screenshot model) */}
+          <div 
+            id="voiceRoom_chatMessages" 
+            className="w-[72%] max-w-[280px] sm:max-w-[320px] max-h-[160px] overflow-y-auto flex flex-col gap-1.5 scrollbar-none pointer-events-auto pb-1"
+          >
+            {/* System welcome bubble */}
+            <div className="bg-black/45 backdrop-blur-md border border-white/10 text-white/90 px-3 py-1.5 rounded-2xl text-[10px] leading-relaxed shadow-md">
+              <span className="text-amber-300 font-bold">📢 System: </span>
+              <span>Welcome to {roomTitle || "the room"}! Please follow community rules & have fun! 🌟</span>
+            </div>
 
-            return (
-              <div key={msg.id} className="text-xs flex flex-col gap-0.5">
-                {isSystem ? (
-                  <div className="bg-rose-50 border border-rose-100 text-rose-700 font-bold px-3 py-1.5 rounded-xl text-[10px] leading-relaxed shadow-sm">
-                    {msg.message}
-                  </div>
-                ) : isRoll ? (
-                  <div className="bg-amber-50 border border-amber-100 text-amber-800 font-black px-3 py-1.5 rounded-xl text-[10px] leading-relaxed flex items-center gap-1 shadow-sm">
-                    <span className="text-sm">🎲</span>
-                    <span>{msg.message}</span>
-                  </div>
-                ) : (
-                  <div className="flex items-start gap-1.5">
-                    <span className="shrink-0 text-[8px] bg-rose-100 text-rose-700 border border-rose-200 px-1.5 py-0.2 rounded font-black">
-                      Lvl {msg.userLevel}
-                    </span>
+            {chatMessages.map((msg) => {
+              const isGift = msg.type === 'gift';
+              const isSystem = msg.type === 'system';
+              const isRoll = msg.type === 'roll';
 
-                    <div className="flex-1">
-                      <span className="font-extrabold text-rose-600 mr-1.5">{msg.userName}:</span>
-                      {isGift ? (
-                        <span className="font-black text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-100 shadow-sm">
-                          {msg.message}
-                        </span>
-                      ) : (
-                        <span className="text-zinc-700 leading-normal font-medium">{msg.message}</span>
-                      )}
+              return (
+                <div key={msg.id} className="text-xs flex flex-col">
+                  {isSystem ? (
+                    <div className="bg-rose-950/40 backdrop-blur-md border border-rose-400/30 text-rose-200 font-medium px-2.5 py-1 rounded-2xl text-[10px] leading-tight shadow-sm">
+                      {msg.message}
                     </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          <div ref={chatEndRef} />
+                  ) : isRoll ? (
+                    <div className="bg-amber-950/40 backdrop-blur-md border border-amber-400/30 text-amber-200 font-black px-2.5 py-1 rounded-2xl text-[10px] leading-tight flex items-center gap-1 shadow-sm">
+                      <span className="text-xs">🎲</span>
+                      <span>{msg.message}</span>
+                    </div>
+                  ) : (
+                    <div className="bg-black/45 backdrop-blur-md border border-white/15 px-2.5 py-1.5 rounded-2xl text-xs text-white shadow-md flex items-start gap-1.5">
+                      <span className="shrink-0 text-[8px] bg-gradient-to-r from-pink-500 to-rose-600 text-white px-1.5 py-0.2 rounded-full font-black shadow-sm mt-0.5">
+                        Lv.{msg.userLevel}
+                      </span>
+                      <div className="min-w-0 flex-1 leading-tight">
+                        <span className="font-black text-amber-300 mr-1 text-[11px]">{msg.userName}:</span>
+                        {isGift ? (
+                          <span className="font-black text-amber-200 bg-amber-500/25 px-1.5 py-0.2 rounded border border-amber-400/30 text-[10px]">
+                            {msg.message}
+                          </span>
+                        ) : (
+                          <span className="text-white/95 text-[11px] break-words">{msg.message}</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <div ref={chatEndRef} />
+          </div>
+
+          {/* Right Floating Promo Shortcuts (like the lollipop / special wheel in screenshot) */}
+          <div className="flex flex-col gap-2 items-center pointer-events-auto pb-1 shrink-0">
+            {/* Get Coins / Cheering Promo */}
+            <motion.button
+              whileTap={{ scale: 0.92 }}
+              onClick={() => {
+                setSelectedGiftRecipient(0);
+                setShowGiftDrawer(true);
+              }}
+              className="flex items-center gap-1 bg-gradient-to-r from-pink-500 to-purple-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full shadow-lg border border-pink-400/40 cursor-pointer"
+              title="Get Sweet Gifts & Boost"
+            >
+              <span>🍭</span>
+              <span>Get</span>
+            </motion.button>
+
+            {/* Special Fortune Wheel Event */}
+            <motion.button
+              whileTap={{ scale: 0.92 }}
+              onClick={() => setActiveGame('wheel')}
+              className="flex items-center gap-1 bg-gradient-to-r from-amber-500 to-rose-500 text-white text-[10px] font-black px-2.5 py-1 rounded-full shadow-lg border border-amber-400/40 cursor-pointer animate-pulse"
+              title="Special Wheel Event"
+            >
+              <span>🎡</span>
+              <span>Special</span>
+            </motion.button>
+          </div>
         </div>
       </div>
 
-      {/* Mic Seat Control & Flying Reactions Bar */}
-      <div className="absolute bottom-16 left-4 right-4 z-20 flex justify-between items-center bg-white/95 backdrop-blur-md border border-zinc-200 rounded-full p-1.5 shadow-md shrink-0">
+      {/* Floating Bottom Options Bar matching screenshot model */}
+      <div 
+        className="shrink-0 z-20 px-3 py-2 flex items-center justify-between gap-1.5 bg-gradient-to-t from-black/90 via-black/60 to-transparent backdrop-blur-sm select-none"
+        style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom, 8px))' }}
+      >
+        {/* 1. Say hi... Capsule Input Button */}
+        <div
+          onClick={() => {
+            setIsChatInputOpen(true);
+            setTimeout(() => chatInputRef.current?.focus(), 150);
+          }}
+          className="flex-1 min-w-[70px] max-w-[125px] h-9 px-3 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 backdrop-blur-md text-white/70 text-[11px] flex items-center gap-1 cursor-pointer truncate transition-all active:scale-95 shadow shrink-0"
+          title="Type message"
+        >
+          <span>Say hi...</span>
+        </div>
+
+        {/* 2. 😊 Emoji Reaction Button */}
+        <button
+          onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+          className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 backdrop-blur-md flex items-center justify-center text-base cursor-pointer active:scale-90 transition-all shadow shrink-0"
+          title="Reactions"
+        >
+          😊
+        </button>
+
+        {/* 3. 🎙️ Microphone Toggle Button (Working Bidirectional Mute) */}
         <button
           onClick={toggleMyMic}
-          className={`w-10 h-10 rounded-full flex items-center justify-center cursor-pointer transition-all ${
+          className={`w-9 h-9 rounded-full flex items-center justify-center cursor-pointer active:scale-90 transition-all shadow shrink-0 border ${
             isMyMicMuted 
-              ? 'bg-rose-500 text-white' 
-              : 'bg-rose-600 text-white font-bold shadow-lg shadow-rose-600/25'
+              ? 'bg-rose-600/90 hover:bg-rose-600 border-rose-400/50 text-white' 
+              : 'bg-emerald-500/90 hover:bg-emerald-500 border-emerald-400/50 text-white'
           }`}
+          title={isMyMicMuted ? "Unmute Mic" : "Mute Mic"}
         >
           {isMyMicMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
         </button>
 
-        <div className="flex gap-1.5">
-          {['❤️', '😂', '🔥', '🎉', '👍'].map((emoji) => (
-            <button
-              key={emoji}
-              onClick={() => {
-                const targetIdx = mySeatIndex !== null ? mySeatIndex : 0;
-                triggerFlyReaction(emoji, targetIdx);
-                playSynthSound('tap');
-              }}
-              className="text-lg hover:scale-125 cursor-pointer active:scale-95 transition-all bg-stone-50 hover:bg-stone-100/85 w-8 h-8 rounded-full flex items-center justify-center border border-zinc-200 shadow-sm"
-            >
-              {emoji}
-            </button>
-          ))}
-        </div>
+        {/* 4. 🛋️ Seat Management Button */}
+        <button
+          onClick={() => setShowSeatModal(true)}
+          className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 backdrop-blur-md flex items-center justify-center text-white cursor-pointer active:scale-90 transition-all shadow shrink-0"
+          title="Seat Options"
+        >
+          <Sofa className="w-4 h-4 text-white/90" />
+        </button>
+
+        {/* 5. ⊞ 4-Square Grid: Room Tools Menu */}
+        <button
+          onClick={() => setShowToolsMenu(!showToolsMenu)}
+          className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 backdrop-blur-md flex items-center justify-center text-white cursor-pointer active:scale-90 transition-all shadow shrink-0"
+          title="Room Tools (Theme, Music, Info)"
+        >
+          <LayoutGrid className="w-4 h-4 text-white/90" />
+        </button>
+
+        {/* 6. 💬 Chat Bubble Button */}
+        <button
+          onClick={() => {
+            setIsChatInputOpen(true);
+            setTimeout(() => chatInputRef.current?.focus(), 150);
+          }}
+          className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 backdrop-blur-md flex items-center justify-center text-white cursor-pointer active:scale-90 transition-all shadow shrink-0"
+          title="Open Chat"
+        >
+          <MessageCircle className="w-4 h-4 text-white/90" />
+        </button>
+
+        {/* 7. 🎮 Mini Game Hub Button */}
+        <button
+          onClick={() => setShowGameHub(!showGameHub)}
+          className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 backdrop-blur-md flex items-center justify-center text-white cursor-pointer active:scale-90 transition-all shadow shrink-0"
+          title="Mini Games Hub"
+        >
+          <Gamepad2 className="w-4 h-4 text-white/90" />
+        </button>
+
+        {/* 8. 🎁 3D Animated Gift Box Button */}
+        <button
+          onClick={() => {
+            setSelectedGiftRecipient(0);
+            setShowGiftDrawer(true);
+          }}
+          className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-rose-500 to-amber-500 border border-white/40 flex items-center justify-center text-xl shadow-[0_0_15px_rgba(244,63,94,0.6)] cursor-pointer active:scale-90 transition-all shrink-0 animate-bounce"
+          title="Send Gift 🎁"
+        >
+          🎁
+        </button>
       </div>
 
-      {/* Message Chat Input Bar */}
-      <div 
-        className="shrink-0 z-20 bg-white border-t border-zinc-200"
-        style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom, 0px))' }}
-      >
-        {isTypingInChat && (
-          <div className="flex items-center gap-1.5 px-4 pt-1.5 animate-in fade-in duration-200">
-            <div className="flex gap-1 items-center">
-              <span className="w-1.5 h-1.5 bg-rose-500 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-              <span className="w-1.5 h-1.5 bg-rose-500 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-              <span className="w-1.5 h-1.5 bg-rose-500 rounded-full animate-bounce"></span>
-            </div>
-            <span className="text-[9px] text-zinc-400 font-bold">You are typing...</span>
-          </div>
-        )}
-        <form 
-          id="voiceRoom_chatInputForm"
-          onSubmit={handleSendMessage}
-          className="h-14 px-4 flex items-center gap-2"
+      {/* --- POPUP / MODAL DRAWERS --- */}
+
+      {/* Floating Chat Input Sheet */}
+      {isChatInputOpen && (
+        <div 
+          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex flex-col justify-end"
+          onClick={(e) => { if (e.target === e.currentTarget) setIsChatInputOpen(false); }}
         >
-          <input
-            type="text"
-            value={textInput}
-            onChange={(e) => setTextInput(e.target.value)}
-            onFocus={() => setIsTypingInChat(true)}
-            onBlur={() => setIsTypingInChat(false)}
-            placeholder="Say something to room..."
-            className="flex-1 bg-stone-50 border border-zinc-250 rounded-full px-4 py-2 text-xs text-zinc-800 placeholder-zinc-400 focus:outline-none focus:border-rose-500"
-          />
-          <button
-            type="submit"
-            className="bg-gradient-to-r from-pink-500 to-rose-600 text-white p-2.5 rounded-full cursor-pointer shadow-sm active:scale-95 transition-all"
+          <form 
+            id="voiceRoom_chatInputForm"
+            onSubmit={(e) => {
+              handleSendMessage(e);
+              setIsChatInputOpen(false);
+            }}
+            className="p-3 bg-zinc-900 border-t border-white/15 flex items-center gap-2 select-none shadow-2xl animate-in slide-in-from-bottom duration-200"
+            style={{ paddingBottom: 'max(12px, env(safe-area-inset-bottom, 12px))' }}
           >
-            <Send className="w-3.5 h-3.5" />
-          </button>
-        </form>
-      </div>
+            <input
+              ref={chatInputRef}
+              type="text"
+              value={textInput}
+              onChange={(e) => setTextInput(e.target.value)}
+              onFocus={() => setIsTypingInChat(true)}
+              onBlur={() => setIsTypingInChat(false)}
+              placeholder="Say something to room..."
+              className="flex-1 bg-white/10 border border-white/20 rounded-full px-4 py-2 text-xs text-white placeholder-white/40 focus:outline-none focus:border-amber-400"
+            />
+            <button
+              type="submit"
+              className="bg-gradient-to-r from-pink-500 to-rose-600 text-white px-4 py-2 rounded-full cursor-pointer text-xs font-black shadow active:scale-95 transition-all flex items-center gap-1"
+            >
+              <span>Send</span>
+              <Send className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsChatInputOpen(false)}
+              className="w-8 h-8 rounded-full bg-white/10 text-white/70 hover:text-white flex items-center justify-center text-xs"
+            >
+              ✕
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* Quick Emoji Reaction Flyer Popup */}
+      {showEmojiPicker && (
+        <div 
+          className="fixed inset-0 z-40 bg-black/30 backdrop-blur-xs flex flex-col justify-end"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowEmojiPicker(false); }}
+        >
+          <div 
+            className="bg-zinc-900/95 border-t border-white/15 p-4 rounded-t-3xl shadow-2xl animate-in slide-in-from-bottom duration-200 select-none"
+            style={{ paddingBottom: 'max(16px, env(safe-area-inset-bottom, 16px))' }}
+          >
+            <div className="flex justify-between items-center mb-3">
+              <span className="text-xs font-black text-white">✨ Tap to Fly Emoji Reaction</span>
+              <button 
+                onClick={() => setShowEmojiPicker(false)}
+                className="text-white/60 hover:text-white text-xs"
+              >
+                ✕ Close
+              </button>
+            </div>
+            <div className="grid grid-cols-6 gap-2.5">
+              {['❤️', '😂', '🔥', '🎉', '👍', '🌹', '🚀', '👑', '✨', '⭐', '🥳', '🥰'].map((emoji) => (
+                <button
+                  key={emoji}
+                  onClick={() => {
+                    const targetIdx = mySeatIndex !== null ? mySeatIndex : 0;
+                    triggerFlyReaction(emoji, targetIdx);
+                    playSynthSound('tap');
+                    setShowEmojiPicker(false);
+                  }}
+                  className="w-12 h-12 rounded-2xl bg-white/10 hover:bg-white/25 border border-white/15 flex items-center justify-center text-2xl active:scale-90 transition-transform shadow cursor-pointer"
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4-Square Grid Tools Menu Bottom Sheet */}
+      {showToolsMenu && (
+        <div 
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs flex flex-col justify-end"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowToolsMenu(false); }}
+        >
+          <div 
+            className="bg-zinc-900 border-t border-white/15 p-5 rounded-t-3xl shadow-2xl animate-in slide-in-from-bottom duration-200 text-white select-none"
+            style={{ paddingBottom: 'max(16px, env(safe-area-inset-bottom, 16px))' }}
+          >
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-sm font-black text-white flex items-center gap-1.5">
+                <LayoutGrid className="w-4 h-4 text-amber-400" />
+                <span>Room Tools & Settings</span>
+              </h3>
+              <button 
+                onClick={() => setShowToolsMenu(false)}
+                className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-xs text-white/70 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-4 gap-3 text-center">
+              {/* Theme / Background */}
+              {isCurrentUserHost && (
+                <button
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    setShowCustomizationModal(true);
+                  }}
+                  className="flex flex-col items-center gap-1.5 p-3 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/15 cursor-pointer active:scale-95 transition-all"
+                >
+                  <Palette className="w-6 h-6 text-amber-400" />
+                  <span className="text-[10px] font-bold">Theme</span>
+                </button>
+              )}
+
+              {/* Music Player */}
+              <button
+                onClick={() => {
+                  setShowToolsMenu(false);
+                  setShowMusicDrawer(true);
+                }}
+                className="flex flex-col items-center gap-1.5 p-3 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/15 cursor-pointer active:scale-95 transition-all"
+              >
+                <Music className="w-6 h-6 text-rose-400" />
+                <span className="text-[10px] font-bold">Music</span>
+              </button>
+
+              {/* Audience list */}
+              <button
+                onClick={() => {
+                  setShowToolsMenu(false);
+                  setShowAudienceModal(true);
+                }}
+                className="flex flex-col items-center gap-1.5 p-3 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/15 cursor-pointer active:scale-95 transition-all"
+              >
+                <Users className="w-6 h-6 text-sky-400" />
+                <span className="text-[10px] font-bold">Audience</span>
+              </button>
+
+              {/* Share */}
+              <button
+                onClick={() => {
+                  setShowToolsMenu(false);
+                  const code = String((safeRoom as any).roomId || safeRoom.id || '');
+                  navigator.clipboard.writeText(`${window.location.origin}/#room=${code}`);
+                  toast('Room link copied! 🔗', 'success');
+                }}
+                className="flex flex-col items-center gap-1.5 p-3 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/15 cursor-pointer active:scale-95 transition-all"
+              >
+                <Share2 className="w-6 h-6 text-emerald-400" />
+                <span className="text-[10px] font-bold">Share</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mini Game Hub Bottom Sheet */}
+      {showGameHub && (
+        <div 
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs flex flex-col justify-end"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowGameHub(false); }}
+        >
+          <div 
+            className="bg-zinc-900 border-t border-white/15 p-5 rounded-t-3xl shadow-2xl animate-in slide-in-from-bottom duration-200 text-white select-none"
+            style={{ paddingBottom: 'max(16px, env(safe-area-inset-bottom, 16px))' }}
+          >
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-sm font-black text-white flex items-center gap-1.5">
+                <Gamepad2 className="w-4 h-4 text-purple-400" />
+                <span>ZOYO Room Games</span>
+              </h3>
+              <button 
+                onClick={() => setShowGameHub(false)}
+                className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-xs text-white/70 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div 
+                onClick={() => {
+                  setActiveGame('ludo');
+                  setShowGameHub(false);
+                }}
+                className="bg-gradient-to-br from-amber-500/20 to-amber-600/10 border border-amber-400/30 p-3 rounded-2xl flex flex-col items-center text-center cursor-pointer hover:scale-105 active:scale-95 transition-transform"
+              >
+                <span className="text-3xl mb-1">🎲</span>
+                <span className="text-xs font-black text-amber-300">Fast Ludo</span>
+                <span className="text-[9px] text-white/60">Multiplayer</span>
+              </div>
+
+              <div 
+                onClick={() => {
+                  setActiveGame('dice');
+                  setShowGameHub(false);
+                }}
+                className="bg-gradient-to-br from-rose-500/20 to-rose-600/10 border border-rose-400/30 p-3 rounded-2xl flex flex-col items-center text-center cursor-pointer hover:scale-105 active:scale-95 transition-transform"
+              >
+                <span className="text-3xl mb-1">🔥</span>
+                <span className="text-xs font-black text-rose-300">Dice Duel</span>
+                <span className="text-[9px] text-white/60">High Stakes</span>
+              </div>
+
+              <div 
+                onClick={() => {
+                  setActiveGame('wheel');
+                  setShowGameHub(false);
+                }}
+                className="bg-gradient-to-br from-purple-500/20 to-purple-600/10 border border-purple-400/30 p-3 rounded-2xl flex flex-col items-center text-center cursor-pointer hover:scale-105 active:scale-95 transition-transform"
+              >
+                <span className="text-3xl mb-1">🎡</span>
+                <span className="text-xs font-black text-purple-300">Fortune Wheel</span>
+                <span className="text-[9px] text-white/60">Spin & Win</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Gift Selection Drawer */}
       {showGiftDrawer && (

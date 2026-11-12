@@ -3831,22 +3831,25 @@ async function startServer() {
           // Live microphone speech detection or mute toggle
           // Only persist mute changes to DB — isTalking fires many times/sec and must NOT hit DB
           const { seatIndex, isTalking, isMuted } = payload || {};
-          if (isMuted !== undefined) {
-            // Mute toggle is rare — persist it
-            const room = await getRoom(roomId);
-            if (room && room.seats && room.seats[seatIndex] !== undefined) {
-              room.seats[seatIndex].isMuted = isMuted;
-              if (isTalking !== undefined) room.seats[seatIndex].isTalking = isTalking;
-              await saveRoom(room);
+          const sIdx = typeof seatIndex === 'number' ? seatIndex : parseInt(seatIndex);
+          if (!isNaN(sIdx) && sIdx >= 0 && sIdx <= 8) {
+            if (isMuted !== undefined) {
+              // Mute toggle is rare — persist it
+              const room = await getRoom(roomId);
+              if (room && room.seats && room.seats[sIdx] !== undefined) {
+                room.seats[sIdx].isMuted = Boolean(isMuted);
+                if (isMuted) room.seats[sIdx].isTalking = false;
+                await saveRoom(room);
+              }
             }
+            // Always broadcast the live state change to all room clients
+            broadcastToRoom(roomId, {
+              type: 'seat_status_updated',
+              seatIndex: sIdx,
+              isTalking: isMuted ? false : isTalking,
+              isMuted
+            });
           }
-          // Always broadcast the live state change to all room clients
-          broadcastToRoom(roomId, {
-            type: 'seat_status_updated',
-            seatIndex,
-            isTalking,
-            isMuted
-          });
         } else if (type === 'webrtc_signal') {
           // WebRTC Audio Signaling: route offer, answer, ice-candidate
           const { targetUserId, signal, seatIndex } = payload || {};

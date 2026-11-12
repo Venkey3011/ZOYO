@@ -3,6 +3,7 @@ import { Room, User } from '../types';
 import { PRESET_AVATARS } from '../data';
 import { Search, Plus, Sparkles, Trophy, Users, Flame, Globe, Dices, MessageSquare, Music, Mic, Lock, Eye, EyeOff, Hash, ImagePlus, X } from 'lucide-react';
 import { registerBackHandler } from '../lib/navigation';
+import { compressImageToDataUrl } from '../lib/imageCompressor';
 
 interface RoomListProps {
   rooms: Room[];
@@ -612,12 +613,17 @@ export default function RoomList({ rooms, onJoinRoom, onCreateRoom, currentUser 
                   type="file"
                   accept="image/*"
                   className="hidden"
-                  onChange={(e) => {
+                  onChange={async (e) => {
                     const file = e.target.files?.[0];
                     if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = (ev) => setRoomImage(ev.target?.result as string);
-                    reader.readAsDataURL(file);
+                    try {
+                      const compressed = await compressImageToDataUrl(file, 800, 800, 0.85);
+                      setRoomImage(compressed);
+                    } catch {
+                      const reader = new FileReader();
+                      reader.onload = (ev) => setRoomImage(ev.target?.result as string);
+                      reader.readAsDataURL(file);
+                    }
                   }}
                 />
               </div>

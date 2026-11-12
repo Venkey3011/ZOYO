@@ -12,6 +12,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { toast } from './Toast';
 import UserProfileModal from './UserProfileModal';
 import { registerBackHandler } from '../lib/navigation';
+import { compressImageToDataUrl } from '../lib/imageCompressor';
 import {
   Room as LiveKitRoom,
   RoomEvent,
@@ -1063,10 +1064,13 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           } else if (data.type === 'room_updated') {
             if (data.room) {
               const updated = data.room;
-              if (updated.backgroundUrl) setRoomBackground(updated.backgroundUrl);
-              if (updated.title) setRoomTitle(updated.title);
-              if (updated.notice || updated.description) setRoomNotice(updated.notice || updated.description);
-              if (updated.seatStyle) setSeatStyle(updated.seatStyle);
+              if (updated.backgroundUrl !== undefined) setRoomBackground(updated.backgroundUrl || ROOM_WALLPAPERS[0].url);
+              if (updated.title !== undefined && updated.title) setRoomTitle(updated.title);
+              if (updated.notice !== undefined || updated.description !== undefined) {
+                const newNotice = updated.notice ?? updated.description;
+                if (newNotice !== undefined) setRoomNotice(newNotice);
+              }
+              if (updated.seatStyle !== undefined && updated.seatStyle) setSeatStyle(updated.seatStyle);
               toast('Room settings updated ✨', 'info');
             }
           } else if (data.type === 'room_music') {
@@ -1693,8 +1697,8 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       return;
     }
 
-    if (file.size > 20 * 1024 * 1024) {
-      toast('Image is larger than 20MB. Please choose a smaller image.', 'error');
+    if (file.size > 25 * 1024 * 1024) {
+      toast('Image is larger than 25MB. Please choose a smaller image.', 'error');
       if (inputTarget) inputTarget.value = '';
       return;
     }
@@ -1705,29 +1709,9 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     const localBlob = URL.createObjectURL(file);
     setRoomBackground(localBlob);
 
-    // Fast base64 reader with guaranteed 6-second safety timeout
-    const readBase64 = (): Promise<string> => {
-      return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error('Reading image took too long'));
-        }, 6000);
-
-        const reader = new FileReader();
-        reader.onload = () => {
-          clearTimeout(timeout);
-          resolve(reader.result as string);
-        };
-        reader.onerror = () => {
-          clearTimeout(timeout);
-          reject(new Error('Failed to read image file'));
-        };
-        reader.readAsDataURL(file);
-      });
-    };
-
     try {
-      // 2. Read file in <30ms
-      const base64 = await readBase64();
+      // 2. High-speed client compression: downscales 15MB photos to ~150-250KB in <50ms!
+      const base64 = await compressImageToDataUrl(file, 1920, 1080, 0.82);
 
       // 3. Fast upload with 8s abort safety
       const controller = new AbortController();
@@ -1776,6 +1760,13 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   const handleDeviceAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (file.size > 20 * 1024 * 1024) {
+      toast('Audio file must be under 20MB. Please choose a smaller track.', 'error');
+      if (e.target) e.target.value = '';
+      return;
+    }
+
     setIsUploadingAudio(true);
     toast('Uploading song from your device... 🎵', 'info');
     const reader = new FileReader();

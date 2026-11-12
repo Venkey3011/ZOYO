@@ -915,7 +915,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                 </div>
               ) : (
                 filteredUsers.map((user) => {
-                  const uId = user._id || user.id;
+                  const uId = String(user._id || user.id || user.name || '');
                   const isSelf = user.name === currentUser.name;
                   const isBlocked = !!user.isBlocked;
 
@@ -1062,7 +1062,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                 </div>
               ) : (
                 filteredUsers.map((user) => {
-                  const uId = user._id || user.id;
+                  const uId = String(user._id || user.id || user.name || '');
                   const isBlocked = !!user.isBlocked;
                   const isSelf = user.name === currentUser.name;
 
@@ -1163,7 +1163,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                 </div>
               ) : (
                 filteredUsers.map((user) => {
-                  const uId = user._id || user.id;
+                  const uId = String(user._id || user.id || user.name || '');
                   const isSelf = user.name === currentUser.name;
 
                   return (

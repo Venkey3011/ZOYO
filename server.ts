@@ -2159,7 +2159,7 @@ function addOnlineUserToRoom(room: any, user: any) {
   };
 
   room.onlineUsers.push(cleanUser);
-  room.onlineCount = Math.max(room.onlineUsers.length, room.seats?.filter((s: any) => s.user).length || 1);
+  room.onlineCount = Math.max(room.onlineUsers.length, room.seats?.filter((s: any) => s.user).length || 0);
   return cleanUser;
 }
 
@@ -2176,7 +2176,7 @@ function removeOnlineUserFromRoom(room: any, userId: string, userName?: string) 
     return true;
   });
 
-  room.onlineCount = Math.max(1, room.onlineUsers.length || 1);
+  room.onlineCount = Math.max(0, room.onlineUsers.length);
 }
 
 function addChatMessageToRoom(room: any, chatMsg: any): boolean {
@@ -3324,7 +3324,7 @@ app.post("/api/rooms/:id/seat/:seatIndex", async (req: express.Request, res: exp
         isMuted: false, 
         isTalking: false 
       };
-      room.onlineCount = Math.max(room.onlineUsers?.length || 1, room.seats.filter((s: any) => s && s.user).length);
+      room.onlineCount = Math.max(room.onlineUsers?.length || 0, room.seats.filter((s: any) => s && s.user).length);
 
       await saveRoom(room);
 
@@ -3379,7 +3379,7 @@ app.post("/api/rooms/:id/seat/:seatIndex", async (req: express.Request, res: exp
       room.seats[0].user = room.host;
     }
 
-    room.onlineCount = Math.max(room.onlineUsers?.length || 1, room.seats.filter((s: any) => s && s.user).length);
+    room.onlineCount = Math.max(room.onlineUsers?.length || 0, room.seats.filter((s: any) => s && s.user).length);
     await saveRoom(room);
 
     // Broadcast seat change to ALL clients in the room
@@ -3786,7 +3786,7 @@ async function startServer() {
               }
 
               if (room.seats[0] && room.host) room.seats[0].user = room.host;
-              room.onlineCount = Math.max(room.onlineUsers?.length || 1, room.seats.filter((s: any) => s && s.user).length);
+              room.onlineCount = Math.max(room.onlineUsers?.length || 0, room.seats.filter((s: any) => s && s.user).length);
               await saveRoom(room);
 
               const eventPayload = {

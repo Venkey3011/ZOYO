@@ -3134,13 +3134,12 @@ app.post("/api/rooms/:id/leave", async (req: express.Request, res: express.Respo
     const uId = String(userId);
     removeOnlineUserFromRoom(room, uId, userName);
 
-    // Free seat if user was seated (Seat 0 always remains Host)
+    // Keep user in seat even if they exit the room! (Only explicit leave or kick removes from seat)
+    // Only stop talking animation while they are out of the room.
     if (room.seats) {
       for (const seat of room.seats) {
-        if (seat.user && (String(seat.user._id || seat.user.id) === uId || (userName && seat.user.name === userName))) {
-          seat.user = seat.index === 0 ? room.host : null;
+        if (seat.user && (String(seat.user._id || seat.user.id || seat.user.userId || '') === uId || (userName && seat.user.name === userName))) {
           seat.isTalking = false;
-          seat.isMuted = false;
         }
       }
     }
@@ -3725,6 +3724,14 @@ async function startServer() {
           const room = await getRoom(roomId);
           if (room) {
             removeOnlineUserFromRoom(room, String(userId), userName);
+            // User exits room but stays in seat! (Only kick or explicit leave removes from seat)
+            if (room.seats) {
+              for (const seat of room.seats) {
+                if (seat.user && (String(seat.user._id || seat.user.id || (seat.user as any).userId || '') === String(userId) || (userName && seat.user.name === userName))) {
+                  seat.isTalking = false;
+                }
+              }
+            }
             await saveRoom(room);
 
             broadcastToRoom(roomId, {
@@ -3732,7 +3739,8 @@ async function startServer() {
               userId: String(userId),
               userName,
               onlineUsers: room.onlineUsers,
-              onlineCount: room.onlineCount
+              onlineCount: room.onlineCount,
+              seats: room.seats
             });
           }
         } else if (type === 'speaker_ready') {
@@ -3772,6 +3780,20 @@ async function startServer() {
               if (action === 'sit' && user) {
                 const newUserId = String(user._id || user.id || user.userId || '');
                 const safeUser = { ...user, id: newUserId, _id: newUserId, userId: newUserId };
+
+                // Guard: check if target seat is already occupied by someone else
+                const targetSeat = room.seats[sIdx];
+                if (targetSeat && targetSeat.user) {
+                  const occId = String(targetSeat.user._id || targetSeat.user.id || (targetSeat.user as any).userId || '');
+                  const occName = String(targetSeat.user.name || '');
+                  const idMismatch = occId && newUserId && occId !== newUserId;
+                  const nameMismatch = occName && user.name && occName !== user.name;
+                  if (idMismatch && nameMismatch) {
+                    // Seat is occupied by someone else; do not overwrite!
+                    return;
+                  }
+                }
+
                 // Clear any other guest seat occupied by this user
                 room.seats.forEach((s: any) => {
                   if (!s || s.index === 0 || s.index === sIdx) return;
@@ -3923,15 +3945,12 @@ async function startServer() {
           const room = await getRoom(roomId);
           if (room) {
             removeOnlineUserFromRoom(room, String(userId), userName);
-            // Clear seat if this disconnected user was sitting (Seat 0 always remains Host)
-            let seatChanged = false;
+            // Keep user in seat if disconnected! (Only explicit leave or kick removes from seat)
+            // Only stop talking animation while disconnected.
             if (room.seats) {
               for (const seat of room.seats) {
-                if (seat.user && (String(seat.user._id || seat.user.id) === String(userId) || seat.user.name === userName)) {
-                  seat.user = seat.index === 0 ? room.host : null;
+                if (seat.user && (String(seat.user._id || seat.user.id || (seat.user as any).userId || '') === String(userId) || (userName && seat.user.name === userName))) {
                   seat.isTalking = false;
-                  seat.isMuted = false;
-                  seatChanged = true;
                 }
               }
             }
@@ -3943,7 +3962,7 @@ async function startServer() {
               userName,
               onlineUsers: room.onlineUsers,
               onlineCount: room.onlineCount,
-              seats: seatChanged ? room.seats : undefined
+              seats: room.seats
             });
           }
         } catch (e) {

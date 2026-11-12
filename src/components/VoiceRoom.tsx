@@ -122,7 +122,10 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
   // Determine initial seat index for current user (only if actually occupying a seat)
   const findInitialSeat = (): number | null => {
-    const found = initialSeats.find(s => s.user && String(s.user._id || s.user.id || (s.user as any).userId) === currentUserId);
+    const found = initialSeats.find(s => s.user && (
+      String(s.user._id || s.user.id || (s.user as any).userId || '') === currentUserId ||
+      (s.user.name && s.user.name === currentUser.name)
+    ));
     if (found) return found.index;
     return null;
   };
@@ -891,7 +894,10 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                 return s;
               });
               setSeats(sanitizedSeats);
-              const found = sanitizedSeats.find((s: any) => s.user && String(s.user._id || s.user.id) === currentUserId);
+              const found = sanitizedSeats.find((s: any) => s.user && (
+                String(s.user._id || s.user.id || (s.user as any).userId || '') === currentUserId ||
+                (s.user.name && s.user.name === currentUser.name)
+              ));
               if (found) setMySeatIndex(found.index);
 
               // Connect WebRTC peer connection to all currently occupied seats (<25ms voice)
@@ -2554,6 +2560,9 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                   <img
                     src={hostAvatar}
                     alt={hostName}
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).src = `https://api.dicebear.com/7.x/thumbs/svg?seed=${encodeURIComponent(hostName || 'Host')}`;
+                    }}
                     className="w-full h-full object-cover"
                   />
                   {seats && seats[0] && (isCurrentUserHost && mySeatIndex === 0 ? isMyMicMuted : seats[0].isMuted) && (
@@ -2637,8 +2646,11 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                   >
                     {hasUser ? (
                       <img 
-                        src={seat.user?.avatar} 
-                        alt="User" 
+                        src={seat.user?.avatar || `https://api.dicebear.com/7.x/thumbs/svg?seed=${encodeURIComponent(seat.user?.name || 'User')}`} 
+                        alt={seat.user?.name || "User"} 
+                        onError={(e) => {
+                          (e.currentTarget as HTMLImageElement).src = `https://api.dicebear.com/7.x/thumbs/svg?seed=${encodeURIComponent(seat.user?.name || 'User')}`;
+                        }}
                         className="w-full h-full object-cover" 
                       />
                     ) : seatStyle === 'sofa' ? (

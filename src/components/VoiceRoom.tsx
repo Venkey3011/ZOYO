@@ -7,7 +7,7 @@ import {
   CornerDownRight, RefreshCw, Smile, Zap, MessageSquare, Award, UserPlus, Trash, VolumeX, MessageSquareDashed,
   Share2, Copy, Eye, UserX, ShieldAlert, Palette, Music, Volume2, Disc, SkipForward, SkipBack, Sliders, Check, ExternalLink,
   Upload, FileAudio, Image as ImageIcon, LogOut, UploadCloud,
-  Gamepad2, LayoutGrid, Sofa, MessageCircle, Package, Plus
+  Gamepad2, LayoutGrid, Sofa, MessageCircle, Package, Plus, Lock, Globe
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from './Toast';
@@ -251,6 +251,10 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   const [roomTitle, setRoomTitle] = useState<string>(safeRoom.title || 'Voice Room');
   const [roomNotice, setRoomNotice] = useState<string>((safeRoom as any).notice || safeRoom.description || 'Welcome to the room! Sit back, relax and enjoy the vibes ✨');
   const [seatStyle, setSeatStyle] = useState<'sofa' | 'classic'>((safeRoom as any).seatStyle || (safeRoom as any).seat_style || 'sofa');
+  const [roomCategory, setRoomCategory] = useState<string>((safeRoom as any).category || 'chat');
+  const [roomIsPrivate, setRoomIsPrivate] = useState<boolean>(Boolean((safeRoom as any).isPrivate));
+  const [roomPassword, setRoomPassword] = useState<string>((safeRoom as any).roomPassword || '');
+  const [customizationTab, setCustomizationTab] = useState<'theme' | 'info' | 'seats' | 'privacy'>('theme');
   const [showCustomizationModal, setShowCustomizationModal] = useState(false);
   const [customWallpaperInput, setCustomWallpaperInput] = useState('');
   const [isSavingCustomization, setIsSavingCustomization] = useState(false);
@@ -1976,7 +1980,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         toast('Theme uploaded & applied live! ✨🎨', 'success');
 
         // Persist to MongoDB & WebSocket in background without blocking upload button
-        handleSaveRoomCustomization(data.url, undefined, undefined, undefined, false).catch(err => {
+        handleSaveRoomCustomization(data.url, undefined, undefined, undefined, undefined, undefined, undefined, false).catch(err => {
           console.warn('Background room save error:', err);
         });
       } else {
@@ -2050,19 +2054,45 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     }
   };
 
-  const handleSaveRoomCustomization = async (newBg?: string, newTitle?: string, newNotice?: string, newStyle?: 'sofa' | 'classic', shouldCloseModal = true) => {
+  const handleSaveRoomCustomization = async (
+    newBg?: string, 
+    newTitle?: string, 
+    newNotice?: string, 
+    newStyle?: 'sofa' | 'classic',
+    newCategory?: string,
+    newIsPrivate?: boolean,
+    newPassword?: string,
+    shouldCloseModal = true
+  ) => {
     setIsSavingCustomization(true);
     const bgToSave = newBg !== undefined ? newBg : roomBackground;
     const titleToSave = newTitle !== undefined ? newTitle : roomTitle;
     const noticeToSave = newNotice !== undefined ? newNotice : roomNotice;
     const styleToSave = newStyle !== undefined ? newStyle : seatStyle;
+    const categoryToSave = newCategory !== undefined ? newCategory : roomCategory;
+    const isPrivateToSave = newIsPrivate !== undefined ? newIsPrivate : roomIsPrivate;
+    const passwordToSave = newPassword !== undefined ? newPassword : roomPassword;
 
     setRoomBackground(bgToSave);
     setRoomTitle(titleToSave);
     setRoomNotice(noticeToSave);
     setSeatStyle(styleToSave);
+    setRoomCategory(categoryToSave);
+    setRoomIsPrivate(isPrivateToSave);
+    setRoomPassword(passwordToSave);
 
     const targetRoomId = roomId || String((safeRoom as any)?._id || (safeRoom as any)?.id || (safeRoom as any)?.roomId || '');
+
+    const payload = {
+      backgroundUrl: bgToSave,
+      title: titleToSave,
+      description: noticeToSave,
+      notice: noticeToSave,
+      seatStyle: styleToSave,
+      category: categoryToSave,
+      isPrivate: isPrivateToSave,
+      roomPassword: passwordToSave
+    };
 
     // 1. Immediately send via WebSocket for ultra-fast realtime update (<5ms)
     try {
@@ -2072,13 +2102,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           roomId: targetRoomId,
           userId: currentUser.id,
           userName: currentUser.name,
-          payload: {
-            backgroundUrl: bgToSave,
-            title: titleToSave,
-            description: noticeToSave,
-            notice: noticeToSave,
-            seatStyle: styleToSave
-          }
+          payload
         }));
       }
     } catch (wsErr) {
@@ -2090,13 +2114,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       const res = await fetch(`/api/rooms/${targetRoomId}/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          backgroundUrl: bgToSave,
-          title: titleToSave,
-          description: noticeToSave,
-          notice: noticeToSave,
-          seatStyle: styleToSave
-        })
+        body: JSON.stringify(payload)
       });
       if (res.ok) {
         toast('Room customization saved! 🎨✨', 'success');
@@ -2653,19 +2671,11 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
       {/* Floating Announcement Ticker (Glassmorphic) */}
       {roomNotice && (
-        <div className="z-10 px-4 py-1 flex items-center justify-between text-white text-[10px] shrink-0">
-          <div className="flex items-center gap-1.5 truncate max-w-[85%] bg-black/30 backdrop-blur-md px-2.5 py-0.5 rounded-full border border-white/10">
+        <div className="z-10 px-4 py-1 flex items-center justify-center text-white text-[10px] shrink-0">
+          <div className="flex items-center gap-1.5 truncate max-w-full bg-black/30 backdrop-blur-md px-3 py-0.5 rounded-full border border-white/10 shadow-sm">
             <span className="text-amber-400 text-xs">📢</span>
             <span className="truncate font-medium text-white/90">{roomNotice}</span>
           </div>
-          {isCurrentUserHost && (
-            <button
-              onClick={() => setShowCustomizationModal(true)}
-              className="text-[9px] text-amber-300 hover:text-amber-200 font-bold ml-1 cursor-pointer"
-            >
-              Edit
-            </button>
-          )}
         </div>
       )}
 
@@ -3448,17 +3458,18 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
             </div>
 
             <div className="grid grid-cols-4 gap-3 text-center">
-              {/* Theme / Background */}
+              {/* Room Customization Settings */}
               {isCurrentUserHost && (
                 <button
                   onClick={() => {
                     setShowToolsMenu(false);
                     setShowCustomizationModal(true);
                   }}
-                  className="flex flex-col items-center gap-1.5 p-3 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/15 cursor-pointer active:scale-95 transition-all"
+                  className="flex flex-col items-center gap-1.5 p-3 rounded-2xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 cursor-pointer active:scale-95 transition-all group shadow"
+                  title="Room Customization Settings"
                 >
-                  <Palette className="w-6 h-6 text-amber-400" />
-                  <span className="text-[10px] font-bold">Theme</span>
+                  <Sliders className="w-6 h-6 text-amber-300 group-hover:scale-110 transition-transform" />
+                  <span className="text-[10px] font-black text-amber-200">Customization</span>
                 </button>
               )}
 
@@ -4210,20 +4221,20 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         />
       )}
 
-      {/* ===== Room Customization Modal (Host Only) ===== */}
+      {/* ===== Room Customization Modal (Host Only) with Organized Sections ===== */}
       {showCustomizationModal && isCurrentUserHost && (
-        <div className="absolute inset-0 bg-black/75 backdrop-blur-md flex items-end sm:items-center justify-center z-50 animate-in fade-in duration-200 p-0 sm:p-4">
-          <div className="bg-zinc-950 border border-white/15 w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 flex flex-col gap-4 text-white shadow-2xl max-h-[85%] overflow-y-auto scrollbar-none">
+        <div className="absolute inset-0 bg-black/80 backdrop-blur-md flex items-end sm:items-center justify-center z-50 animate-in fade-in duration-200 p-0 sm:p-4">
+          <div className="bg-zinc-950 border border-white/15 w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 flex flex-col gap-3.5 text-white shadow-2xl max-h-[90%] overflow-y-auto scrollbar-none">
             
             {/* Header */}
-            <div className="flex justify-between items-center pb-2 border-b border-white/10">
+            <div className="flex justify-between items-center pb-2 border-b border-white/10 shrink-0">
               <div className="flex items-center gap-2.5">
                 <span className="p-2 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                  <Palette className="w-5 h-5" />
+                  <Sliders className="w-5 h-5" />
                 </span>
                 <div>
                   <h3 className="text-sm font-black text-white">Room Customization</h3>
-                  <p className="text-[10px] text-zinc-400">Personalize wallpaper, announcements & seats</p>
+                  <p className="text-[10px] text-zinc-400">Personalize themes, info, seats & privacy</p>
                 </div>
               </div>
               <button
@@ -4234,182 +4245,391 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
               </button>
             </div>
 
-            {/* Wallpaper Presets */}
-            <div className="flex flex-col gap-2.5">
-              <div className="flex items-center justify-between">
-                <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
-                  <span>🖼️ Room Wallpaper & Theme</span>
-                </label>
-                <span className="text-[10px] text-zinc-400">9 Presets + Custom Upload</span>
-              </div>
+            {/* Section Navigation Tabs */}
+            <div className="grid grid-cols-4 gap-1 p-1 bg-white/5 border border-white/10 rounded-2xl shrink-0">
+              <button
+                type="button"
+                onClick={() => setCustomizationTab('theme')}
+                className={`py-2 px-1 rounded-xl text-[10px] font-black transition-all flex flex-col items-center gap-1 cursor-pointer ${
+                  customizationTab === 'theme'
+                    ? 'bg-amber-500 text-zinc-950 shadow-md font-black'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <Palette className="w-3.5 h-3.5" />
+                <span>Themes</span>
+              </button>
 
-              {/* Active Custom Theme Card (if user has uploaded a custom image) */}
-              {roomBackground && !ROOM_WALLPAPERS.some(wp => wp.url === roomBackground) && (
-                <div className="relative rounded-2xl overflow-hidden aspect-[16/7] border-2 border-amber-400 shadow-[0_0_16px_rgba(251,191,36,0.5)] group animate-in fade-in duration-300">
-                  <img
-                    src={roomBackground}
-                    alt="Active Custom Wallpaper"
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).src = ROOM_WALLPAPERS[0].url;
-                    }}
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-black/40 flex items-end justify-between p-3">
-                    <div className="flex flex-col">
-                      <span className="inline-flex items-center gap-1 text-[9px] bg-amber-400 text-black font-black px-1.5 py-0.5 rounded-md uppercase tracking-wider w-fit">
-                        ⭐ Active Custom Theme
-                      </span>
-                      <span className="text-xs font-black text-white mt-0.5 drop-shadow">Your Uploaded Gallery Theme</span>
+              <button
+                type="button"
+                onClick={() => setCustomizationTab('info')}
+                className={`py-2 px-1 rounded-xl text-[10px] font-black transition-all flex flex-col items-center gap-1 cursor-pointer ${
+                  customizationTab === 'info'
+                    ? 'bg-amber-500 text-zinc-950 shadow-md font-black'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <Sliders className="w-3.5 h-3.5" />
+                <span>Basic Info</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setCustomizationTab('seats')}
+                className={`py-2 px-1 rounded-xl text-[10px] font-black transition-all flex flex-col items-center gap-1 cursor-pointer ${
+                  customizationTab === 'seats'
+                    ? 'bg-amber-500 text-zinc-950 shadow-md font-black'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <Sofa className="w-3.5 h-3.5" />
+                <span>Seats</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setCustomizationTab('privacy')}
+                className={`py-2 px-1 rounded-xl text-[10px] font-black transition-all flex flex-col items-center gap-1 cursor-pointer ${
+                  customizationTab === 'privacy'
+                    ? 'bg-amber-500 text-zinc-950 shadow-md font-black'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <ShieldAlert className="w-3.5 h-3.5" />
+                <span>Security</span>
+              </button>
+            </div>
+
+            {/* TAB 1: Themes & Wallpapers */}
+            {customizationTab === 'theme' && (
+              <div className="flex flex-col gap-3 animate-in fade-in duration-150">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <span>🖼️ Wallpaper & Atmosphere</span>
+                  </label>
+                  <span className="text-[10px] text-zinc-400">Presets + Custom Upload</span>
+                </div>
+
+                {/* Active Custom Theme Card */}
+                {roomBackground && !ROOM_WALLPAPERS.some(wp => wp.url === roomBackground) && (
+                  <div className="relative rounded-2xl overflow-hidden aspect-[16/7] border-2 border-amber-400 shadow-[0_0_16px_rgba(251,191,36,0.5)] group animate-in fade-in duration-300">
+                    <img
+                      src={roomBackground}
+                      alt="Active Custom Wallpaper"
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).src = ROOM_WALLPAPERS[0].url;
+                      }}
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-black/40 flex items-end justify-between p-3">
+                      <div className="flex flex-col">
+                        <span className="inline-flex items-center gap-1 text-[9px] bg-amber-400 text-black font-black px-1.5 py-0.5 rounded-md uppercase tracking-wider w-fit">
+                          ⭐ Active Custom Theme
+                        </span>
+                        <span className="text-xs font-black text-white mt-0.5 drop-shadow">Your Uploaded Gallery Theme</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => galleryFileInputRef.current?.click()}
+                        disabled={isUploadingTheme}
+                        className="bg-white/20 hover:bg-white/30 backdrop-blur-md text-white text-[10px] font-black px-2.5 py-1.5 rounded-xl border border-white/30 transition-all flex items-center gap-1 cursor-pointer active:scale-95 disabled:opacity-50"
+                      >
+                        <ImageIcon className="w-3 h-3" /> Change
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => galleryFileInputRef.current?.click()}
-                      disabled={isUploadingTheme}
-                      className="bg-white/20 hover:bg-white/30 backdrop-blur-md text-white text-[10px] font-black px-2.5 py-1.5 rounded-xl border border-white/30 transition-all flex items-center gap-1 cursor-pointer active:scale-95 disabled:opacity-50"
-                    >
-                      <ImageIcon className="w-3 h-3" /> Change
-                    </button>
+                    <div className="absolute top-2 right-2 bg-amber-400 rounded-full p-1 text-black shadow-lg">
+                      <Check className="w-3 h-3 stroke-[3]" />
+                    </div>
                   </div>
-                  <div className="absolute top-2 right-2 bg-amber-400 rounded-full p-1 text-black shadow-lg">
-                    <Check className="w-3 h-3 stroke-[3]" />
+                )}
+
+                {/* Preset Wallpapers 3x3 Grid */}
+                <div className="grid grid-cols-3 gap-2">
+                  {ROOM_WALLPAPERS.map((wp) => {
+                    const isSelected = roomBackground === wp.url;
+                    return (
+                      <div
+                        key={wp.id}
+                        onClick={() => setRoomBackground(wp.url)}
+                        className={`relative rounded-xl overflow-hidden aspect-[4/3] cursor-pointer border-2 transition-all group ${
+                          isSelected ? 'border-amber-400 scale-[1.03] shadow-[0_0_14px_rgba(251,191,36,0.7)] ring-1 ring-amber-400' : 'border-white/10 opacity-70 hover:opacity-100'
+                        }`}
+                      >
+                        <img src={wp.thumbnail || wp.url} alt={wp.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent flex items-end p-1.5">
+                          <span className="text-[9px] font-black text-white truncate drop-shadow">{wp.name}</span>
+                        </div>
+                        {isSelected && (
+                          <div className="absolute top-1 right-1 bg-amber-400 rounded-full p-0.5 text-black shadow">
+                            <Check className="w-2.5 h-2.5 stroke-[3]" />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Gallery / Device Upload Button */}
+                <input ref={galleryFileInputRef} type="file" accept="image/*" className="hidden" onChange={handleGalleryThemeUpload} />
+                <div className="flex flex-col gap-1.5 mt-1">
+                  <button
+                    type="button"
+                    onClick={() => galleryFileInputRef.current?.click()}
+                    disabled={isUploadingTheme}
+                    className="w-full bg-gradient-to-r from-indigo-600/40 via-purple-600/40 to-pink-600/40 hover:from-indigo-600/60 hover:to-pink-600/60 border border-indigo-400/40 px-3 py-2.5 rounded-xl text-xs font-black text-white cursor-pointer active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md"
+                  >
+                    {isUploadingTheme ? (
+                      <><RefreshCw className="w-4 h-4 animate-spin text-amber-300" /> <span className="text-amber-200">Applying Theme...</span></>
+                    ) : (
+                      <><ImageIcon className="w-4 h-4 text-amber-300" /> <span>Upload Custom Theme (Gallery & Photos)</span></>
+                    )}
+                  </button>
+                  {isUploadingTheme && (
+                    <p className="text-[10px] text-amber-300 text-center font-bold animate-pulse">⚡ Applying theme live... almost done</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2: Basic Info & Notice */}
+            {customizationTab === 'info' && (
+              <div className="flex flex-col gap-3 animate-in fade-in duration-150">
+                {/* Room Title */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
+                    🏷️ Room Title
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={35}
+                    value={roomTitle}
+                    onChange={(e) => setRoomTitle(e.target.value)}
+                    placeholder="Enter catchy room name..."
+                    className="bg-zinc-900 border border-white/15 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+
+                {/* Room Category / Atmosphere */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
+                    ✨ Room Atmosphere & Category
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {[
+                      { id: 'chat', label: '💬 Chat & Chill' },
+                      { id: 'music', label: '🎵 Music Beats' },
+                      { id: 'gaming', label: '🎮 Game Lounge' },
+                      { id: 'dating', label: '💖 Friends & Love' },
+                      { id: 'vip', label: '👑 VIP Gala' },
+                      { id: 'party', label: '🎉 Party Night' },
+                    ].map(cat => (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => setRoomCategory(cat.id)}
+                        className={`p-2 rounded-xl text-[10px] font-black border transition-all text-center cursor-pointer ${
+                          roomCategory === cat.id
+                            ? 'bg-amber-500/25 border-amber-400 text-amber-300 shadow'
+                            : 'bg-zinc-900/80 border-white/10 text-white/70 hover:text-white'
+                        }`}
+                      >
+                        {cat.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
-              )}
 
-              {/* Preset Wallpapers 3x3 Grid */}
-              <div className="grid grid-cols-3 gap-2">
-                {ROOM_WALLPAPERS.map((wp) => {
-                  const isSelected = roomBackground === wp.url;
-                  return (
-                    <div
-                      key={wp.id}
-                      onClick={() => setRoomBackground(wp.url)}
-                      className={`relative rounded-xl overflow-hidden aspect-[4/3] cursor-pointer border-2 transition-all group ${
-                        isSelected ? 'border-amber-400 scale-[1.03] shadow-[0_0_14px_rgba(251,191,36,0.7)] ring-1 ring-amber-400' : 'border-white/10 opacity-70 hover:opacity-100'
+                {/* Room Notice / Announcement */}
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
+                      📢 Announcement / Notice Ticker
+                    </label>
+                    <span className="text-[9px] text-zinc-400">{roomNotice.length}/100</span>
+                  </div>
+                  <textarea
+                    rows={3}
+                    maxLength={100}
+                    value={roomNotice}
+                    onChange={(e) => setRoomNotice(e.target.value)}
+                    placeholder="Welcome to the room! Sit back, relax and enjoy the vibes ✨"
+                    className="bg-zinc-900 border border-white/15 rounded-xl p-3 text-xs text-white resize-none focus:outline-none focus:border-amber-400 leading-relaxed"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: Seats & Stage Layout */}
+            {customizationTab === 'seats' && (
+              <div className="flex flex-col gap-3 animate-in fade-in duration-150">
+                {/* Seating Layout Style */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
+                    🛋️ Seating Layout Style
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSeatStyle('sofa')}
+                      className={`p-2.5 rounded-xl border text-left flex items-center gap-2 cursor-pointer transition-all ${
+                        seatStyle === 'sofa'
+                          ? 'bg-amber-500/20 border-amber-400 text-white font-bold shadow-md ring-1 ring-amber-400'
+                          : 'bg-zinc-900 border-white/10 text-zinc-400 hover:text-white'
                       }`}
                     >
-                      <img src={wp.thumbnail || wp.url} alt={wp.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent flex items-end p-1.5">
-                        <span className="text-[9px] font-black text-white truncate drop-shadow">{wp.name}</span>
+                      <span className="text-xl">🛋️</span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-black text-amber-300">Royal Lounge</p>
+                        <p className="text-[9px] text-zinc-400">Sofa seats (No.1–No.X)</p>
                       </div>
-                      {isSelected && (
-                        <div className="absolute top-1 right-1 bg-amber-400 rounded-full p-0.5 text-black shadow">
-                          <Check className="w-2.5 h-2.5 stroke-[3]" />
-                        </div>
-                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setSeatStyle('classic')}
+                      className={`p-2.5 rounded-xl border text-left flex items-center gap-2 cursor-pointer transition-all ${
+                        seatStyle === 'classic'
+                          ? 'bg-amber-500/20 border-amber-400 text-white font-bold shadow-md ring-1 ring-amber-400'
+                          : 'bg-zinc-900 border-white/10 text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      <span className="text-xl">🎙️</span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-black text-indigo-300">Classic Stage</p>
+                        <p className="text-[9px] text-zinc-400">Microphone circles</p>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Seat Capacity Management */}
+                <div className="flex flex-col gap-2 p-3 bg-white/5 border border-white/10 rounded-2xl">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-black text-white">Stage Seats Capacity</p>
+                      <p className="text-[10px] text-zinc-400">
+                        Currently: <span className="text-amber-300 font-bold">{seats.length - 1} Guest Seats</span> (+ Host Throne)
+                      </p>
                     </div>
-                  );
-                })}
-              </div>
+                    <span className="text-xs font-mono font-black text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-md border border-amber-400/30">
+                      {seats.length - 1}/20
+                    </span>
+                  </div>
 
-              {/* Gallery / Device Upload Button */}
-              <input ref={galleryFileInputRef} type="file" accept="image/*" className="hidden" onChange={handleGalleryThemeUpload} />
-              <div className="flex flex-col gap-1.5 mt-1">
-                <button
-                  type="button"
-                  onClick={() => galleryFileInputRef.current?.click()}
-                  disabled={isUploadingTheme}
-                  className="w-full bg-gradient-to-r from-indigo-600/40 via-purple-600/40 to-pink-600/40 hover:from-indigo-600/60 hover:to-pink-600/60 border border-indigo-400/40 px-3 py-2.5 rounded-xl text-xs font-black text-white cursor-pointer active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md"
-                >
-                  {isUploadingTheme ? (
-                    <><RefreshCw className="w-4 h-4 animate-spin text-amber-300" /> <span className="text-amber-200">Applying Theme...</span></>
-                  ) : (
-                    <><ImageIcon className="w-4 h-4 text-amber-300" /> <span>Upload Custom Theme (Gallery & Photos)</span></>
-                  )}
-                </button>
-                {isUploadingTheme && (
-                  <p className="text-[10px] text-amber-300 text-center font-bold animate-pulse">⚡ Applying theme live... almost done</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleAddMoreSeats(2)}
+                      disabled={seats.length >= 21}
+                      className="flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 text-zinc-950 text-xs font-black shadow-md cursor-pointer active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add +2 Seats</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleAddMoreSeats(4)}
+                      disabled={seats.length >= 17}
+                      className="flex-1 py-2 px-3 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white text-xs font-black cursor-pointer active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add +4 Seats</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 4: Security & Privacy */}
+            {customizationTab === 'privacy' && (
+              <div className="flex flex-col gap-3 animate-in fade-in duration-150">
+                {/* Public vs Private Mode */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
+                    🔒 Room Privacy Mode
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setRoomIsPrivate(false)}
+                      className={`p-3 rounded-xl border text-left flex items-center gap-2.5 cursor-pointer transition-all ${
+                        !roomIsPrivate
+                          ? 'bg-emerald-500/20 border-emerald-400 text-white font-bold shadow-md ring-1 ring-emerald-400'
+                          : 'bg-zinc-900 border-white/10 text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      <Globe className="w-5 h-5 text-emerald-400 shrink-0" />
+                      <div>
+                        <p className="text-xs font-black text-emerald-300">Public Room</p>
+                        <p className="text-[9px] text-zinc-400">Listed in explore lobby</p>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setRoomIsPrivate(true)}
+                      className={`p-3 rounded-xl border text-left flex items-center gap-2.5 cursor-pointer transition-all ${
+                        roomIsPrivate
+                          ? 'bg-rose-500/20 border-rose-400 text-white font-bold shadow-md ring-1 ring-rose-400'
+                          : 'bg-zinc-900 border-white/10 text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      <Lock className="w-5 h-5 text-rose-400 shrink-0" />
+                      <div>
+                        <p className="text-xs font-black text-rose-300">Private Room</p>
+                        <p className="text-[9px] text-zinc-400">Passcode protected</p>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Password field if private */}
+                {roomIsPrivate && (
+                  <div className="flex flex-col gap-1.5 p-3 bg-rose-950/20 border border-rose-500/30 rounded-2xl animate-in slide-in-from-top duration-150">
+                    <label className="text-[11px] font-black text-rose-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <Lock className="w-3.5 h-3.5" />
+                      <span>Room Entry Password</span>
+                    </label>
+                    <input
+                      type="password"
+                      maxLength={12}
+                      value={roomPassword}
+                      onChange={(e) => setRoomPassword(e.target.value)}
+                      placeholder="Enter 4-12 digit password..."
+                      className="bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-400 font-mono tracking-widest"
+                    />
+                    <p className="text-[9px] text-zinc-400">Only users who enter this password or join via direct invite can enter.</p>
+                  </div>
                 )}
+
+                {/* Host Control Notice */}
+                <div className="p-3 bg-white/5 border border-white/10 rounded-2xl text-[10px] text-zinc-400 leading-relaxed flex items-start gap-2">
+                  <span className="text-sm">🛡️</span>
+                  <span>As host, you can kick disruptors, mute microphones, manage seat capacity, and switch wallpapers at any time.</span>
+                </div>
               </div>
-            </div>
-
-            {/* Room Title */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
-                🏷️ Room Title
-              </label>
-              <input
-                type="text"
-                maxLength={35}
-                value={roomTitle}
-                onChange={(e) => setRoomTitle(e.target.value)}
-                className="bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
-              />
-            </div>
-
-            {/* Room Notice / Announcement */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
-                📢 Room Announcement / Notice
-              </label>
-              <textarea
-                rows={2}
-                maxLength={100}
-                value={roomNotice}
-                onChange={(e) => setRoomNotice(e.target.value)}
-                placeholder="Welcome to the room! Sit back, relax and enjoy the vibes ✨"
-                className="bg-zinc-900 border border-white/15 rounded-xl p-3 text-xs text-white resize-none focus:outline-none focus:border-amber-400"
-              />
-            </div>
-
-            {/* Seating Layout Style */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
-                🛋️ Seating Layout Style
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setSeatStyle('sofa')}
-                  className={`p-2.5 rounded-xl border text-left flex items-center gap-2 cursor-pointer transition-all ${
-                    seatStyle === 'sofa'
-                      ? 'bg-amber-500/20 border-amber-400 text-white font-bold shadow-md'
-                      : 'bg-zinc-900 border-white/10 text-zinc-400 hover:text-white'
-                  }`}
-                >
-                  <span className="text-xl">🛋️</span>
-                  <div className="min-w-0">
-                    <p className="text-xs font-black text-amber-300">Royal Lounge</p>
-                    <p className="text-[9px] text-zinc-400">Sofa seats (No.1–No.8)</p>
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSeatStyle('classic')}
-                  className={`p-2.5 rounded-xl border text-left flex items-center gap-2 cursor-pointer transition-all ${
-                    seatStyle === 'classic'
-                      ? 'bg-amber-500/20 border-amber-400 text-white font-bold shadow-md'
-                      : 'bg-zinc-900 border-white/10 text-zinc-400 hover:text-white'
-                  }`}
-                >
-                  <span className="text-xl">🎙️</span>
-                  <div className="min-w-0">
-                    <p className="text-xs font-black text-indigo-300">Classic Stage</p>
-                    <p className="text-[9px] text-zinc-400">Microphone circles</p>
-                  </div>
-                </button>
-              </div>
-            </div>
+            )}
 
             {/* Save & Apply Button */}
-            <button
-              disabled={isSavingCustomization}
-              onClick={() => handleSaveRoomCustomization()}
-              className="w-full mt-2 bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-400 hover:to-rose-400 text-white font-black py-3 rounded-xl text-xs uppercase tracking-wider shadow-lg active:scale-95 cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
-            >
-              {isSavingCustomization ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Saving Changes...</span>
-                </>
-              ) : (
-                <>
-                  <Check className="w-4 h-4 stroke-[3]" />
-                  <span>Save & Broadcast Room</span>
-                </>
-              )}
-            </button>
+            <div className="pt-2 border-t border-white/10 shrink-0">
+              <button
+                disabled={isSavingCustomization}
+                onClick={() => handleSaveRoomCustomization()}
+                className="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-400 hover:to-rose-400 text-white font-black py-3 rounded-xl text-xs uppercase tracking-wider shadow-lg active:scale-95 cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {isSavingCustomization ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Saving Customization...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4 stroke-[3]" />
+                    <span>Save & Apply Customization</span>
+                  </>
+                )}
+              </button>
+            </div>
 
           </div>
         </div>

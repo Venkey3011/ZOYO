@@ -35,7 +35,8 @@ interface ConfirmModalState {
   onConfirm: () => void;
 }
 
-type ManagementTab = 'user_control' | 'coin_transfer' | 'access_privilege' | 'audit_logs' | 'room_management' | 'catalog_hub';
+type ManagementTab = 'user_control' | 'coin_transfer' | 'access_privilege' | 'audit_logs' | 'room_management' | 'catalog_hub' | 'media_hub';
+
 
 export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConsoleProps) {
   const [users, setUsers] = useState<User[]>([]);
@@ -100,6 +101,22 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
   const [newGameDesc, setNewGameDesc] = useState('');
   const [newGameStatus, setNewGameStatus] = useState<'active' | 'coming_soon'>('active');
 
+  // Media Hub state (Admin only)
+  const [mediaSubTab, setMediaSubTab] = useState<'ads' | 'entry_video'>('ads');
+  const [adsList, setAdsList] = useState<any[]>([]);
+  const [adsLoading, setAdsLoading] = useState(false);
+  const [newAdTitle, setNewAdTitle] = useState('');
+  const [newAdSubtitle, setNewAdSubtitle] = useState('');
+  const [newAdBadge, setNewAdBadge] = useState('🔥 Live Event');
+  const [newAdGradientFrom, setNewAdGradientFrom] = useState('rose-500');
+  const [newAdGradientTo, setNewAdGradientTo] = useState('pink-600');
+  const [newAdLinkUrl, setNewAdLinkUrl] = useState('');
+  const [newAdActive, setNewAdActive] = useState(true);
+  const [entryVideoUrl, setEntryVideoUrl] = useState('');
+  const [entryVideoEnabled, setEntryVideoEnabled] = useState(false);
+  const [entryVideoUploading, setEntryVideoUploading] = useState(false);
+  const [entryVideoSaved, setEntryVideoSaved] = useState(false);
+
   const fetchCatalogData = async () => {
     setCatalogLoading(true);
     try {
@@ -123,7 +140,124 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
     }
   };
 
+  const fetchMediaHubData = async () => {
+    setAdsLoading(true);
+    try {
+      const [adsRes, videoRes] = await Promise.all([
+        fetch('/api/ads/all'),
+        fetch('/api/settings/entry-video')
+      ]);
+      const [adsData, videoData] = await Promise.all([adsRes.json(), videoRes.json()]);
+      if (adsData.success) setAdsList(adsData.ads || []);
+      if (videoData.success) {
+        setEntryVideoUrl(videoData.videoUrl || '');
+        setEntryVideoEnabled(videoData.enabled !== false && !!videoData.videoUrl);
+      }
+    } catch (err) {
+      console.error('Error fetching media hub data:', err);
+    } finally {
+      setAdsLoading(false);
+    }
+  };
+
+  const handleCreateAd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newAdTitle.trim()) return;
+    try {
+      const res = await fetch('/api/ads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: newAdTitle.trim(), subtitle: newAdSubtitle.trim(),
+          badge: newAdBadge, gradient_from: newAdGradientFrom,
+          gradient_to: newAdGradientTo, link_url: newAdLinkUrl,
+          is_active: newAdActive, userRole: currentUser.role,
+          created_by: currentUser.name
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSuccessMsg('Ad banner created!');
+        setNewAdTitle(''); setNewAdSubtitle(''); setNewAdLinkUrl('');
+        fetchMediaHubData();
+      } else {
+        setErrorMsg(data.error || 'Failed to create ad');
+      }
+    } catch { setErrorMsg('Network error'); }
+    setTimeout(() => { setSuccessMsg(''); setErrorMsg(''); }, 3000);
+  };
+
+  const handleToggleAd = async (adId: string, currentState: boolean) => {
+    try {
+      await fetch(`/api/ads/${adId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: !currentState, userRole: currentUser.role })
+      });
+      setAdsList(prev => prev.map(a => a._id === adId ? { ...a, is_active: !currentState } : a));
+    } catch { setErrorMsg('Failed to update ad'); setTimeout(() => setErrorMsg(''), 3000); }
+  };
+
+  const handleDeleteAd = async (adId: string) => {
+    try {
+      await fetch(`/api/ads/${adId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userRole: currentUser.role })
+      });
+      setAdsList(prev => prev.filter(a => a._id !== adId));
+      setSuccessMsg('Ad deleted');
+      setTimeout(() => setSuccessMsg(''), 2500);
+    } catch { setErrorMsg('Failed to delete ad'); setTimeout(() => setErrorMsg(''), 3000); }
+  };
+
+  const handleEntryVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setEntryVideoUploading(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        const base64 = ev.target?.result as string;
+        const uploadRes = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileData: base64, fileType: 'video', fileName: file.name })
+        });
+        const uploadData = await uploadRes.json();
+        if (uploadData.success) {
+          setEntryVideoUrl(uploadData.url);
+          setEntryVideoEnabled(true);
+        } else {
+          setErrorMsg('Video upload failed');
+        }
+        setEntryVideoUploading(false);
+      };
+      reader.readAsDataURL(file);
+    } catch { setErrorMsg('Upload failed'); setEntryVideoUploading(false); }
+  };
+
+  const handleSaveEntryVideo = async () => {
+    try {
+      const res = await fetch('/api/settings/entry-video', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoUrl: entryVideoUrl, enabled: entryVideoEnabled, userRole: currentUser.role, userId: currentUser.id })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setEntryVideoSaved(true);
+        setSuccessMsg('Entry video settings saved!');
+        setTimeout(() => { setEntryVideoSaved(false); setSuccessMsg(''); }, 3000);
+      } else {
+        setErrorMsg(data.error || 'Failed to save');
+        setTimeout(() => setErrorMsg(''), 3000);
+      }
+    } catch { setErrorMsg('Network error'); setTimeout(() => setErrorMsg(''), 3000); }
+  };
+
   const handleAddGift = async (e: React.FormEvent) => {
+
     e.preventDefault();
     if (!newGiftName.trim() || !newGiftCoins) return;
     try {
@@ -787,7 +921,24 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
             Catalog Hub
           </button>
         )}
+
+        {currentUser.role === 'admin' && (
+          <button
+            onClick={() => {
+              setActiveTab('media_hub');
+              fetchMediaHubData();
+            }}
+            className={`flex-1 min-w-[75px] py-2 text-center font-bold rounded-lg transition-all text-[10px] cursor-pointer whitespace-nowrap px-1.5 ${
+              activeTab === 'media_hub'
+                ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-sm'
+                : 'text-zinc-500 hover:text-zinc-800'
+            }`}
+          >
+            📺 Media Hub
+          </button>
+        )}
       </div>
+
 
       {/* Dynamic Sub-Page Content */}
       <div className="mt-4 flex flex-col flex-1 gap-3 min-h-0">
@@ -1865,7 +2016,263 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
 
       </div>
 
-      {/* Polish Absolute Action Confirmation Modal Overlay */}
+      {/* TAB 7: MEDIA HUB (Admin only) */}
+      {activeTab === 'media_hub' && currentUser.role === 'admin' && (
+        <div className="flex flex-col gap-3 overflow-y-auto pb-4">
+          
+          {/* Header */}
+          <div className="bg-gradient-to-r from-violet-600 to-purple-600 p-3 rounded-2xl text-white shadow-md">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">📺</span>
+              <div>
+                <h3 className="font-black text-sm uppercase tracking-wider">Media Hub</h3>
+                <p className="text-[10px] text-violet-100 font-medium">Manage ads, banners & entry experience</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Sub-tab switcher */}
+          <div className="flex gap-1 bg-zinc-100 p-1 rounded-xl border border-zinc-200">
+            <button
+              onClick={() => setMediaSubTab('ads')}
+              className={`flex-1 py-2 text-[10px] font-black rounded-lg transition-all cursor-pointer uppercase tracking-wider ${
+                mediaSubTab === 'ads' ? 'bg-violet-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-800'
+              }`}
+            >
+              📢 Ads & Banners
+            </button>
+            <button
+              onClick={() => setMediaSubTab('entry_video')}
+              className={`flex-1 py-2 text-[10px] font-black rounded-lg transition-all cursor-pointer uppercase tracking-wider ${
+                mediaSubTab === 'entry_video' ? 'bg-violet-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-800'
+              }`}
+            >
+              🎬 Entry Video
+            </button>
+          </div>
+
+          {/* ── ADS & BANNERS ── */}
+          {mediaSubTab === 'ads' && (
+            <div className="flex flex-col gap-3">
+
+              {/* Create new ad form */}
+              <form onSubmit={handleCreateAd} className="bg-white border border-zinc-200 rounded-2xl p-3 shadow-sm flex flex-col gap-2.5">
+                <div className="flex items-center gap-1.5 border-b border-zinc-100 pb-2 mb-1">
+                  <span className="text-sm">📢</span>
+                  <span className="text-[10px] font-black text-zinc-700 uppercase tracking-wider">New Ad Banner</span>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Title *</label>
+                  <input
+                    value={newAdTitle} onChange={e => setNewAdTitle(e.target.value)}
+                    placeholder="e.g. ZOYO LUDO WORLD CUP" required maxLength={60}
+                    className="w-full border border-zinc-200 rounded-xl px-3 py-2 text-[11px] font-bold text-zinc-800 focus:outline-none focus:border-violet-400 bg-zinc-50"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Subtitle</label>
+                  <input
+                    value={newAdSubtitle} onChange={e => setNewAdSubtitle(e.target.value)}
+                    placeholder="Short description shown below title" maxLength={100}
+                    className="w-full border border-zinc-200 rounded-xl px-3 py-2 text-[11px] font-bold text-zinc-800 focus:outline-none focus:border-violet-400 bg-zinc-50"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Badge Label</label>
+                    <input
+                      value={newAdBadge} onChange={e => setNewAdBadge(e.target.value)}
+                      placeholder="🔥 Live Event" maxLength={30}
+                      className="w-full border border-zinc-200 rounded-xl px-2 py-1.5 text-[10px] font-bold text-zinc-800 focus:outline-none focus:border-violet-400 bg-zinc-50"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Link URL</label>
+                    <input
+                      value={newAdLinkUrl} onChange={e => setNewAdLinkUrl(e.target.value)}
+                      placeholder="https://..." type="url"
+                      className="w-full border border-zinc-200 rounded-xl px-2 py-1.5 text-[10px] font-bold text-zinc-800 focus:outline-none focus:border-violet-400 bg-zinc-50"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Gradient From</label>
+                    <select value={newAdGradientFrom} onChange={e => setNewAdGradientFrom(e.target.value)}
+                      className="w-full border border-zinc-200 rounded-xl px-2 py-1.5 text-[10px] font-bold text-zinc-700 bg-zinc-50 focus:outline-none focus:border-violet-400">
+                      {['rose-500','pink-500','orange-500','amber-500','violet-600','blue-600','emerald-500','cyan-500'].map(c => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Gradient To</label>
+                    <select value={newAdGradientTo} onChange={e => setNewAdGradientTo(e.target.value)}
+                      className="w-full border border-zinc-200 rounded-xl px-2 py-1.5 text-[10px] font-bold text-zinc-700 bg-zinc-50 focus:outline-none focus:border-violet-400">
+                      {['pink-600','rose-600','amber-600','yellow-500','purple-700','indigo-700','teal-600','sky-600'].map(c => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Live Preview */}
+                {newAdTitle && (
+                  <div className={`relative rounded-xl h-16 p-3 flex flex-col justify-between overflow-hidden bg-gradient-to-r from-${newAdGradientFrom} to-${newAdGradientTo}`}>
+                    <span className="text-[8px] bg-black/20 text-white font-extrabold tracking-wider px-2 py-0.5 rounded-full uppercase self-start">{newAdBadge || '🔥 Live Event'}</span>
+                    <div>
+                      <p className="text-[10px] font-black text-white leading-tight uppercase">{newAdTitle}</p>
+                      {newAdSubtitle && <p className="text-[8px] text-white/80 mt-0.5">{newAdSubtitle}</p>}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between pt-1 border-t border-zinc-100">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <div
+                      onClick={() => setNewAdActive(!newAdActive)}
+                      className={`w-9 h-5 rounded-full transition-colors ${newAdActive ? 'bg-emerald-500' : 'bg-zinc-300'} flex items-center`}
+                    >
+                      <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${newAdActive ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                    <span className="text-[9px] font-bold text-zinc-600 uppercase">Active</span>
+                  </label>
+                  <button type="submit"
+                    className="bg-gradient-to-r from-violet-600 to-purple-600 text-white text-[10px] font-black px-4 py-2 rounded-xl shadow cursor-pointer uppercase tracking-wider hover:brightness-110 transition-all"
+                  >
+                    + Publish Ad
+                  </button>
+                </div>
+              </form>
+
+              {/* Ads List */}
+              <div className="bg-white border border-zinc-200 rounded-2xl p-3 shadow-sm flex flex-col gap-2">
+                <div className="flex items-center justify-between border-b border-zinc-100 pb-2 mb-1">
+                  <span className="text-[10px] font-black text-zinc-700 uppercase tracking-wider">📋 Published Ads ({adsList.length})</span>
+                  <button onClick={fetchMediaHubData} className="text-[9px] text-violet-600 font-bold cursor-pointer hover:underline">↻ Refresh</button>
+                </div>
+                {adsLoading ? (
+                  <div className="text-center py-4 text-zinc-400 text-[10px]">Loading...</div>
+                ) : adsList.length === 0 ? (
+                  <div className="text-center py-4 text-zinc-400 text-[10px]">No ads created yet. Use the form above to publish your first banner.</div>
+                ) : (
+                  adsList.map(ad => (
+                    <div key={ad._id} className={`border rounded-xl p-2.5 flex gap-2.5 items-center ${ad.is_active ? 'border-emerald-200 bg-emerald-50/50' : 'border-zinc-200 bg-zinc-50 opacity-60'}`}>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[10px] font-black text-zinc-800 truncate">{ad.title}</span>
+                          <span className={`text-[7px] font-black px-1.5 py-0.5 rounded-full uppercase ${ad.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-zinc-200 text-zinc-500'}`}>
+                            {ad.is_active ? 'Live' : 'Paused'}
+                          </span>
+                        </div>
+                        {ad.subtitle && <p className="text-[9px] text-zinc-500 truncate">{ad.subtitle}</p>}
+                        <span className="text-[8px] text-zinc-400">{ad.badge}</span>
+                      </div>
+                      <div className="flex gap-1 shrink-0">
+                        <button
+                          onClick={() => handleToggleAd(ad._id, ad.is_active)}
+                          className={`text-[9px] font-bold px-2 py-1 rounded-lg cursor-pointer transition-all ${ad.is_active ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'}`}
+                        >{ad.is_active ? 'Pause' : 'Activate'}</button>
+                        <button
+                          onClick={() => setConfirmModal({ isOpen: true, title: 'Delete Ad', message: `Delete "${ad.title}"?`, onConfirm: () => { handleDeleteAd(ad._id); setConfirmModal(p => ({ ...p, isOpen: false })); } })}
+                          className="text-zinc-400 hover:text-rose-600 p-1.5 rounded-lg transition-colors cursor-pointer"
+                        ><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── ENTRY VIDEO ── */}
+          {mediaSubTab === 'entry_video' && (
+            <div className="flex flex-col gap-3">
+              <div className="bg-white border border-zinc-200 rounded-2xl p-3 shadow-sm flex flex-col gap-3">
+                <div className="flex items-center gap-1.5 border-b border-zinc-100 pb-2">
+                  <span className="text-sm">🎬</span>
+                  <div>
+                    <span className="text-[10px] font-black text-zinc-700 uppercase tracking-wider">Entry Video</span>
+                    <p className="text-[9px] text-zinc-400 mt-0.5">Upload a custom video shown to users when they open the app. Recommended: 9:16 vertical, MP4, max 50MB.</p>
+                  </div>
+                </div>
+
+                {/* Enable toggle */}
+                <div className="flex items-center justify-between p-2.5 bg-zinc-50 rounded-xl border border-zinc-200">
+                  <div>
+                    <p className="text-[10px] font-black text-zinc-700">Entry Video Enabled</p>
+                    <p className="text-[9px] text-zinc-400">When enabled, this video plays on app launch instead of the default animated splash.</p>
+                  </div>
+                  <div
+                    onClick={() => setEntryVideoEnabled(!entryVideoEnabled)}
+                    className={`w-10 h-5.5 rounded-full cursor-pointer transition-colors flex items-center px-0.5 ${entryVideoEnabled ? 'bg-violet-600' : 'bg-zinc-300'}`}
+                  >
+                    <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${entryVideoEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                  </div>
+                </div>
+
+                {/* Video URL input */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Video URL (or upload below)</label>
+                  <input
+                    value={entryVideoUrl} onChange={e => setEntryVideoUrl(e.target.value)}
+                    placeholder="https://... or /uploads/video_xxx.mp4"
+                    className="w-full border border-zinc-200 rounded-xl px-3 py-2 text-[11px] font-bold text-zinc-700 focus:outline-none focus:border-violet-400 bg-zinc-50"
+                  />
+                </div>
+
+                {/* Upload area */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Upload Video File</label>
+                  <label className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-2xl p-5 cursor-pointer transition-all ${entryVideoUploading ? 'border-violet-400 bg-violet-50' : 'border-zinc-300 bg-zinc-50 hover:border-violet-400 hover:bg-violet-50/40'}`}>
+                    <input type="file" accept="video/mp4,video/webm,video/ogg,video/*" className="hidden" onChange={handleEntryVideoUpload} disabled={entryVideoUploading} />
+                    {entryVideoUploading ? (
+                      <>
+                        <div className="w-7 h-7 border-3 border-violet-600 border-t-transparent rounded-full animate-spin" />
+                        <span className="text-[10px] text-violet-600 font-black">Uploading...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-2xl">📁</span>
+                        <div className="text-center">
+                          <p className="text-[10px] font-black text-zinc-700">Click to select video</p>
+                          <p className="text-[9px] text-zinc-400">MP4 · 9:16 vertical · Max 50MB</p>
+                        </div>
+                      </>
+                    )}
+                  </label>
+                </div>
+
+                {/* Preview */}
+                {entryVideoUrl && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Preview</label>
+                    <video
+                      src={entryVideoUrl} controls muted playsInline
+                      className="w-full max-h-48 rounded-xl object-contain bg-black border border-zinc-200"
+                    />
+                  </div>
+                )}
+
+                <button
+                  onClick={handleSaveEntryVideo}
+                  disabled={entryVideoUploading}
+                  className={`w-full py-3 rounded-xl font-black text-[11px] uppercase tracking-wider transition-all cursor-pointer shadow ${entryVideoSaved ? 'bg-emerald-500 text-white' : 'bg-gradient-to-r from-violet-600 to-purple-600 text-white hover:brightness-110'} disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  {entryVideoSaved ? '✅ Saved!' : '💾 Save Entry Video Settings'}
+                </button>
+              </div>
+            </div>
+          )}
+
+        </div>
+      )}
+
+
       {confirmModal.isOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-[fadeIn_0.2s_ease-out]">
           <div className="w-full max-w-xs bg-white border border-zinc-200 rounded-2xl p-4 shadow-2xl flex flex-col gap-4">

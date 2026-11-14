@@ -100,6 +100,18 @@ export default function App() {
     setShowSplash(false);
   };
 
+  // Fetch admin-set custom entry video
+  const [entryVideoUrl, setEntryVideoUrl] = React.useState('');
+  const [entryVideoEnabled, setEntryVideoEnabled] = React.useState(false);
+  React.useEffect(() => {
+    fetch('/api/settings/entry-video').then(r => r.json()).then(d => {
+      if (d.success && d.enabled && d.videoUrl) {
+        setEntryVideoUrl(d.videoUrl);
+        setEntryVideoEnabled(true);
+      }
+    }).catch(() => {});
+  }, []);
+
   // Fetch rooms from backend when user logs in — paused when user is inside a room to save 100% CPU/bandwidth
   React.useEffect(() => {
     if (!isLoggedIn || activeRoomId !== null) return;
@@ -788,6 +800,16 @@ export default function App() {
             transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
             className="absolute inset-0 z-[99999] overflow-hidden bg-gradient-to-b from-black via-zinc-950 to-black flex flex-col items-center justify-between p-6 select-none"
           >
+            {/* Admin custom entry video background */}
+            {entryVideoEnabled && entryVideoUrl && (
+              <video
+                src={entryVideoUrl}
+                autoPlay muted playsInline loop
+                onEnded={handleDismissSplash}
+                className="absolute inset-0 w-full h-full object-cover z-0 opacity-80"
+              />
+            )}
+
             {/* Cinematic Background Light Beam & Ambient Glow */}
             <motion.div 
               initial={{ scale: 0.8, opacity: 0 }}
@@ -798,6 +820,8 @@ export default function App() {
 
             {/* Subtle Video Film Scanlines / Vignette */}
             <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(0,0,0,0.85)_100%)] z-10" />
+
+
 
             {/* Floating Energy Sparks */}
             <div className="absolute inset-0 pointer-events-none overflow-hidden z-10">

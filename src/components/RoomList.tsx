@@ -52,6 +52,19 @@ export default function RoomList({ rooms, onJoinRoom, onCreateRoom, currentUser 
 
   const [searchedPrivateRoom, setSearchedPrivateRoom] = useState<Room | null>(null);
 
+  // Admin-managed ad banners
+  const [adBanners, setAdBanners] = useState<any[]>([]);
+  const [adBannerIndex, setAdBannerIndex] = useState(0);
+  useEffect(() => {
+    fetch('/api/ads').then(r => r.json()).then(d => { if (d.success && d.ads?.length) setAdBanners(d.ads); }).catch(() => {});
+  }, []);
+  // Auto-scroll banners
+  useEffect(() => {
+    if (adBanners.length <= 1) return;
+    const t = setInterval(() => setAdBannerIndex(i => (i + 1) % adBanners.length), 4000);
+    return () => clearInterval(t);
+  }, [adBanners.length]);
+
   // Handle hardware / gesture back button to close any open modal
   useEffect(() => {
     if (showCreateModal || passwordModal || showCodeLookup) {
@@ -257,23 +270,37 @@ export default function RoomList({ rooms, onJoinRoom, onCreateRoom, currentUser 
         </button>
       </div>
 
-      {/* Featured Banners Slider */}
-      {rooms.some(room => room.category === 'games' || (room.activeGame && room.activeGame !== 'none')) && (
-        <div className="relative shrink-0 overflow-hidden rounded-[24px] h-24 bg-gradient-to-r from-rose-500 to-pink-600 p-4 shadow-md flex flex-col justify-between group">
-          <div className="absolute -right-3 -bottom-3 w-20 h-20 bg-white/10 rounded-full blur-md"></div>
-          <div className="flex justify-between items-start">
-            <span className="text-[9px] bg-black/20 text-white font-extrabold tracking-wider px-2 py-0.5 rounded-full uppercase">
-              🔥 Live Event
-            </span>
-            <div className="flex gap-1.5">
-              <span className="w-1.5 h-1.5 bg-white rounded-full"></span>
-              <span className="w-1.5 h-1.5 bg-white/40 rounded-full"></span>
+      {/* Featured Banners Slider — Admin-managed */}
+      {adBanners.length > 0 && (
+        <div className="relative shrink-0 overflow-hidden rounded-[24px] h-24 shadow-md flex flex-col justify-between group"
+          style={{ background: `linear-gradient(to right, var(--tw-gradient-from, #f43f5e), var(--tw-gradient-to, #db2777))` }}
+        >
+          {adBanners.map((ad, idx) => (
+            <div
+              key={ad._id}
+              className={`absolute inset-0 p-4 flex flex-col justify-between transition-opacity duration-700 ${idx === adBannerIndex ? 'opacity-100 z-10' : 'opacity-0 z-0'} bg-gradient-to-r from-${ad.gradient_from || 'rose-500'} to-${ad.gradient_to || 'pink-600'}`}
+            >
+              <div className="absolute -right-3 -bottom-3 w-20 h-20 bg-white/10 rounded-full blur-md" />
+              <div className="flex justify-between items-start relative z-10">
+                <span className="text-[9px] bg-black/20 text-white font-extrabold tracking-wider px-2 py-0.5 rounded-full uppercase">
+                  {ad.badge || '🔥 Live Event'}
+                </span>
+                {adBanners.length > 1 && (
+                  <div className="flex gap-1.5">
+                    {adBanners.map((_, i) => (
+                      <button key={i} onClick={() => setAdBannerIndex(i)}
+                        className={`w-1.5 h-1.5 rounded-full transition-all cursor-pointer ${i === adBannerIndex ? 'bg-white scale-125' : 'bg-white/40'}`}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="relative z-10">
+                <h3 className="text-xs font-display font-black text-white leading-tight uppercase tracking-wide">{ad.title}</h3>
+                {ad.subtitle && <p className="text-[10px] text-white/80 mt-0.5 font-medium leading-none">{ad.subtitle}</p>}
+              </div>
             </div>
-          </div>
-          <div>
-            <h3 className="text-xs font-display font-black text-white leading-tight uppercase tracking-wide">ZOYO LUDO WORLD CUP</h3>
-            <p className="text-[10px] text-rose-50 mt-0.5 font-medium leading-none">Join Games rooms to win 20,000 Coins &amp; level badges!</p>
-          </div>
+          ))}
         </div>
       )}
 

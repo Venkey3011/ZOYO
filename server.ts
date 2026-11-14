@@ -11,8 +11,9 @@ import mongoose, { Schema } from "mongoose";
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
-app.use(express.json({ limit: '25mb' }));
-app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+
 
 // Ensure public/uploads directory exists and serve files statically
 const UPLOADS_DIR = path.join(process.cwd(), "public", "uploads");
@@ -47,6 +48,10 @@ app.post("/api/upload", async (req: express.Request, res: express.Response) => {
       else if (mime.includes('audio/wav')) ext = 'wav';
       else if (mime.includes('audio/ogg')) ext = 'ogg';
       else if (mime.includes('audio/m4a') || mime.includes('audio/mp4') || mime.includes('audio/x-m4a')) ext = 'm4a';
+      else if (mime.includes('video/mp4')) ext = 'mp4';
+      else if (mime.includes('video/webm')) ext = 'webm';
+      else if (mime.includes('video/ogg')) ext = 'ogv';
+      else if (mime.includes('video/quicktime')) ext = 'mov';
     }
 
     const cleanBaseName = (fileName || `${fileType}_${Date.now()}`)
@@ -168,12 +173,42 @@ const CustomGameSchema = new Schema({
   min_players: Number, max_players: Number, description: String, added_by: String
 }, { timestamps: true, _id: false });
 
+// Ad Banners Schema
+const AdBannerSchema = new Schema({
+  _id: { type: String, required: true },
+  title: { type: String, required: true },
+  subtitle: String,
+  badge: { type: String, default: '🔥 Live Event' },
+  gradient_from: { type: String, default: 'rose-500' },
+  gradient_to: { type: String, default: 'pink-600' },
+  link_url: String,
+  is_active: { type: Boolean, default: true },
+  created_by: String,
+  order: { type: Number, default: 0 }
+}, { timestamps: true, _id: false });
+
+// App Settings Schema (key-value store for global settings)
+const AppSettingSchema = new Schema({
+  _id: { type: String, required: true },
+  value: Schema.Types.Mixed,
+  updated_by: String,
+  label: String
+}, { timestamps: true, _id: false });
+
 const UserModel = mongoose.model('users', UserSchema);
 const RoomModel = mongoose.model('rooms', RoomSchema);
 const FriendRequestModel = mongoose.model('friend_requests', FriendRequestSchema);
 const DirectMessageModel = mongoose.model('direct_messages', DirectMessageSchema);
 const TransferLogModel = mongoose.model('transfer_logs', TransferLogSchema);
 const CustomGameModel = mongoose.model('custom_games', CustomGameSchema);
+const AdBannerModel = mongoose.model('ad_banners', AdBannerSchema);
+const AppSettingModel = mongoose.model('app_settings', AppSettingSchema);
+
+// In-memory fallback for ads and settings
+let inMemoryAds: any[] = [
+  { _id: 'ad_default_1', title: 'ZOYO LUDO WORLD CUP', subtitle: 'Join Games rooms to win 20,000 Coins & level badges!', badge: '🔥 Live Event', gradient_from: 'rose-500', gradient_to: 'pink-600', is_active: true, order: 0 }
+];
+let inMemorySettings: Record<string, any> = {};
 
 // ─── Data Mappers: MongoDB <-> ZOYO Models ────────────────────────────────────
 function mongoToUser(row: any): any {
@@ -1937,6 +1972,131 @@ app.patch("/api/catalog/games/:id", async (req: express.Request, res: express.Re
   } catch (error) {
     console.error('Error updating game:', error);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ─── ADS & BANNERS API (Admin only) ──────────────────────────────────────────
+
+// GET all active ads (public, used by RoomList)
+app.get("/api/ads", async (req: express.Request, res: express.Response) => {
+  try {
+    if (isMongoConnected) {
+      const docs = await AdBannerModel.find({ is_active: true }).sort({ order: 1, createdAt: -1 }).lean();
+      return res.json({ success: true, ads: docs });
+    }
+    res.json({ success: true, ads: inMemoryAds.filter(a => a.is_active) });
+  } catch (err) {
+    res.json({ success: true, ads: inMemoryAds.filter(a => a.is_active) });
+  }
+});
+
+// GET all ads including inactive (admin view)
+app.get("/api/ads/all", async (req: express.Request, res: express.Response) => {
+  try {
+    if (isMongoConnected) {
+      const docs = await AdBannerModel.find({}).sort({ order: 1, createdAt: -1 }).lean();
+      return res.json({ success: true, ads: docs });
+    }
+    res.json({ success: true, ads: inMemoryAds });
+  } catch (err) {
+    res.json({ success: true, ads: inMemoryAds });
+  }
+});
+
+// POST create new ad banner (admin only)
+app.post("/api/ads", async (req: express.Request, res: express.Response) => {
+  try {
+    const { title, subtitle, badge, gradient_from, gradient_to, link_url, is_active, order, userRole, created_by } = req.body;
+    if (userRole !== 'admin') {
+      res.status(403).json({ error: "Only admins can manage ads" }); return;
+    }
+    if (!title) { res.status(400).json({ error: "Title is required" }); return; }
+
+    const newAd: any = {
+      _id: `ad_${Date.now()}`,
+      title, subtitle: subtitle || '', badge: badge || '🔥 Live Event',
+      gradient_from: gradient_from || 'rose-500', gradient_to: gradient_to || 'pink-600',
+      link_url: link_url || '', is_active: is_active !== false,
+      created_by: created_by || 'admin', order: Number(order) || 0
+    };
+
+    if (isMongoConnected) {
+      await AdBannerModel.create(newAd);
+    }
+    inMemoryAds.push(newAd);
+    res.json({ success: true, ad: newAd });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to create ad" });
+  }
+});
+
+// PUT update ad banner (admin only)
+app.put("/api/ads/:id", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    const { userRole, ...updates } = req.body;
+    if (userRole !== 'admin') { res.status(403).json({ error: "Only admins can manage ads" }); return; }
+
+    if (isMongoConnected) {
+      await AdBannerModel.updateOne({ _id: id }, { $set: updates });
+    }
+    const idx = inMemoryAds.findIndex(a => a._id === id);
+    if (idx !== -1) Object.assign(inMemoryAds[idx], updates);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update ad" });
+  }
+});
+
+// DELETE ad banner (admin only)
+app.delete("/api/ads/:id", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    const { userRole } = req.body;
+    if (userRole !== 'admin') { res.status(403).json({ error: "Only admins can manage ads" }); return; }
+
+    if (isMongoConnected) await AdBannerModel.deleteOne({ _id: id });
+    inMemoryAds = inMemoryAds.filter(a => a._id !== id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete ad" });
+  }
+});
+
+// ─── APP SETTINGS API ─────────────────────────────────────────────────────────
+
+// GET entry video setting (public)
+app.get("/api/settings/entry-video", async (req: express.Request, res: express.Response) => {
+  try {
+    if (isMongoConnected) {
+      const doc = await AppSettingModel.findById('entry_video').lean() as any;
+      if (doc) return res.json({ success: true, videoUrl: doc.value?.url || '', enabled: doc.value?.enabled !== false });
+    }
+    const cached = inMemorySettings['entry_video'];
+    res.json({ success: true, videoUrl: cached?.url || '', enabled: cached?.enabled !== false });
+  } catch (err) {
+    res.json({ success: true, videoUrl: '', enabled: false });
+  }
+});
+
+// PUT update entry video (admin only)
+app.put("/api/settings/entry-video", async (req: express.Request, res: express.Response) => {
+  try {
+    const { videoUrl, enabled, userRole, userId } = req.body;
+    if (userRole !== 'admin') { res.status(403).json({ error: "Only admins can update entry video" }); return; }
+
+    const value = { url: videoUrl || '', enabled: enabled !== false };
+    if (isMongoConnected) {
+      await AppSettingModel.findOneAndUpdate(
+        { _id: 'entry_video' },
+        { $set: { value, updated_by: userId || 'admin', label: 'Entry Video' } },
+        { upsert: true }
+      );
+    }
+    inMemorySettings['entry_video'] = value;
+    res.json({ success: true, videoUrl: value.url, enabled: value.enabled });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update entry video" });
   }
 });
 

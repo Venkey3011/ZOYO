@@ -130,6 +130,10 @@ const RoomSchema = new Schema({
   title: String, description: String, notice: String, host: Schema.Types.Mixed,
   theme: String, category: String,
   online_count: { type: Number, default: 1 },
+  total_coins_used: { type: Number, default: 0 },
+  totalCoinsUsed: { type: Number, default: 0 },
+  room_level: { type: Number, default: 1 },
+  roomLevel: { type: Number, default: 1 },
   active_game: String, is_official_game: Boolean, game_prize_pool: Number,
   background_url: String, backgroundUrl: String, room_image: String, roomImage: String,
   seat_style: { type: String, default: 'sofa' }, seatStyle: { type: String, default: 'sofa' },
@@ -253,6 +257,8 @@ function mongoToRoom(row: any): any {
     theme: row.theme || 'neon',
     category: row.category || 'chat',
     onlineCount: Number(row.online_count || row.onlineCount || 1),
+    totalCoinsUsed: Number(row.total_coins_used || row.totalCoinsUsed || 0),
+    roomLevel: Number(row.room_level || row.roomLevel || (1 + Math.floor(Number(row.total_coins_used || row.totalCoinsUsed || 0) / 1000))),
     activeGame: row.active_game || row.activeGame || 'none',
     isOfficialGame: Boolean(row.is_official_game ?? row.isOfficialGame),
     gamePrizePool: Number(row.game_prize_pool || row.gamePrizePool || 0),
@@ -275,6 +281,8 @@ function roomToMongo(room: any): any {
   const bg = room.backgroundUrl || room.background_url || '';
   const noticeText = room.notice || room.description || '';
   const seatStyle = room.seatStyle || room.seat_style || 'sofa';
+  const totalCoins = Number(room.totalCoinsUsed || room.total_coins_used || 0);
+  const rLevel = Number(room.roomLevel || room.room_level || (1 + Math.floor(totalCoins / 1000)));
   return {
     _id: id,
     title: room.title || 'Voice Room',
@@ -284,6 +292,10 @@ function roomToMongo(room: any): any {
     theme: room.theme || 'neon',
     category: room.category || 'chat',
     online_count: Number(room.onlineCount || (room.onlineUsers ? room.onlineUsers.length : 1)),
+    total_coins_used: totalCoins,
+    totalCoinsUsed: totalCoins,
+    room_level: rLevel,
+    roomLevel: rLevel,
     active_game: room.activeGame || 'none',
     is_official_game: Boolean(room.isOfficialGame),
     game_prize_pool: Number(room.gamePrizePool || 0),
@@ -3631,7 +3643,32 @@ app.post("/api/rooms/:id/gift", async (req: express.Request, res: express.Respon
       timestamp: new Date().toISOString()
     };
 
+    const prevTotal = Number(room.totalCoinsUsed || room.total_coins_used || 0);
+    const newTotal = prevTotal + Number(gift.coins || 0);
+    const prevLevel = 1 + Math.floor(prevTotal / 1000);
+    const newLevel = 1 + Math.floor(newTotal / 1000);
+    const didLevelUp = newLevel > prevLevel;
+
+    room.totalCoinsUsed = newTotal;
+    room.total_coins_used = newTotal;
+    room.roomLevel = newLevel;
+    room.room_level = newLevel;
+
     addChatMessageToRoom(room, giftMsg);
+
+    if (didLevelUp) {
+      const levelUpMsg = {
+        id: String(Date.now() + 1),
+        userId: 'system',
+        userName: 'ZOYO System',
+        userLevel: newLevel,
+        message: `🎉 Room Level Up! The room reached Level ${newLevel}! ✨🎊`,
+        type: 'system',
+        timestamp: new Date().toISOString()
+      };
+      addChatMessageToRoom(room, levelUpMsg);
+    }
+
     await saveRoom(room);
 
     // Broadcast gift event with animated effect to all clients in the room!
@@ -3640,10 +3677,20 @@ app.post("/api/rooms/:id/gift", async (req: express.Request, res: express.Respon
       gift,
       senderName: sender.name,
       recipientName,
-      message: giftMsg
+      message: giftMsg,
+      totalCoinsUsed: newTotal,
+      roomLevel: newLevel,
+      didLevelUp
     });
 
-    res.json({ success: true, newCoins: sender.coins, message: giftMsg });
+    res.json({ 
+      success: true, 
+      newCoins: sender.coins, 
+      message: giftMsg,
+      totalCoinsUsed: newTotal,
+      roomLevel: newLevel,
+      didLevelUp
+    });
   } catch (error) {
     console.error('Error sending gift:', error);
     res.status(500).json({ error: "Internal server error" });
@@ -3768,7 +3815,9 @@ async function startServer() {
               onlineUsers: room.onlineUsers,
               onlineCount: room.onlineCount,
               chatMessages: room.chatMessages || [],
-              activeGame: room.activeGame || 'none'
+              activeGame: room.activeGame || 'none',
+              totalCoinsUsed: Number(room.totalCoinsUsed || room.total_coins_used || 0),
+              roomLevel: Number(room.roomLevel || room.room_level || 1)
             }));
 
             // Broadcast user joined to other clients in room

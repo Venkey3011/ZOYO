@@ -121,6 +121,13 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   const [seats, setSeats] = useState<Seat[]>(initialSeats);
   const currentUserId = String(currentUser._id || currentUser.id);
 
+  // Host privileges (room creator or admin/manager)
+  const isCurrentUserHost = 
+    currentUserId === String((safeRoom.host as any)?._id || safeRoom.host?.id) || 
+    currentUser.name === safeRoom.host?.name ||
+    currentUser.role === 'admin' ||
+    currentUser.role === 'manager';
+
   // Determine initial seat index for current user (only if actually occupying a seat)
   const findInitialSeat = (): number | null => {
     const found = initialSeats.find(s => s.user && (
@@ -128,6 +135,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       (s.user.name && s.user.name === currentUser.name)
     ));
     if (found) return found.index;
+    if (isCurrentUserHost) return 0;
     return null;
   };
 
@@ -136,6 +144,20 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   useEffect(() => {
     mySeatIndexRef.current = mySeatIndex;
   }, [mySeatIndex]);
+
+  // Total room coins used & Room Level tracking (1K coins per progress bar / level)
+  const [totalRoomCoins, setTotalRoomCoins] = useState<number>(() => {
+    return Number((safeRoom as any).totalCoinsUsed || (safeRoom as any).total_coins_used || 0);
+  });
+  const roomLevel = 1 + Math.floor(totalRoomCoins / 1000);
+  const currentBarCoins = totalRoomCoins % 1000;
+  const barProgressPercent = Math.min(100, Math.max(0, (currentBarCoins / 1000) * 100));
+
+  const formatCoins = (n: number) => {
+    if (n >= 1000000) return `${(n / 1000000).toFixed(2)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+    return n.toLocaleString();
+  };
 
   const roomId = String((safeRoom as any)._id || (safeRoom as any).id || (safeRoom as any).roomId || '');
 
@@ -207,12 +229,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       .catch(() => {});
   }, []);
 
-  // Host privileges (room creator or admin/manager)
-  const isCurrentUserHost = 
-    currentUserId === String((safeRoom.host as any)?._id || safeRoom.host?.id) || 
-    currentUser.name === safeRoom.host?.name ||
-    currentUser.role === 'admin' ||
-    currentUser.role === 'manager';
+
   const [showInvitePanel, setShowInvitePanel] = useState(false);
   const [friendsList, setFriendsList] = useState<User[]>([]);
   const [invitedSet, setInvitedSet] = useState<Set<string>>(new Set());
@@ -1020,6 +1037,9 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
             if (data.activeGame) {
               setActiveGame(data.activeGame);
             }
+            if (data.totalCoinsUsed !== undefined) {
+              setTotalRoomCoins(Number(data.totalCoinsUsed));
+            }
           } else if (data.type === 'user_joined') {
             if (data.onlineUsers) setOnlineUsers(data.onlineUsers);
             if (data.user) {
@@ -1201,6 +1221,15 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
               }
             }
           } else if (data.type === 'gift_event') {
+            if (data.totalCoinsUsed !== undefined) {
+              setTotalRoomCoins(Number(data.totalCoinsUsed));
+            } else if (data.gift?.coins) {
+              setTotalRoomCoins(prev => prev + Number(data.gift.coins));
+            }
+            if (data.didLevelUp) {
+              playSynthSound('win');
+              toast(`🎉 Room Level Up! Now Room Lv.${data.roomLevel || 1}! ✨`, 'success');
+            }
             if (data.gift) {
               setActiveGiftEffect(data.gift);
               playSynthSound('gift');
@@ -1605,23 +1634,27 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
   const toggleMyMic = () => {
     playSynthSound('tap');
-    if (mySeatIndex === null) {
-      toast('Take a mic seat first to join the live talk! 🎙️', 'info');
-      return;
+    
+    // Auto-resolve active seat index
+    let activeSeat = mySeatIndexRef.current;
+    if (activeSeat === null) {
+      const found = seats.find(s => s.user && (
+        String(s.user._id || s.user.id || (s.user as any).userId || '') === currentUserId ||
+        (s.user.name && s.user.name === currentUser.name)
+      ));
+      if (found) {
+        activeSeat = found.index;
+        setMySeatIndex(found.index);
+        mySeatIndexRef.current = found.index;
+      } else if (isCurrentUserHost) {
+        activeSeat = 0;
+        setMySeatIndex(0);
+        mySeatIndexRef.current = 0;
+      }
     }
 
-    // Connect mic stream if not already active (e.g. host at seat 0 on entry)
-    if (!micStreamRef.current) {
-      setIsMyMicMuted(false);
-      enableMicrophone()
-        .then(() => {
-          setSeats(prev => prev.map(s => s.index === mySeatIndex ? { ...s, isMuted: false, isTalking: false } : s));
-          sendWs('seat_status', { seatIndex: mySeatIndex, isMuted: false, isTalking: false });
-          toast('Microphone connected! 🎙️', 'success');
-        })
-        .catch(() => {
-          toast('Please allow microphone permissions to speak 🎙️', 'error');
-        });
+    if (activeSeat === null) {
+      toast('Take a mic seat first to join the live talk! 🎙️', 'info');
       return;
     }
 
@@ -1629,6 +1662,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
     setIsMyMicMuted(newMuted);
     isMyMicMutedRef.current = newMuted;
 
+    // Toggle hardware audio tracks if stream active
     const activeStream = micStreamRef.current || localStreamRef.current;
     if (activeStream) {
       activeStream.getAudioTracks().forEach(track => {
@@ -1636,6 +1670,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       });
     }
 
+    // Toggle WebRTC peer sender tracks
     peerConnectionsRef.current.forEach(pc => {
       pc.getSenders().forEach(sender => {
         if (sender.track && sender.track.kind === 'audio') {
@@ -1644,10 +1679,14 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       });
     });
 
-    if (mySeatIndex !== null) {
-      setSeats(prev => prev.map(s => s.index === mySeatIndex ? { ...s, isMuted: newMuted, isTalking: false } : s));
-      sendWs('seat_status', { seatIndex: mySeatIndex, isMuted: newMuted, isTalking: false });
+    // If unmuting and mic hardware stream is not yet initialized, connect mic
+    if (!newMuted && !micStreamRef.current) {
+      enableMicrophone().catch(() => {});
     }
+
+    // Update seat state locally & broadcast to room
+    setSeats(prev => prev.map(s => s.index === activeSeat ? { ...s, isMuted: newMuted, isTalking: false } : s));
+    sendWs('seat_status', { seatIndex: activeSeat, isMuted: newMuted, isTalking: false });
 
     if (newMuted) {
       isSpeakingRef.current = false;
@@ -1719,6 +1758,14 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       onUpdateCoins(currentUser.coins - gift.coins);
     }
 
+    // Optimistically update total coins and check for room level-up
+    const nextTotalCoins = totalRoomCoins + Number(gift.coins || 0);
+    if (Math.floor(nextTotalCoins / 1000) > Math.floor(totalRoomCoins / 1000)) {
+      playSynthSound('win');
+      toast(`🎉 Room Level Up! Now Room Lv.${1 + Math.floor(nextTotalCoins / 1000)}! 🌟`, 'success');
+    }
+    setTotalRoomCoins(nextTotalCoins);
+
     let recipientName = "the Host";
     if (selectedGiftRecipient !== 'all' && typeof selectedGiftRecipient === 'number') {
       recipientName = seats[selectedGiftRecipient]?.user?.name || "the Host";
@@ -1740,6 +1787,9 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         const data = await res.json();
         if (data.newCoins !== undefined && currentUser.role !== 'admin') {
           onUpdateCoins(data.newCoins);
+        }
+        if (data.totalCoinsUsed !== undefined) {
+          setTotalRoomCoins(Number(data.totalCoinsUsed));
         }
       }
     } catch (err) {
@@ -2529,7 +2579,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         {/* Left capsule: Level Badge + Title & Host + ID & Audience count */}
         <div className="flex items-center gap-2 bg-black/40 backdrop-blur-md border border-white/15 rounded-full py-1 pl-1.5 pr-3 shadow-lg min-w-0 max-w-[210px] sm:max-w-[240px]">
           <span className="bg-gradient-to-r from-amber-400 via-amber-500 to-yellow-500 text-zinc-950 font-black text-[9px] px-2 py-0.5 rounded-full shadow-sm shrink-0 uppercase tracking-tighter">
-            Lv.{safeRoom.host?.level || 1}
+            Lv.{roomLevel}
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1">
@@ -2566,26 +2616,14 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
         {/* Center / Right controls */}
         <div className="flex items-center gap-1.5 shrink-0">
-          {/* Mood / Reaction quick launcher */}
-          <button
-            onClick={() => {
-              triggerFlyReaction('🥰', mySeatIndex !== null ? mySeatIndex : 0);
-              playSynthSound('tap');
-            }}
-            className="w-8 h-8 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center text-sm shadow cursor-pointer active:scale-90 transition-transform"
-            title="Express Mood"
-          >
-            🥰
-          </button>
-
-          {/* Gold Trophy Pill */}
+          {/* Total Coins Spent in Room */}
           <div 
             onClick={() => setShowGiftDrawer(true)}
             className="flex items-center gap-1 bg-gradient-to-r from-amber-500/80 to-yellow-500/80 backdrop-blur-md text-zinc-950 px-2.5 py-1 rounded-full text-[10px] font-black shadow-md cursor-pointer hover:opacity-95 active:scale-95 transition-all"
-            title="Room Popularity / Prize Pool"
+            title="Total Coins Used in Room"
           >
-            <span>🏆</span>
-            <span>{(safeRoom as any).gamePrizePool ? `${((safeRoom as any).gamePrizePool / 1000).toFixed(2)}K` : '2.67M'}</span>
+            <span>🪙</span>
+            <span>{formatCoins(totalRoomCoins)}</span>
           </div>
 
           {/* Share Room Button */}
@@ -2680,15 +2718,23 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           <div 
             onClick={() => setShowGiftDrawer(true)}
             className="absolute left-1 top-2 flex items-center gap-1.5 bg-black/40 backdrop-blur-md border border-white/15 px-2 py-1.5 rounded-2xl cursor-pointer hover:bg-black/55 shadow-md active:scale-95 transition-all z-20"
-            title="Treasure Box: Tap to send gifts & unlock rewards!"
+            title="Treasure Box: Tap to send gifts & level up room!"
           >
-            <div className="w-7 h-7 rounded-xl bg-gradient-to-tr from-amber-600 via-yellow-500 to-amber-400 flex items-center justify-center text-sm shadow shrink-0">
+            <div className="w-7 h-7 rounded-xl bg-gradient-to-tr from-amber-600 via-yellow-500 to-amber-400 flex items-center justify-center text-sm shadow shrink-0 relative">
               📦
+              <span className="absolute -bottom-1 -right-1 bg-zinc-950 text-amber-300 text-[7px] font-black px-1 rounded-full border border-amber-400/50 leading-tight">
+                Lv.{roomLevel}
+              </span>
             </div>
             <div className="flex flex-col">
-              <span className="text-[8px] font-black text-amber-300 leading-tight">1.99K/2.00K</span>
+              <span className="text-[8px] font-black text-amber-300 leading-tight">
+                {currentBarCoins}/1,000
+              </span>
               <div className="w-14 h-1.5 bg-white/20 rounded-full overflow-hidden mt-0.5">
-                <div className="w-[95%] h-full bg-gradient-to-r from-amber-400 to-yellow-300 rounded-full" />
+                <div 
+                  className="h-full bg-gradient-to-r from-amber-400 to-yellow-300 rounded-full transition-all duration-500" 
+                  style={{ width: `${barProgressPercent}%` }}
+                />
               </div>
             </div>
           </div>
@@ -3165,33 +3211,6 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
             <div ref={chatEndRef} />
           </div>
 
-          {/* Right Floating Promo Shortcuts (like the lollipop / special wheel in screenshot) */}
-          <div className="flex flex-col gap-2 items-center pointer-events-auto pb-1 shrink-0">
-            {/* Get Coins / Cheering Promo */}
-            <motion.button
-              whileTap={{ scale: 0.92 }}
-              onClick={() => {
-                setSelectedGiftRecipient(0);
-                setShowGiftDrawer(true);
-              }}
-              className="flex items-center gap-1 bg-gradient-to-r from-pink-500 to-purple-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full shadow-lg border border-pink-400/40 cursor-pointer"
-              title="Get Sweet Gifts & Boost"
-            >
-              <span>🍭</span>
-              <span>Get</span>
-            </motion.button>
-
-            {/* Special Fortune Wheel Event */}
-            <motion.button
-              whileTap={{ scale: 0.92 }}
-              onClick={() => setActiveGame('wheel')}
-              className="flex items-center gap-1 bg-gradient-to-r from-amber-500 to-rose-500 text-white text-[10px] font-black px-2.5 py-1 rounded-full shadow-lg border border-amber-400/40 cursor-pointer animate-pulse"
-              title="Special Wheel Event"
-            >
-              <span>🎡</span>
-              <span>Special</span>
-            </motion.button>
-          </div>
         </div>
       </div>
 
@@ -3234,24 +3253,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           {isMyMicMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
         </button>
 
-        {/* 4. 🛋️ Seat Management Button */}
-        <button
-          onClick={() => {
-            if (mySeatIndex !== null) {
-              setSelectedSeatIndex(mySeatIndex);
-            } else {
-              const firstEmpty = seats.slice(1).find(s => !s.user);
-              setSelectedSeatIndex(firstEmpty ? firstEmpty.index : 1);
-            }
-            setShowSeatModal(true);
-          }}
-          className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 backdrop-blur-md flex items-center justify-center text-white cursor-pointer active:scale-90 transition-all shadow shrink-0"
-          title="Seat Options"
-        >
-          <Sofa className="w-4 h-4 text-white/90" />
-        </button>
-
-        {/* 5. ⊞ 4-Square Grid: Room Tools Menu */}
+        {/* 4. ⊞ 4-Square Grid: Room Tools Menu */}
         <button
           onClick={() => setShowToolsMenu(!showToolsMenu)}
           className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 backdrop-blur-md flex items-center justify-center text-white cursor-pointer active:scale-90 transition-all shadow shrink-0"
@@ -3260,16 +3262,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           <LayoutGrid className="w-4 h-4 text-white/90" />
         </button>
 
-        {/* 6. 💬 Messages / Room Chat History Drawer (Distinct from public text input) */}
-        <button
-          onClick={() => setShowMessagesDrawer(true)}
-          className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 backdrop-blur-md flex items-center justify-center text-white cursor-pointer active:scale-90 transition-all shadow shrink-0"
-          title="Room Messages & Chat History"
-        >
-          <MessageCircle className="w-4 h-4 text-white/90" />
-        </button>
-
-        {/* 7. 🎮 Mini Game Hub Button */}
+        {/* 5. 🎮 Mini Game Hub Button */}
         <button
           onClick={() => setShowGameHub(!showGameHub)}
           className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 backdrop-blur-md flex items-center justify-center text-white cursor-pointer active:scale-90 transition-all shadow shrink-0"
@@ -3278,7 +3271,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
           <Gamepad2 className="w-4 h-4 text-white/90" />
         </button>
 
-        {/* 8. 🎁 3D Animated Gift Box Button */}
+        {/* 6. 🎁 3D Animated Gift Box Button */}
         <button
           onClick={() => {
             setSelectedGiftRecipient(0);
@@ -3293,10 +3286,10 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
       {/* --- POPUP / MODAL DRAWERS --- */}
 
-      {/* Floating Chat Input Bar (NO BLUR OVERLAY - crystal clear background) */}
+      {/* Floating Chat Input Bar (Contained directly inside mobile container) */}
       {isChatInputOpen && (
         <div 
-          className="fixed inset-0 z-50 bg-transparent flex flex-col justify-end pointer-events-auto"
+          className="absolute inset-0 z-50 bg-black/40 flex flex-col justify-end pointer-events-auto"
           onClick={(e) => { if (e.target === e.currentTarget) setIsChatInputOpen(false); }}
         >
           <form 
@@ -3340,7 +3333,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       {/* 💬 Room Chat & Direct Messages Drawer */}
       {showMessagesDrawer && (
         <div 
-          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs flex flex-col justify-end"
+          className="absolute inset-0 z-40 bg-black/60 backdrop-blur-xs flex flex-col justify-end"
           onClick={(e) => { if (e.target === e.currentTarget) setShowMessagesDrawer(false); }}
         >
           <div 
@@ -3395,7 +3388,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       {/* Quick Emoji Reaction Flyer Popup */}
       {showEmojiPicker && (
         <div 
-          className="fixed inset-0 z-40 bg-black/30 backdrop-blur-xs flex flex-col justify-end"
+          className="absolute inset-0 z-40 bg-black/30 backdrop-blur-xs flex flex-col justify-end"
           onClick={(e) => { if (e.target === e.currentTarget) setShowEmojiPicker(false); }}
         >
           <div 
@@ -3434,7 +3427,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       {/* 4-Square Grid Tools Menu Bottom Sheet */}
       {showToolsMenu && (
         <div 
-          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs flex flex-col justify-end"
+          className="absolute inset-0 z-40 bg-black/60 backdrop-blur-xs flex flex-col justify-end"
           onClick={(e) => { if (e.target === e.currentTarget) setShowToolsMenu(false); }}
         >
           <div 
@@ -3530,7 +3523,7 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
       {/* Mini Game Hub Bottom Sheet */}
       {showGameHub && (
         <div 
-          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs flex flex-col justify-end"
+          className="absolute inset-0 z-40 bg-black/60 backdrop-blur-xs flex flex-col justify-end"
           onClick={(e) => { if (e.target === e.currentTarget) setShowGameHub(false); }}
         >
           <div 

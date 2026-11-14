@@ -181,6 +181,8 @@ const AdBannerSchema = new Schema({
   badge: { type: String, default: '🔥 Live Event' },
   gradient_from: { type: String, default: 'rose-500' },
   gradient_to: { type: String, default: 'pink-600' },
+  image_url: String,
+  banner_type: { type: String, default: 'gradient' }, // 'gradient' | 'image'
   link_url: String,
   is_active: { type: Boolean, default: true },
   created_by: String,
@@ -206,7 +208,7 @@ const AppSettingModel = mongoose.model('app_settings', AppSettingSchema);
 
 // In-memory fallback for ads and settings
 let inMemoryAds: any[] = [
-  { _id: 'ad_default_1', title: 'ZOYO LUDO WORLD CUP', subtitle: 'Join Games rooms to win 20,000 Coins & level badges!', badge: '🔥 Live Event', gradient_from: 'rose-500', gradient_to: 'pink-600', is_active: true, order: 0 }
+  { _id: 'ad_default_1', title: 'ZOYO LUDO WORLD CUP', subtitle: 'Join Games rooms to win 20,000 Coins & level badges!', badge: '🔥 Live Event', gradient_from: 'rose-500', gradient_to: 'pink-600', banner_type: 'gradient', image_url: '', is_active: true, order: 0 }
 ];
 let inMemorySettings: Record<string, any> = {};
 
@@ -2006,7 +2008,7 @@ app.get("/api/ads/all", async (req: express.Request, res: express.Response) => {
 // POST create new ad banner (admin only)
 app.post("/api/ads", async (req: express.Request, res: express.Response) => {
   try {
-    const { title, subtitle, badge, gradient_from, gradient_to, link_url, is_active, order, userRole, created_by } = req.body;
+    const { title, subtitle, badge, gradient_from, gradient_to, image_url, banner_type, link_url, is_active, order, userRole, created_by } = req.body;
     if (userRole !== 'admin') {
       res.status(403).json({ error: "Only admins can manage ads" }); return;
     }
@@ -2016,6 +2018,8 @@ app.post("/api/ads", async (req: express.Request, res: express.Response) => {
       _id: `ad_${Date.now()}`,
       title, subtitle: subtitle || '', badge: badge || '🔥 Live Event',
       gradient_from: gradient_from || 'rose-500', gradient_to: gradient_to || 'pink-600',
+      image_url: image_url || '',
+      banner_type: banner_type || (image_url ? 'image' : 'gradient'),
       link_url: link_url || '', is_active: is_active !== false,
       created_by: created_by || 'admin', order: Number(order) || 0
     };

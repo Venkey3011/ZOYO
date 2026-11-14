@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Room, User } from '../types';
 import { PRESET_AVATARS } from '../data';
-import { Search, Plus, Sparkles, Trophy, Users, Flame, Globe, Dices, MessageSquare, Music, Mic, Lock, Eye, EyeOff, Hash, ImagePlus, X } from 'lucide-react';
+import { Search, Plus, Sparkles, Trophy, Users, Flame, Globe, Dices, MessageSquare, Music, Mic, Lock, Eye, EyeOff, Hash, ImagePlus, X, ExternalLink } from 'lucide-react';
+
 import { registerBackHandler } from '../lib/navigation';
 import { compressImageToDataUrl } from '../lib/imageCompressor';
 
@@ -275,34 +276,75 @@ export default function RoomList({ rooms, onJoinRoom, onCreateRoom, currentUser 
         <div className="relative shrink-0 overflow-hidden rounded-[24px] h-24 shadow-md flex flex-col justify-between group"
           style={{ background: `linear-gradient(to right, var(--tw-gradient-from, #f43f5e), var(--tw-gradient-to, #db2777))` }}
         >
-          {adBanners.map((ad, idx) => (
-            <div
-              key={ad._id}
-              className={`absolute inset-0 p-4 flex flex-col justify-between transition-opacity duration-700 ${idx === adBannerIndex ? 'opacity-100 z-10' : 'opacity-0 z-0'} bg-gradient-to-r from-${ad.gradient_from || 'rose-500'} to-${ad.gradient_to || 'pink-600'}`}
-            >
-              <div className="absolute -right-3 -bottom-3 w-20 h-20 bg-white/10 rounded-full blur-md" />
-              <div className="flex justify-between items-start relative z-10">
-                <span className="text-[9px] bg-black/20 text-white font-extrabold tracking-wider px-2 py-0.5 rounded-full uppercase">
-                  {ad.badge || '🔥 Live Event'}
-                </span>
-                {adBanners.length > 1 && (
-                  <div className="flex gap-1.5">
-                    {adBanners.map((_, i) => (
-                      <button key={i} onClick={() => setAdBannerIndex(i)}
-                        className={`w-1.5 h-1.5 rounded-full transition-all cursor-pointer ${i === adBannerIndex ? 'bg-white scale-125' : 'bg-white/40'}`}
-                      />
-                    ))}
-                  </div>
+          {adBanners.map((ad, idx) => {
+            const hasLink = Boolean(ad.link_url && ad.link_url.trim());
+            const hasImage = Boolean(ad.image_url && ad.image_url.trim());
+            const isVisible = idx === adBannerIndex;
+
+            const handleBannerClick = () => {
+              if (!hasLink) return;
+              let url = ad.link_url.trim();
+              if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                url = 'https://' + url;
+              }
+              window.open(url, '_blank', 'noopener,noreferrer');
+            };
+
+            return (
+              <div
+                key={ad._id}
+                onClick={handleBannerClick}
+                className={`absolute inset-0 p-4 flex flex-col justify-between transition-opacity duration-700 ${isVisible ? 'opacity-100 z-10' : 'opacity-0 z-0'} ${hasLink ? 'cursor-pointer active:scale-[0.99] transition-transform' : ''} ${!hasImage ? `bg-gradient-to-r from-${ad.gradient_from || 'rose-500'} to-${ad.gradient_to || 'pink-600'}` : 'bg-black'}`}
+              >
+                {/* Custom uploaded banner image from storage */}
+                {hasImage ? (
+                  <>
+                    <img
+                      src={ad.image_url}
+                      alt={ad.title}
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/35 to-black/30" />
+                  </>
+                ) : (
+                  <div className="absolute -right-3 -bottom-3 w-20 h-20 bg-white/10 rounded-full blur-md" />
                 )}
+
+                <div className="flex justify-between items-start relative z-10">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] bg-black/40 backdrop-blur-xs text-white font-extrabold tracking-wider px-2 py-0.5 rounded-full uppercase shadow-xs">
+                      {ad.badge || '🔥 Live Event'}
+                    </span>
+                    {hasLink && (
+                      <span className="text-[8px] bg-white/20 backdrop-blur-xs text-white px-1.5 py-0.5 rounded-full font-bold flex items-center gap-0.5 shadow-xs">
+                        <ExternalLink className="w-2.5 h-2.5" /> Visit
+                      </span>
+                    )}
+                  </div>
+                  {adBanners.length > 1 && (
+                    <div className="flex gap-1.5 bg-black/20 backdrop-blur-xs px-2 py-1 rounded-full" onClick={(e) => e.stopPropagation()}>
+                      {adBanners.map((_, i) => (
+                        <button key={i} onClick={() => setAdBannerIndex(i)}
+                          className={`w-1.5 h-1.5 rounded-full transition-all cursor-pointer ${i === adBannerIndex ? 'bg-white scale-125' : 'bg-white/40'}`}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="relative z-10">
+                  <h3 className="text-xs font-display font-black text-white leading-tight uppercase tracking-wide drop-shadow-md flex items-center gap-1">
+                    <span>{ad.title}</span>
+                    {hasLink && <ExternalLink className="w-3 h-3 text-white/80 shrink-0 inline-block" />}
+                  </h3>
+                  {ad.subtitle && <p className="text-[10px] text-white/90 mt-0.5 font-medium leading-none drop-shadow-md">{ad.subtitle}</p>}
+                </div>
               </div>
-              <div className="relative z-10">
-                <h3 className="text-xs font-display font-black text-white leading-tight uppercase tracking-wide">{ad.title}</h3>
-                {ad.subtitle && <p className="text-[10px] text-white/80 mt-0.5 font-medium leading-none">{ad.subtitle}</p>}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
+
 
       {/* Categories Tabs */}
       <div className="flex gap-2 overflow-x-auto shrink-0 pb-1 scrollbar-none">

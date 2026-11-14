@@ -4,8 +4,10 @@ import { PRESET_AVATARS } from '../data';
 import { 
   Shield, Users, Coins, RefreshCw, 
   Search, Lock, Unlock, Ban, UserPlus, FileText, ArrowRightLeft,
-  Sparkles, Gift, Gamepad2, Palette, Trash2, Plus 
+  Sparkles, Gift, Gamepad2, Palette, Trash2, Plus,
+  Image as ImageIcon, ExternalLink, Upload
 } from 'lucide-react';
+
 
 interface AdminConsoleProps {
   currentUser: User;
@@ -110,8 +112,12 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
   const [newAdBadge, setNewAdBadge] = useState('🔥 Live Event');
   const [newAdGradientFrom, setNewAdGradientFrom] = useState('rose-500');
   const [newAdGradientTo, setNewAdGradientTo] = useState('pink-600');
+  const [newAdBannerType, setNewAdBannerType] = useState<'gradient' | 'image'>('gradient');
+  const [newAdImageUrl, setNewAdImageUrl] = useState('');
+  const [newAdImageUploading, setNewAdImageUploading] = useState(false);
   const [newAdLinkUrl, setNewAdLinkUrl] = useState('');
   const [newAdActive, setNewAdActive] = useState(true);
+
   const [entryVideoUrl, setEntryVideoUrl] = useState('');
   const [entryVideoEnabled, setEntryVideoEnabled] = useState(false);
   const [entryVideoUploading, setEntryVideoUploading] = useState(false);
@@ -160,6 +166,35 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
     }
   };
 
+  const handleBannerImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setNewAdImageUploading(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        const base64 = ev.target?.result as string;
+        const uploadRes = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileData: base64, fileType: 'banner', fileName: file.name })
+        });
+        const uploadData = await uploadRes.json();
+        if (uploadData.success) {
+          setNewAdImageUrl(uploadData.url);
+          setNewAdBannerType('image');
+        } else {
+          setErrorMsg('Banner image upload failed');
+        }
+        setNewAdImageUploading(false);
+      };
+      reader.readAsDataURL(file);
+    } catch {
+      setErrorMsg('Banner image upload error');
+      setNewAdImageUploading(false);
+    }
+  };
+
   const handleCreateAd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAdTitle.trim()) return;
@@ -170,7 +205,10 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
         body: JSON.stringify({
           title: newAdTitle.trim(), subtitle: newAdSubtitle.trim(),
           badge: newAdBadge, gradient_from: newAdGradientFrom,
-          gradient_to: newAdGradientTo, link_url: newAdLinkUrl,
+          gradient_to: newAdGradientTo,
+          image_url: newAdImageUrl,
+          banner_type: newAdBannerType,
+          link_url: newAdLinkUrl.trim(),
           is_active: newAdActive, userRole: currentUser.role,
           created_by: currentUser.name
         })
@@ -179,6 +217,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       if (data.success) {
         setSuccessMsg('Ad banner created!');
         setNewAdTitle(''); setNewAdSubtitle(''); setNewAdLinkUrl('');
+        setNewAdImageUrl(''); setNewAdBannerType('gradient');
         fetchMediaHubData();
       } else {
         setErrorMsg(data.error || 'Failed to create ad');
@@ -186,6 +225,7 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
     } catch { setErrorMsg('Network error'); }
     setTimeout(() => { setSuccessMsg(''); setErrorMsg(''); }, 3000);
   };
+
 
   const handleToggleAd = async (adId: string, currentState: boolean) => {
     try {
@@ -2080,6 +2120,107 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                   />
                 </div>
 
+                {/* Banner Style Selector: Gradient vs Image */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Banner Background Style</label>
+                  <div className="grid grid-cols-2 gap-1.5 p-1 bg-zinc-100 rounded-xl border border-zinc-200">
+                    <button
+                      type="button"
+                      onClick={() => setNewAdBannerType('gradient')}
+                      className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[10px] font-black transition-all cursor-pointer ${
+                        newAdBannerType === 'gradient'
+                          ? 'bg-white text-violet-700 shadow-xs border border-violet-200'
+                          : 'text-zinc-500 hover:text-zinc-800'
+                      }`}
+                    >
+                      <Palette className="w-3 h-3" />
+                      <span>Gradient Preset</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNewAdBannerType('image')}
+                      className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[10px] font-black transition-all cursor-pointer ${
+                        newAdBannerType === 'image'
+                          ? 'bg-white text-violet-700 shadow-xs border border-violet-200'
+                          : 'text-zinc-500 hover:text-zinc-800'
+                      }`}
+                    >
+                      <ImageIcon className="w-3 h-3" />
+                      <span>Upload Banner Image</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* IMAGE UPLOAD MODE */}
+                {newAdBannerType === 'image' ? (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Upload Custom Banner Image from Storage</label>
+                    <label className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-2xl p-4 cursor-pointer transition-all ${
+                      newAdImageUploading ? 'border-violet-400 bg-violet-50' : 'border-zinc-300 bg-zinc-50 hover:border-violet-400 hover:bg-violet-50/40'
+                    }`}>
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        className="hidden"
+                        onChange={handleBannerImageUpload}
+                        disabled={newAdImageUploading}
+                      />
+                      {newAdImageUploading ? (
+                        <>
+                          <div className="w-5 h-5 border-2 border-violet-600 border-t-transparent rounded-full animate-spin" />
+                          <span className="text-[10px] text-violet-600 font-black">Uploading Image...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-6 h-6 text-zinc-400" />
+                          <div className="text-center">
+                            <p className="text-[10px] font-black text-zinc-700">Click to upload banner image</p>
+                            <p className="text-[9px] text-zinc-400">PNG, JPG, WebP · Recommended size 600x200 (3:1)</p>
+                          </div>
+                        </>
+                      )}
+                    </label>
+                    {newAdImageUrl && (
+                      <div className="flex items-center gap-2 mt-1 p-2 bg-emerald-50 border border-emerald-200 rounded-xl">
+                        <img src={newAdImageUrl} alt="Uploaded Banner" className="w-16 h-8 object-cover rounded-lg border border-emerald-200 shadow-xs shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[10px] font-black text-emerald-800">Custom Image Uploaded ✅</p>
+                          <p className="text-[8px] text-emerald-600 truncate">{newAdImageUrl}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => { setNewAdImageUrl(''); setNewAdBannerType('gradient'); }}
+                          className="text-[9px] text-rose-500 hover:text-rose-700 font-bold px-2 py-1"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  /* GRADIENT PRESET MODE */
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Gradient From</label>
+                      <select value={newAdGradientFrom} onChange={e => setNewAdGradientFrom(e.target.value)}
+                        className="w-full border border-zinc-200 rounded-xl px-2 py-1.5 text-[10px] font-bold text-zinc-700 bg-zinc-50 focus:outline-none focus:border-violet-400">
+                        {['rose-500','pink-500','orange-500','amber-500','violet-600','blue-600','emerald-500','cyan-500'].map(c => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Gradient To</label>
+                      <select value={newAdGradientTo} onChange={e => setNewAdGradientTo(e.target.value)}
+                        className="w-full border border-zinc-200 rounded-xl px-2 py-1.5 text-[10px] font-bold text-zinc-700 bg-zinc-50 focus:outline-none focus:border-violet-400">
+                        {['pink-600','rose-600','amber-600','yellow-500','purple-700','indigo-700','teal-600','sky-600'].map(c => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex flex-col gap-1">
                     <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Badge Label</label>
@@ -2090,46 +2231,55 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                     />
                   </div>
                   <div className="flex flex-col gap-1">
-                    <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Link URL</label>
+                    <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider flex items-center gap-1">
+                      <ExternalLink className="w-2.5 h-2.5 text-violet-600" />
+                      <span>Redirect Link URL</span>
+                    </label>
                     <input
                       value={newAdLinkUrl} onChange={e => setNewAdLinkUrl(e.target.value)}
-                      placeholder="https://..." type="url"
+                      placeholder="https://example.com" type="text"
                       className="w-full border border-zinc-200 rounded-xl px-2 py-1.5 text-[10px] font-bold text-zinc-800 focus:outline-none focus:border-violet-400 bg-zinc-50"
                     />
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Gradient From</label>
-                    <select value={newAdGradientFrom} onChange={e => setNewAdGradientFrom(e.target.value)}
-                      className="w-full border border-zinc-200 rounded-xl px-2 py-1.5 text-[10px] font-bold text-zinc-700 bg-zinc-50 focus:outline-none focus:border-violet-400">
-                      {['rose-500','pink-500','orange-500','amber-500','violet-600','blue-600','emerald-500','cyan-500'].map(c => (
-                        <option key={c} value={c}>{c}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">Gradient To</label>
-                    <select value={newAdGradientTo} onChange={e => setNewAdGradientTo(e.target.value)}
-                      className="w-full border border-zinc-200 rounded-xl px-2 py-1.5 text-[10px] font-bold text-zinc-700 bg-zinc-50 focus:outline-none focus:border-violet-400">
-                      {['pink-600','rose-600','amber-600','yellow-500','purple-700','indigo-700','teal-600','sky-600'].map(c => (
-                        <option key={c} value={c}>{c}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
                 {/* Live Preview */}
-                {newAdTitle && (
-                  <div className={`relative rounded-xl h-16 p-3 flex flex-col justify-between overflow-hidden bg-gradient-to-r from-${newAdGradientFrom} to-${newAdGradientTo}`}>
-                    <span className="text-[8px] bg-black/20 text-white font-extrabold tracking-wider px-2 py-0.5 rounded-full uppercase self-start">{newAdBadge || '🔥 Live Event'}</span>
-                    <div>
-                      <p className="text-[10px] font-black text-white leading-tight uppercase">{newAdTitle}</p>
-                      {newAdSubtitle && <p className="text-[8px] text-white/80 mt-0.5">{newAdSubtitle}</p>}
+                <div className="flex flex-col gap-1 mt-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[9px] font-black text-zinc-400 uppercase tracking-wider">Live Preview (What Users See)</span>
+                    {newAdLinkUrl && (
+                      <span className="text-[8px] font-bold text-violet-600 flex items-center gap-0.5">
+                        <ExternalLink className="w-2.5 h-2.5" /> Redirects to site
+                      </span>
+                    )}
+                  </div>
+                  <div className="relative rounded-[20px] h-20 p-3.5 flex flex-col justify-between overflow-hidden shadow-sm border border-zinc-200/50">
+                    {newAdBannerType === 'image' && newAdImageUrl ? (
+                      <>
+                        <img src={newAdImageUrl} alt="Banner Preview" className="absolute inset-0 w-full h-full object-cover" />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-black/30" />
+                      </>
+                    ) : (
+                      <div className={`absolute inset-0 bg-gradient-to-r from-${newAdGradientFrom} to-${newAdGradientTo}`}>
+                        <div className="absolute -right-3 -bottom-3 w-20 h-20 bg-white/10 rounded-full blur-md" />
+                      </div>
+                    )}
+                    <div className="flex justify-between items-start relative z-10">
+                      <span className="text-[8px] bg-black/30 backdrop-blur-xs text-white font-extrabold tracking-wider px-2 py-0.5 rounded-full uppercase">
+                        {newAdBadge || '🔥 Live Event'}
+                      </span>
+                      {newAdLinkUrl && (
+                        <span className="text-[8px] bg-white/20 backdrop-blur-xs text-white px-1.5 py-0.5 rounded-md flex items-center gap-0.5">
+                          <ExternalLink className="w-2 h-2" />
+                        </span>
+                      )}
+                    </div>
+                    <div className="relative z-10">
+                      <p className="text-[11px] font-black text-white leading-tight uppercase drop-shadow-xs">{newAdTitle || 'BANNER TITLE'}</p>
+                      {newAdSubtitle && <p className="text-[9px] text-white/90 mt-0.5 drop-shadow-xs">{newAdSubtitle}</p>}
                     </div>
                   </div>
-                )}
+                </div>
 
                 <div className="flex items-center justify-between pt-1 border-t border-zinc-100">
                   <label className="flex items-center gap-2 cursor-pointer">
@@ -2142,12 +2292,14 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                     <span className="text-[9px] font-bold text-zinc-600 uppercase">Active</span>
                   </label>
                   <button type="submit"
-                    className="bg-gradient-to-r from-violet-600 to-purple-600 text-white text-[10px] font-black px-4 py-2 rounded-xl shadow cursor-pointer uppercase tracking-wider hover:brightness-110 transition-all"
+                    className="bg-gradient-to-r from-violet-600 to-purple-600 text-white text-[10px] font-black px-4 py-2 rounded-xl shadow cursor-pointer uppercase tracking-wider hover:brightness-110 transition-all flex items-center gap-1.5"
                   >
-                    + Publish Ad
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Publish Ad</span>
                   </button>
                 </div>
               </form>
+
 
               {/* Ads List */}
               <div className="bg-white border border-zinc-200 rounded-2xl p-3 shadow-sm flex flex-col gap-2">
@@ -2162,6 +2314,13 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                 ) : (
                   adsList.map(ad => (
                     <div key={ad._id} className={`border rounded-xl p-2.5 flex gap-2.5 items-center ${ad.is_active ? 'border-emerald-200 bg-emerald-50/50' : 'border-zinc-200 bg-zinc-50 opacity-60'}`}>
+                      {ad.image_url ? (
+                        <img src={ad.image_url} alt={ad.title} className="w-12 h-10 object-cover rounded-lg border border-zinc-200 shrink-0" />
+                      ) : (
+                        <div className={`w-12 h-10 rounded-lg bg-gradient-to-r from-${ad.gradient_from || 'rose-500'} to-${ad.gradient_to || 'pink-600'} flex items-center justify-center shrink-0 text-white font-black text-[9px]`}>
+                          AD
+                        </div>
+                      )}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="text-[10px] font-black text-zinc-800 truncate">{ad.title}</span>
@@ -2170,13 +2329,21 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
                           </span>
                         </div>
                         {ad.subtitle && <p className="text-[9px] text-zinc-500 truncate">{ad.subtitle}</p>}
-                        <span className="text-[8px] text-zinc-400">{ad.badge}</span>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[8px] text-zinc-400 font-bold">{ad.badge}</span>
+                          {ad.link_url && (
+                            <a href={ad.link_url} target="_blank" rel="noopener noreferrer" className="text-[8px] text-violet-600 font-bold hover:underline flex items-center gap-0.5 truncate max-w-[120px]">
+                              <ExternalLink className="w-2 h-2 shrink-0" /> {ad.link_url}
+                            </a>
+                          )}
+                        </div>
                       </div>
                       <div className="flex gap-1 shrink-0">
                         <button
                           onClick={() => handleToggleAd(ad._id, ad.is_active)}
                           className={`text-[9px] font-bold px-2 py-1 rounded-lg cursor-pointer transition-all ${ad.is_active ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'}`}
                         >{ad.is_active ? 'Pause' : 'Activate'}</button>
+
                         <button
                           onClick={() => setConfirmModal({ isOpen: true, title: 'Delete Ad', message: `Delete "${ad.title}"?`, onConfirm: () => { handleDeleteAd(ad._id); setConfirmModal(p => ({ ...p, isOpen: false })); } })}
                           className="text-zinc-400 hover:text-rose-600 p-1.5 rounded-lg transition-colors cursor-pointer"

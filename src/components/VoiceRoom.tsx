@@ -7,7 +7,7 @@ import {
   CornerDownRight, RefreshCw, Smile, Zap, MessageSquare, Award, UserPlus, Trash, VolumeX, MessageSquareDashed,
   Share2, Copy, Eye, UserX, ShieldAlert, Palette, Music, Volume2, Disc, SkipForward, SkipBack, Sliders, Check, ExternalLink,
   Upload, FileAudio, Image as ImageIcon, LogOut, UploadCloud,
-  Gamepad2, LayoutGrid, Sofa, MessageCircle, Package
+  Gamepad2, LayoutGrid, Sofa, MessageCircle, Package, Plus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from './Toast';
@@ -245,7 +245,64 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showToolsMenu, setShowToolsMenu] = useState(false);
   const [showGameHub, setShowGameHub] = useState(false);
+  const [showMessagesDrawer, setShowMessagesDrawer] = useState(false);
   const chatInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Add more seats dynamically (Host only)
+  const handleAddMoreSeats = async (additionalCount = 2) => {
+    if (!isCurrentUserHost) {
+      toast("Only the room host can expand seats! 👑", "error");
+      return;
+    }
+    const currentCount = seats.length;
+    if (currentCount >= 21) {
+      toast("Maximum 20 guest seats reached!", "error");
+      return;
+    }
+    const newTotal = Math.min(currentCount + additionalCount, 21);
+    
+    // Optimistic local update
+    const updatedSeats = [...seats];
+    for (let i = currentCount; i < newTotal; i++) {
+      updatedSeats.push({
+        index: i,
+        user: null,
+        isMuted: false,
+        isTalking: false
+      });
+    }
+    setSeats(updatedSeats);
+
+    // Send via WebSocket
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'add_seats',
+        roomId: safeRoom.id,
+        userId: currentUserId,
+        userName: currentUser.name,
+        count: additionalCount,
+        total: newTotal
+      }));
+    }
+
+    // Persist via REST
+    try {
+      await fetch(`/api/rooms/${safeRoom.id}/add-seats`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hostId: currentUserId,
+          hostName: currentUser.name,
+          count: additionalCount,
+          total: newTotal
+        })
+      });
+      playSynthSound('win');
+      toast(`Expanded room to ${newTotal - 1} seats! 🛋️✨`, "success");
+    } catch (e) {
+      console.warn("Failed to persist added seats:", e);
+    }
+  };
 
   // Sync room customization if safeRoom prop updates
   useEffect(() => {
@@ -271,8 +328,12 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
   // Intercept hardware / gesture back button to close any open modal or drawer in VoiceRoom
   useEffect(() => {
-    if (showGiftDrawer || showAudienceModal || showSeatModal || showUserProfileModal || showInvitePanel || showCustomizationModal || showMusicDrawer || isChatInputOpen || showEmojiPicker || showToolsMenu || showGameHub) {
+    if (showGiftDrawer || showAudienceModal || showSeatModal || showUserProfileModal || showInvitePanel || showCustomizationModal || showMusicDrawer || isChatInputOpen || showEmojiPicker || showToolsMenu || showGameHub || showMessagesDrawer) {
       return registerBackHandler(() => {
+        if (showMessagesDrawer) {
+          setShowMessagesDrawer(false);
+          return true;
+        }
         if (isChatInputOpen) {
           setIsChatInputOpen(false);
           return true;
@@ -2527,17 +2588,6 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
             <span>{(safeRoom as any).gamePrizePool ? `${((safeRoom as any).gamePrizePool / 1000).toFixed(2)}K` : '2.67M'}</span>
           </div>
 
-          {/* Room Toolbox / Customize */}
-          {isCurrentUserHost && (
-            <button
-              onClick={() => setShowCustomizationModal(true)}
-              className="w-8 h-8 rounded-full bg-black/40 hover:bg-white/15 backdrop-blur-md border border-white/20 flex items-center justify-center text-white shadow cursor-pointer active:scale-90 transition-all"
-              title="Room Settings & Theme"
-            >
-              <Palette className="w-3.5 h-3.5" />
-            </button>
-          )}
-
           {/* Share Room Button */}
           <button
             onClick={() => {
@@ -2821,6 +2871,21 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
               </div>
             );
           })}
+
+          {/* Host Add More Seats button tile */}
+          {isCurrentUserHost && seats.length < 21 && (
+            <div 
+              onClick={() => handleAddMoreSeats(2)}
+              className="flex flex-col items-center justify-center cursor-pointer group active:scale-95 transition-all"
+              title="Add 2 More Seats (Host Only)"
+            >
+              <div className="w-13 h-13 rounded-2xl bg-white/10 hover:bg-amber-400/20 border-2 border-dashed border-white/30 hover:border-amber-400/80 flex flex-col items-center justify-center text-white/70 group-hover:text-amber-300 shadow transition-all backdrop-blur-xs">
+                <Plus className="w-5 h-5 group-hover:scale-110 transition-transform" />
+                <span className="text-[7px] font-black text-amber-300 uppercase tracking-wider mt-0.5">+2</span>
+              </div>
+              <span className="text-[9px] font-black text-amber-300/90 mt-1 drop-shadow">+ Seats</span>
+            </div>
+          )}
         </div>
 
         {/* --- DYNAMIC GAME DRAWERS --- */}
@@ -3171,7 +3236,15 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
         {/* 4. 🛋️ Seat Management Button */}
         <button
-          onClick={() => setShowSeatModal(true)}
+          onClick={() => {
+            if (mySeatIndex !== null) {
+              setSelectedSeatIndex(mySeatIndex);
+            } else {
+              const firstEmpty = seats.slice(1).find(s => !s.user);
+              setSelectedSeatIndex(firstEmpty ? firstEmpty.index : 1);
+            }
+            setShowSeatModal(true);
+          }}
           className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 backdrop-blur-md flex items-center justify-center text-white cursor-pointer active:scale-90 transition-all shadow shrink-0"
           title="Seat Options"
         >
@@ -3182,19 +3255,16 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
         <button
           onClick={() => setShowToolsMenu(!showToolsMenu)}
           className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 backdrop-blur-md flex items-center justify-center text-white cursor-pointer active:scale-90 transition-all shadow shrink-0"
-          title="Room Tools (Theme, Music, Info)"
+          title="Room Tools (Theme, Music, Info, Seats)"
         >
           <LayoutGrid className="w-4 h-4 text-white/90" />
         </button>
 
-        {/* 6. 💬 Chat Bubble Button */}
+        {/* 6. 💬 Messages / Room Chat History Drawer (Distinct from public text input) */}
         <button
-          onClick={() => {
-            setIsChatInputOpen(true);
-            setTimeout(() => chatInputRef.current?.focus(), 150);
-          }}
+          onClick={() => setShowMessagesDrawer(true)}
           className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 backdrop-blur-md flex items-center justify-center text-white cursor-pointer active:scale-90 transition-all shadow shrink-0"
-          title="Open Chat"
+          title="Room Messages & Chat History"
         >
           <MessageCircle className="w-4 h-4 text-white/90" />
         </button>
@@ -3223,10 +3293,10 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
 
       {/* --- POPUP / MODAL DRAWERS --- */}
 
-      {/* Floating Chat Input Sheet */}
+      {/* Floating Chat Input Bar (NO BLUR OVERLAY - crystal clear background) */}
       {isChatInputOpen && (
         <div 
-          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex flex-col justify-end"
+          className="fixed inset-0 z-50 bg-transparent flex flex-col justify-end pointer-events-auto"
           onClick={(e) => { if (e.target === e.currentTarget) setIsChatInputOpen(false); }}
         >
           <form 
@@ -3235,8 +3305,9 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
               handleSendMessage(e);
               setIsChatInputOpen(false);
             }}
-            className="p-3 bg-zinc-900 border-t border-white/15 flex items-center gap-2 select-none shadow-2xl animate-in slide-in-from-bottom duration-200"
+            className="p-3 bg-zinc-950/95 border-t border-white/20 flex items-center gap-2 select-none shadow-2xl animate-in slide-in-from-bottom duration-150"
             style={{ paddingBottom: 'max(12px, env(safe-area-inset-bottom, 12px))' }}
+            onClick={(e) => e.stopPropagation()}
           >
             <input
               ref={chatInputRef}
@@ -3263,6 +3334,61 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
               ✕
             </button>
           </form>
+        </div>
+      )}
+
+      {/* 💬 Room Chat & Direct Messages Drawer */}
+      {showMessagesDrawer && (
+        <div 
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs flex flex-col justify-end"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowMessagesDrawer(false); }}
+        >
+          <div 
+            className="bg-zinc-900 border-t border-white/15 p-4 rounded-t-3xl shadow-2xl animate-in slide-in-from-bottom duration-200 text-white select-none max-h-[70vh] flex flex-col"
+            style={{ paddingBottom: 'max(16px, env(safe-area-inset-bottom, 16px))' }}
+          >
+            <div className="flex justify-between items-center mb-3 pb-2 border-b border-white/10">
+              <h3 className="text-sm font-black text-white flex items-center gap-1.5">
+                <MessageCircle className="w-4 h-4 text-pink-400" />
+                <span>Room Messages & Activity</span>
+              </h3>
+              <button 
+                onClick={() => setShowMessagesDrawer(false)}
+                className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-xs text-white/70 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Chat list */}
+            <div className="flex-1 overflow-y-auto space-y-2 max-h-[300px] scrollbar-none pr-1">
+              {chatMessages.length === 0 ? (
+                <p className="text-center text-xs text-white/50 py-8">No messages yet in this room.</p>
+              ) : (
+                chatMessages.map((msg) => (
+                  <div key={msg.id} className="bg-white/5 border border-white/10 rounded-xl p-2.5 text-xs">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-bold text-amber-300 text-[11px]">{msg.userName}</span>
+                      <span className="text-[9px] text-white/40">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    </div>
+                    <p className="text-white/90 text-xs leading-normal">{msg.message}</p>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <button
+              onClick={() => {
+                setShowMessagesDrawer(false);
+                setIsChatInputOpen(true);
+                setTimeout(() => chatInputRef.current?.focus(), 150);
+              }}
+              className="mt-3 w-full py-2.5 rounded-2xl bg-gradient-to-r from-pink-500 to-rose-600 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-md active:scale-98"
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>Send Message</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -3380,6 +3506,22 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                 <Share2 className="w-6 h-6 text-emerald-400" />
                 <span className="text-[10px] font-bold">Share</span>
               </button>
+
+              {/* Add More Seats (Host only) */}
+              {isCurrentUserHost && (
+                <button
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    handleAddMoreSeats(2);
+                  }}
+                  disabled={seats.length >= 21}
+                  className="flex flex-col items-center gap-1.5 p-3 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/15 cursor-pointer active:scale-95 transition-all"
+                  title="Add more seats to room"
+                >
+                  <Plus className="w-6 h-6 text-amber-400" />
+                  <span className="text-[10px] font-bold">+ Seats ({seats.length - 1})</span>
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -3749,6 +3891,36 @@ export default function VoiceRoom({ room, onLeave, currentUser, onUpdateCoins, o
                   <Mic className="w-5 h-5" />
                   <span>{mySeatIndex !== null ? `Move to Seat ${selectedSeatIndex}` : 'Sit Here & Join Mic'}</span>
                 </button>
+
+                {/* Host Expand Seats Option */}
+                {isCurrentUserHost && (
+                  <div className="pt-2 border-t border-zinc-150 flex flex-col gap-1.5">
+                    <div className="flex justify-between items-center text-[11px] font-black text-zinc-700">
+                      <span>🛋️ Room Capacity</span>
+                      <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-bold">
+                        {seats.length - 1} Guest Seats
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleAddMoreSeats(2)}
+                        disabled={seats.length >= 21}
+                        className="flex-1 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 font-black rounded-xl text-xs cursor-pointer shadow-xs active:scale-95 transition-all flex items-center justify-center gap-1"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>+2 Seats</span>
+                      </button>
+                      <button
+                        onClick={() => handleAddMoreSeats(4)}
+                        disabled={seats.length >= 21}
+                        className="flex-1 py-2 bg-gradient-to-r from-amber-500 to-yellow-500 text-zinc-950 font-black rounded-xl text-xs cursor-pointer shadow-md active:scale-95 transition-all flex items-center justify-center gap-1"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>+4 Seats</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Cancel */}
                 <button

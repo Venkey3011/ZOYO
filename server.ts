@@ -3245,14 +3245,15 @@ app.post("/api/rooms/:id/seat/:seatIndex", async (req: express.Request, res: exp
       return;
     }
 
-    if (isNaN(seatIdx) || seatIdx < 0 || seatIdx > 8) {
-      res.status(400).json({ error: "Invalid seat index (must be 0-8)" });
+    const currentTotal = Math.max(Array.isArray(room.seats) ? room.seats.length : 9, 9);
+    if (isNaN(seatIdx) || seatIdx < 0 || seatIdx >= currentTotal) {
+      res.status(400).json({ error: `Invalid seat index (must be 0-${currentTotal - 1})` });
       return;
     }
 
-    // Always normalize room.seats to an array of exactly 9 valid non-null seat objects
+    // Normalize room.seats to dynamic array of valid non-null seat objects
     const rawSeats = Array.isArray(room.seats) ? room.seats : [];
-    room.seats = Array.from({ length: 9 }, (_, i) => {
+    room.seats = Array.from({ length: currentTotal }, (_, i) => {
       const existing = rawSeats.find((s: any) => s && s.index === i) || rawSeats[i];
       return {
         index: i,
@@ -3391,6 +3392,67 @@ app.post("/api/rooms/:id/seat/:seatIndex", async (req: express.Request, res: exp
     res.json({ success: true, room });
   } catch (error) {
     console.error('Error updating seat:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Expand room seats (Host only)
+app.post("/api/rooms/:id/add-seats", async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+    const { hostId, hostName, count, total } = req.body;
+    const room = await getRoom(id);
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return;
+    }
+
+    const rHostId = String(room.host?._id || room.host?.id || '');
+    const isHost = (hostId && rHostId && String(hostId) === rHostId) || (hostName && room.host?.name && hostName === room.host.name);
+    if (!isHost) {
+      res.status(403).json({ error: "Only the host can add seats" });
+      return;
+    }
+
+    const rawSeats = Array.isArray(room.seats) ? room.seats : [];
+    const currentLen = rawSeats.length;
+    const targetTotal = total ? Math.min(Math.max(Number(total), 9), 25) : Math.min(currentLen + (Number(count) || 2), 25);
+
+    if (targetTotal > currentLen) {
+      for (let i = currentLen; i < targetTotal; i++) {
+        room.seats.push({
+          index: i,
+          user: null,
+          isMuted: false,
+          isTalking: false
+        });
+      }
+      room.onlineCount = Math.max(room.onlineUsers?.length || 0, room.seats.filter((s: any) => s && s.user).length);
+      await saveRoom(room);
+
+      broadcastToRoom(id, {
+        type: 'seats_updated',
+        seats: room.seats,
+        onlineCount: room.onlineCount
+      });
+
+      broadcastToRoom(id, {
+        type: 'chat_message',
+        message: {
+          id: String(Date.now()),
+          userId: 'system',
+          userName: 'System',
+          userLevel: 99,
+          message: `🎉 Host expanded room capacity to ${targetTotal - 1} seats!`,
+          type: 'system',
+          timestamp: new Date().toISOString()
+        }
+      });
+    }
+
+    res.json({ success: true, seats: room.seats });
+  } catch (error) {
+    console.error('Error adding seats:', error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -3765,9 +3827,10 @@ async function startServer() {
           const room = await getRoom(roomId);
           if (room) {
             const sIdx = parseInt(seatIndex);
-            if (!isNaN(sIdx) && sIdx >= 0 && sIdx <= 8) {
+            const currentTotal = Math.max(Array.isArray(room.seats) ? room.seats.length : 9, 9);
+            if (!isNaN(sIdx) && sIdx >= 0 && sIdx < currentTotal) {
               const rawSeats = Array.isArray(room.seats) ? room.seats : [];
-              room.seats = Array.from({ length: 9 }, (_, i) => {
+              room.seats = Array.from({ length: currentTotal }, (_, i) => {
                 const existing = rawSeats.find((s: any) => s && s.index === i) || rawSeats[i];
                 return {
                   index: i,
@@ -3827,14 +3890,60 @@ async function startServer() {
               }
             }
           }
+        } else if (type === 'add_seats') {
+          // Dynamic seat expansion over WebSocket
+          const { count, total } = payload || {};
+          const room = await getRoom(roomId);
+          if (room) {
+            const rHostId = String(room.host?._id || room.host?.id || '');
+            const isHost = (userId && rHostId && String(userId) === rHostId) || (userName && room.host?.name && userName === room.host.name);
+            if (isHost) {
+              const rawSeats = Array.isArray(room.seats) ? room.seats : [];
+              const currentLen = rawSeats.length;
+              const targetTotal = total ? Math.min(Math.max(Number(total), 9), 25) : Math.min(currentLen + (Number(count) || 2), 25);
+              if (targetTotal > currentLen) {
+                for (let i = currentLen; i < targetTotal; i++) {
+                  room.seats.push({
+                    index: i,
+                    user: null,
+                    isMuted: false,
+                    isTalking: false
+                  });
+                }
+                room.onlineCount = Math.max(room.onlineUsers?.length || 0, room.seats.filter((s: any) => s && s.user).length);
+                await saveRoom(room);
+
+                const eventPayload = {
+                  type: 'seats_updated',
+                  seats: room.seats,
+                  onlineCount: room.onlineCount
+                };
+                broadcastToRoom(roomId, eventPayload);
+                if (room.roomId && room.roomId !== roomId) {
+                  broadcastToRoom(room.roomId, eventPayload);
+                }
+
+                broadcastToRoom(roomId, {
+                  type: 'chat_message',
+                  message: {
+                    id: String(Date.now()),
+                    userId: 'system',
+                    userName: 'System',
+                    userLevel: 99,
+                    message: `🎉 Host expanded room capacity to ${targetTotal - 1} seats!`,
+                    type: 'system',
+                    timestamp: new Date().toISOString()
+                  }
+                });
+              }
+            }
+          }
         } else if (type === 'seat_status') {
           // Live microphone speech detection or mute toggle
-          // Only persist mute changes to DB — isTalking fires many times/sec and must NOT hit DB
           const { seatIndex, isTalking, isMuted } = payload || {};
           const sIdx = typeof seatIndex === 'number' ? seatIndex : parseInt(seatIndex);
-          if (!isNaN(sIdx) && sIdx >= 0 && sIdx <= 8) {
+          if (!isNaN(sIdx) && sIdx >= 0) {
             if (isMuted !== undefined) {
-              // Mute toggle is rare — persist it
               const room = await getRoom(roomId);
               if (room && room.seats && room.seats[sIdx] !== undefined) {
                 room.seats[sIdx].isMuted = Boolean(isMuted);

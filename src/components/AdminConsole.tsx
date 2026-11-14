@@ -5,9 +5,9 @@ import {
   Shield, Users, Coins, RefreshCw, 
   Search, Lock, Unlock, Ban, UserPlus, FileText, ArrowRightLeft,
   Sparkles, Gift, Gamepad2, Palette, Trash2, Plus,
-  Image as ImageIcon, ExternalLink, Upload
+  Image as ImageIcon, ExternalLink, Upload,
+  CheckCircle2, AlertCircle, X
 } from 'lucide-react';
-
 
 interface AdminConsoleProps {
   currentUser: User;
@@ -37,7 +37,18 @@ interface ConfirmModalState {
   onConfirm: () => void;
 }
 
+interface ActionToastState {
+  isOpen: boolean;
+  type: 'success' | 'error' | 'coin' | 'block' | 'role';
+  title: string;
+  message: string;
+  subtitle?: string;
+  amount?: number;
+  recipient?: string;
+}
+
 type ManagementTab = 'user_control' | 'coin_transfer' | 'access_privilege' | 'audit_logs' | 'room_management' | 'catalog_hub' | 'media_hub';
+
 
 
 export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConsoleProps) {
@@ -61,6 +72,32 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
     message: '',
     onConfirm: () => {}
   });
+
+  // GPay-style Animated Confirmation Popup state (3-sec auto fade or click to dismiss)
+  const [actionToast, setActionToast] = useState<ActionToastState>({
+    isOpen: false,
+    type: 'success',
+    title: '',
+    message: '',
+    subtitle: '',
+    amount: undefined,
+    recipient: undefined
+  });
+  const toastTimeoutRef = React.useRef<any>(null);
+
+  const showActionToast = (params: Omit<ActionToastState, 'isOpen'>) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setActionToast({ ...params, isOpen: true });
+    toastTimeoutRef.current = setTimeout(() => {
+      setActionToast(prev => ({ ...prev, isOpen: false }));
+    }, 3000);
+  };
+
+  const closeActionToast = () => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setActionToast(prev => ({ ...prev, isOpen: false }));
+  };
+
 
   // Create Sub-User state
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -215,15 +252,29 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       });
       const data = await res.json();
       if (data.success) {
-        setSuccessMsg('Ad banner created!');
+        showActionToast({
+          type: 'success',
+          title: 'Ad Banner Published!',
+          message: `Banner "${newAdTitle.trim()}" is now live.`,
+          subtitle: newAdLinkUrl ? `Links to: ${newAdLinkUrl}` : undefined
+        });
         setNewAdTitle(''); setNewAdSubtitle(''); setNewAdLinkUrl('');
         setNewAdImageUrl(''); setNewAdBannerType('gradient');
         fetchMediaHubData();
       } else {
-        setErrorMsg(data.error || 'Failed to create ad');
+        showActionToast({
+          type: 'error',
+          title: 'Publish Failed',
+          message: data.error || 'Failed to create ad banner.'
+        });
       }
-    } catch { setErrorMsg('Network error'); }
-    setTimeout(() => { setSuccessMsg(''); setErrorMsg(''); }, 3000);
+    } catch { 
+      showActionToast({
+        type: 'error',
+        title: 'Connection Error',
+        message: 'Could not connect to server.'
+      });
+    }
   };
 
 
@@ -235,7 +286,18 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
         body: JSON.stringify({ is_active: !currentState, userRole: currentUser.role })
       });
       setAdsList(prev => prev.map(a => a._id === adId ? { ...a, is_active: !currentState } : a));
-    } catch { setErrorMsg('Failed to update ad'); setTimeout(() => setErrorMsg(''), 3000); }
+      showActionToast({
+        type: !currentState ? 'success' : 'block',
+        title: !currentState ? 'Ad Activated' : 'Ad Paused',
+        message: `Banner status set to ${!currentState ? 'Active' : 'Paused'}.`
+      });
+    } catch {
+      showActionToast({
+        type: 'error',
+        title: 'Update Failed',
+        message: 'Failed to update ad banner status.'
+      });
+    }
   };
 
   const handleDeleteAd = async (adId: string) => {
@@ -246,10 +308,20 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
         body: JSON.stringify({ userRole: currentUser.role })
       });
       setAdsList(prev => prev.filter(a => a._id !== adId));
-      setSuccessMsg('Ad deleted');
-      setTimeout(() => setSuccessMsg(''), 2500);
-    } catch { setErrorMsg('Failed to delete ad'); setTimeout(() => setErrorMsg(''), 3000); }
+      showActionToast({
+        type: 'success',
+        title: 'Ad Deleted',
+        message: 'Banner removed successfully.'
+      });
+    } catch { 
+      showActionToast({
+        type: 'error',
+        title: 'Delete Failed',
+        message: 'Failed to delete banner.'
+      });
+    }
   };
+
 
   const handleEntryVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -287,14 +359,29 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       const data = await res.json();
       if (data.success) {
         setEntryVideoSaved(true);
-        setSuccessMsg('Entry video settings saved!');
-        setTimeout(() => { setEntryVideoSaved(false); setSuccessMsg(''); }, 3000);
+        showActionToast({
+          type: 'success',
+          title: 'Entry Video Updated!',
+          message: entryVideoEnabled ? 'Custom video is active on app launch.' : 'Custom video saved (Currently disabled).',
+          subtitle: entryVideoUrl ? 'Preview updated successfully' : undefined
+        });
+        setTimeout(() => setEntryVideoSaved(false), 3000);
       } else {
-        setErrorMsg(data.error || 'Failed to save');
-        setTimeout(() => setErrorMsg(''), 3000);
+        showActionToast({
+          type: 'error',
+          title: 'Save Failed',
+          message: data.error || 'Failed to save entry video.'
+        });
       }
-    } catch { setErrorMsg('Network error'); setTimeout(() => setErrorMsg(''), 3000); }
+    } catch { 
+      showActionToast({
+        type: 'error',
+        title: 'Connection Error',
+        message: 'Could not connect to server.'
+      });
+    }
   };
+
 
   const handleAddGift = async (e: React.FormEvent) => {
 
@@ -316,15 +403,27 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       });
       const data = await res.json();
       if (data.success) {
-        setSuccessMsg(`Added new animated gift "${data.gift.name}"!`);
+        showActionToast({
+          type: 'success',
+          title: 'Gift Added!',
+          message: `Added animated gift "${data.gift.name}" (${data.gift.coins} Coins).`
+        });
         setNewGiftName('');
         setNewGiftDesc('');
         fetchCatalogData();
       } else {
-        setErrorMsg(data.error || 'Failed to add gift');
+        showActionToast({
+          type: 'error',
+          title: 'Add Gift Failed',
+          message: data.error || 'Failed to add gift'
+        });
       }
     } catch {
-      setErrorMsg('Connection error adding gift');
+      showActionToast({
+        type: 'error',
+        title: 'Connection Error',
+        message: 'Could not connect to server.'
+      });
     }
   };
 
@@ -333,11 +432,19 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       const res = await fetch(`/api/catalog/gifts/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
-        setSuccessMsg(`Removed gift "${name}"`);
+        showActionToast({
+          type: 'success',
+          title: 'Gift Deleted',
+          message: `Removed gift "${name}" from catalog.`
+        });
         fetchCatalogData();
       }
     } catch {
-      setErrorMsg('Failed to delete gift');
+      showActionToast({
+        type: 'error',
+        title: 'Delete Failed',
+        message: 'Failed to delete gift'
+      });
     }
   };
 
@@ -359,14 +466,26 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       });
       const data = await res.json();
       if (data.success) {
-        setSuccessMsg(`Added new avatar frame "${data.frame.name}"!`);
+        showActionToast({
+          type: 'success',
+          title: 'Frame Added!',
+          message: `Added avatar frame "${data.frame.name}".`
+        });
         setNewFrameName('');
         fetchCatalogData();
       } else {
-        setErrorMsg(data.error || 'Failed to add frame');
+        showActionToast({
+          type: 'error',
+          title: 'Add Frame Failed',
+          message: data.error || 'Failed to add frame'
+        });
       }
     } catch {
-      setErrorMsg('Connection error adding frame');
+      showActionToast({
+        type: 'error',
+        title: 'Connection Error',
+        message: 'Could not connect to server.'
+      });
     }
   };
 
@@ -375,11 +494,19 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       const res = await fetch(`/api/catalog/frames/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
-        setSuccessMsg(`Removed frame "${name}"`);
+        showActionToast({
+          type: 'success',
+          title: 'Frame Removed',
+          message: `Removed frame "${name}" from shop.`
+        });
         fetchCatalogData();
       }
     } catch {
-      setErrorMsg('Failed to delete frame');
+      showActionToast({
+        type: 'error',
+        title: 'Delete Failed',
+        message: 'Failed to delete frame'
+      });
     }
   };
 
@@ -404,15 +531,27 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       });
       const data = await res.json();
       if (data.success) {
-        setSuccessMsg(`Added new game "${data.game.name}"!`);
+        showActionToast({
+          type: 'success',
+          title: 'Game Added!',
+          message: `Added game "${data.game.name}" to games hub.`
+        });
         setNewGameName('');
         setNewGameDesc('');
         fetchCatalogData();
       } else {
-        setErrorMsg(data.error || 'Failed to add game');
+        showActionToast({
+          type: 'error',
+          title: 'Add Game Failed',
+          message: data.error || 'Failed to add game'
+        });
       }
     } catch {
-      setErrorMsg('Connection error adding game');
+      showActionToast({
+        type: 'error',
+        title: 'Connection Error',
+        message: 'Could not connect to server.'
+      });
     }
   };
 
@@ -421,13 +560,22 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       const res = await fetch(`/api/catalog/games/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
-        setSuccessMsg(`Removed game "${name}"`);
+        showActionToast({
+          type: 'success',
+          title: 'Game Removed',
+          message: `Removed game "${name}".`
+        });
         fetchCatalogData();
       }
     } catch {
-      setErrorMsg('Failed to delete game');
+      showActionToast({
+        type: 'error',
+        title: 'Delete Failed',
+        message: 'Failed to delete game'
+      });
     }
   };
+
 
   // Fetch rooms for management
   const fetchRooms = async () => {
@@ -470,15 +618,28 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       });
       const data = await res.json();
       if (data.success) {
-        setSuccessMsg('Room deleted successfully!');
+        showActionToast({
+          type: 'success',
+          title: 'Room Deleted',
+          message: 'Voice lounge permanently deleted.'
+        });
         fetchRooms();
       } else {
-        setErrorMsg(data.error || 'Failed to delete room.');
+        showActionToast({
+          type: 'error',
+          title: 'Delete Failed',
+          message: data.error || 'Failed to delete room.'
+        });
       }
     } catch (err) {
-      setErrorMsg('Connection error.');
+      showActionToast({
+        type: 'error',
+        title: 'Connection Error',
+        message: 'Could not connect to server.'
+      });
     }
   };
+
 
   // Sync activeTab with role-based accessibility on initial load
   useEffect(() => {
@@ -624,7 +785,12 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       });
       const data = await res.json();
       if (data.success) {
-        setSuccessMsg(`Account for ${data.user.name} was successfully ${newStatus ? 'LOCKED' : 'UNLOCKED'}!`);
+        showActionToast({
+          type: newStatus ? 'block' : 'success',
+          title: newStatus ? 'Account Locked' : 'Account Unlocked',
+          message: `${data.user.name}'s account has been successfully ${newStatus ? 'restricted and locked' : 'unlocked and restored'}.`,
+          subtitle: `User ID: ${data.user.yoyoId || data.user._id || userId}`
+        });
         fetchData();
       } else {
         // Rollback optimistic update on server error
@@ -633,8 +799,13 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
             ? { ...u, isBlocked: currentBlockedStatus }
             : u
         ));
-        setErrorMsg(data.error || 'Failed to modify lock status.');
+        showActionToast({
+          type: 'error',
+          title: 'Action Failed',
+          message: data.error || 'Failed to modify lock status.'
+        });
       }
+
     } catch (err) {
       // Rollback on network failure
       setUsers(prev => prev.map(u => 
@@ -679,13 +850,26 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       });
       const data = await res.json();
       if (data.success) {
-        setSuccessMsg(`Access level for ${data.user.name} set to ${role.toUpperCase()}!`);
+        showActionToast({
+          type: 'role',
+          title: 'Role Updated',
+          message: `${data.user.name}'s privileges updated to ${role.toUpperCase()}`,
+          subtitle: `User: ${data.user.name} (${data.user.yoyoId || userId})`
+        });
         fetchData();
       } else {
-        setErrorMsg(data.error || 'Failed to change role.');
+        showActionToast({
+          type: 'error',
+          title: 'Update Failed',
+          message: data.error || 'Failed to change role.'
+        });
       }
     } catch (err) {
-      setErrorMsg('Connection error.');
+      showActionToast({
+        type: 'error',
+        title: 'Connection Error',
+        message: 'Could not connect to server.'
+      });
     }
   };
 
@@ -695,7 +879,11 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
     if (!targetUser) return;
 
     if (currentUser.role !== 'admin') {
-      setErrorMsg('Only the Super Admin can reassign managers!');
+      showActionToast({
+        type: 'error',
+        title: 'Access Denied',
+        message: 'Only Super Admin can reassign managers.'
+      });
       return;
     }
 
@@ -723,13 +911,26 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       });
       const data = await res.json();
       if (data.success) {
-        setSuccessMsg(`Manager assigned successfully!`);
+        showActionToast({
+          type: 'success',
+          title: 'Manager Assigned',
+          message: `Account hierarchy successfully updated.`,
+          subtitle: managerId === 'none' ? 'Set as Independent' : `Manager ID: ${managerId}`
+        });
         fetchData();
       } else {
-        setErrorMsg(data.error || 'Failed to assign manager.');
+        showActionToast({
+          type: 'error',
+          title: 'Assignment Failed',
+          message: data.error || 'Failed to assign manager.'
+        });
       }
     } catch (err) {
-      setErrorMsg('Connection error.');
+      showActionToast({
+        type: 'error',
+        title: 'Connection Error',
+        message: 'Could not connect to server.'
+      });
     }
   };
 
@@ -741,19 +942,27 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
     const amountStr = transferAmount[userId];
     const amount = Number(amountStr);
     if (!amountStr || isNaN(amount) || amount <= 0) {
-      setErrorMsg('Please specify a valid positive coin amount to transfer.');
+      showActionToast({
+        type: 'error',
+        title: 'Invalid Amount',
+        message: 'Please enter a valid positive coin amount.'
+      });
       return;
     }
 
     if (currentUser.role !== 'admin' && currentUser.role !== 'manager' && currentUser.role !== 'coin_seller') {
-      setErrorMsg('Privileges Denied. You cannot transfer coins.');
+      showActionToast({
+        type: 'error',
+        title: 'Privilege Denied',
+        message: 'You do not have permission to transfer coins.'
+      });
       return;
     }
 
     setConfirmModal({
       isOpen: true,
       title: 'Confirm Coin Transfer',
-      message: `Are you sure you want to transfer 🪙 ${amount} coins to ${targetUser.name}? This will instantly deduct from your balance.`,
+      message: `Are you sure you want to transfer 🪙 ${amount.toLocaleString()} coins to ${targetUser.name}? This will instantly deduct from your balance.`,
       onConfirm: () => {
         setConfirmModal(prev => ({ ...prev, isOpen: false }));
         executeTransferCoins(userId, amount);
@@ -776,7 +985,14 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setSuccessMsg(`Transferred 🪙 ${amount} coins successfully to ${data.user.name}!`);
+        // GPay-style Payment Success confirmation popup!
+        showActionToast({
+          type: 'coin',
+          title: 'Transfer Successful!',
+          amount: amount,
+          message: `Coins transferred successfully`,
+          subtitle: `Sent to: ${data.user.name} (${data.user.yoyoId || userId})`
+        });
         setTransferAmount(prev => ({ ...prev, [userId]: '' }));
 
         // Deduct from our balance locally instantly!
@@ -789,12 +1005,21 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
           fetchTransferLogs();
         }
       } else {
-        setErrorMsg(data.error || 'Failed to execute transfer.');
+        showActionToast({
+          type: 'error',
+          title: 'Transfer Failed',
+          message: data.error || 'Failed to execute coin transfer.'
+        });
       }
     } catch (err) {
-      setErrorMsg('Connection error.');
+      showActionToast({
+        type: 'error',
+        title: 'Connection Error',
+        message: 'Could not connect to server to complete transfer.'
+      });
     }
   };
+
 
   // API Call: Create Sub-User (Hierarchical)
   const handleCreateSubUser = async (e: React.FormEvent) => {
@@ -821,18 +1046,32 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setSuccessMsg(`Successfully registered new sub-user: ${data.user.name}!`);
+        showActionToast({
+          type: 'success',
+          title: 'Sub-User Created!',
+          message: `Account for ${data.user.name} created successfully as ${newRole.toUpperCase()}.`,
+          subtitle: `Username: ${newUsername.trim()}`
+        });
         setNewUsername('');
         setNewPassword('');
         setShowCreateForm(false);
         fetchData();
       } else {
-        setErrorMsg(data.error || 'Failed to register sub-user.');
+        showActionToast({
+          type: 'error',
+          title: 'Registration Failed',
+          message: data.error || 'Failed to register sub-user.'
+        });
       }
     } catch (err) {
-      setErrorMsg('Connection error.');
+      showActionToast({
+        type: 'error',
+        title: 'Connection Error',
+        message: 'Could not connect to server.'
+      });
     }
   };
+
 
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-50 text-xs text-zinc-800 p-4 overflow-y-auto scrollbar-none pb-32 overscroll-contain relative">
@@ -873,17 +1112,6 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
         </div>
       )}
 
-      {/* Notification Banner */}
-      {successMsg && (
-        <div className="mt-2.5 p-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold rounded-lg text-center animate-pulse">
-          ✅ {successMsg}
-        </div>
-      )}
-      {errorMsg && (
-        <div className="mt-2.5 p-2.5 bg-rose-50 border border-rose-200 text-rose-800 font-bold rounded-lg text-center">
-          ⚠️ {errorMsg}
-        </div>
-      )}
 
       {/* Tab Navigation */}
       <div className="mt-4 flex gap-1 bg-zinc-150 p-1 rounded-xl border border-zinc-200/60 overflow-x-auto scrollbar-none shrink-0">
@@ -2440,7 +2668,86 @@ export default function AdminConsole({ currentUser, onCoinsUpdated }: AdminConso
       )}
 
 
+      {/* GPay-Style Animated Success / Confirmation Modal Overlay (Auto dismisses in 3s or on tap) */}
+      {actionToast.isOpen && (
+        <div 
+          onClick={closeActionToast}
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-[fadeIn_0.2s_ease-out] cursor-pointer"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-xs bg-white rounded-3xl p-6 shadow-2xl flex flex-col items-center text-center relative overflow-hidden animate-[scaleIn_0.3s_cubic-bezier(0.16,1,0.3,1)] border border-zinc-100"
+          >
+            {/* Top Close icon */}
+            <button
+              onClick={closeActionToast}
+              className="absolute top-3 right-3 p-1.5 text-zinc-400 hover:text-zinc-600 rounded-full hover:bg-zinc-100 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            {/* Glowing Aura Ring & Animated Icon (GPay Style) */}
+            <div className="relative my-2">
+              <div className={`w-20 h-20 rounded-full flex items-center justify-center ${
+                actionToast.type === 'error'
+                  ? 'bg-rose-50 text-rose-500 shadow-[0_0_30px_rgba(244,63,94,0.35)]'
+                  : actionToast.type === 'block'
+                  ? 'bg-amber-50 text-amber-500 shadow-[0_0_30px_rgba(245,158,11,0.35)]'
+                  : 'bg-emerald-50 text-emerald-500 shadow-[0_0_30px_rgba(16,185,129,0.35)]'
+              }`}>
+                {actionToast.type === 'error' ? (
+                  <AlertCircle className="w-10 h-10 animate-[bounce_0.6s_ease-out]" />
+                ) : actionToast.type === 'coin' ? (
+                  <span className="text-4xl animate-[bounce_0.6s_ease-out]">🪙</span>
+                ) : actionToast.type === 'block' ? (
+                  <Lock className="w-9 h-9 animate-[bounce_0.6s_ease-out]" />
+                ) : (
+                  <CheckCircle2 className="w-10 h-10 animate-[bounce_0.6s_ease-out]" />
+                )}
+              </div>
+            </div>
+
+            {/* Amount Callout (if coin transfer) */}
+            {actionToast.amount !== undefined && (
+              <div className="mt-2 flex items-baseline gap-1">
+                <span className="text-3xl font-black text-zinc-900 tracking-tight">🪙 {actionToast.amount.toLocaleString()}</span>
+                <span className="text-xs font-bold text-zinc-400 uppercase">Coins</span>
+              </div>
+            )}
+
+            {/* Title */}
+            <h3 className="mt-2 text-base font-black text-zinc-900 tracking-tight leading-tight">
+              {actionToast.title}
+            </h3>
+
+            {/* Main Message */}
+            <p className="mt-1 text-xs font-bold text-zinc-600 leading-relaxed max-w-[220px]">
+              {actionToast.message}
+            </p>
+
+            {/* Subtitle / Recipient detail */}
+            {actionToast.subtitle && (
+              <p className="mt-1 text-[11px] font-semibold text-zinc-400">
+                {actionToast.subtitle}
+              </p>
+            )}
+
+            {/* Animated 3-sec countdown bar at bottom */}
+            <div className="w-full bg-zinc-100 rounded-full h-1 mt-5 overflow-hidden">
+              <div className={`h-full animate-[progress_3s_linear_forwards] ${
+                actionToast.type === 'error' ? 'bg-rose-500' : actionToast.type === 'block' ? 'bg-amber-500' : 'bg-emerald-500'
+              }`} />
+            </div>
+
+            <p className="mt-2 text-[9px] font-bold text-zinc-400 uppercase tracking-widest">
+              Tap anywhere to dismiss
+            </p>
+          </div>
+        </div>
+      )}
+
       {confirmModal.isOpen && (
+
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-[fadeIn_0.2s_ease-out]">
           <div className="w-full max-w-xs bg-white border border-zinc-200 rounded-2xl p-4 shadow-2xl flex flex-col gap-4">
             <div className="flex items-center gap-2 border-b border-zinc-100 pb-2">

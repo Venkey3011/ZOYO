@@ -723,7 +723,9 @@ export default function App() {
       currentUserRole={currentUser.role}
       inboxCount={inboxCount}
       unreadMessagesCount={unreadMessagesCount}
+      hideBars={showSplash}
     >
+
       {activeRoomId && activeRoom ? (
         <VoiceRoom
           room={activeRoom}
@@ -804,7 +806,7 @@ export default function App() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0, scale: 1.08, filter: 'blur(12px)' }}
             transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            className="absolute inset-0 z-[99999] overflow-hidden bg-gradient-to-b from-black via-zinc-950 to-black flex flex-col items-center justify-between p-6 select-none"
+            className={`absolute inset-0 z-[99999] overflow-hidden bg-gradient-to-b from-black via-zinc-950 to-black flex flex-col items-center justify-between select-none ${entryVideoEnabled && entryVideoUrl ? 'p-0' : 'p-6'}`}
           >
             {/* MODE 1: CUSTOM ENTRY VIDEO MODE — Plays fully without any overlays, with only a top Skip button */}
             {entryVideoEnabled && entryVideoUrl ? (
@@ -819,10 +821,13 @@ export default function App() {
                 />
 
                 {/* Floating Top Bar with only Skip Button */}
-                <div className="w-full flex items-center justify-end z-30 pt-6 px-4">
+                <div 
+                  className="w-full flex items-center justify-end z-30 px-4"
+                  style={{ paddingTop: 'max(24px, env(safe-area-inset-top, 24px))' }}
+                >
                   <button
                     onClick={handleDismissSplash}
-                    className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-white bg-black/60 hover:bg-black/80 px-3.5 py-1.5 rounded-full border border-white/20 backdrop-blur-md shadow-lg transition-all cursor-pointer active:scale-95"
+                    className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-white bg-black/70 hover:bg-black/90 px-4 py-2 rounded-full border border-white/20 backdrop-blur-md shadow-xl transition-all cursor-pointer active:scale-95"
                   >
                     <span>Skip</span>
                     <span>➔</span>
@@ -830,6 +835,7 @@ export default function App() {
                 </div>
               </div>
             ) : (
+
               /* MODE 2: DEFAULT 3-SECOND LOGO ANIMATED INTRO SLIDE (Shown only when NO custom video is active) */
               <>
                 {/* Cinematic Background Light Beam & Ambient Glow */}

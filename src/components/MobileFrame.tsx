@@ -20,6 +20,7 @@ interface MobileFrameProps {
   inboxCount?: number;
   unreadMessagesCount?: number;
   onOpenFriends?: () => void;
+  hideBars?: boolean;
 }
 
 export default function MobileFrame({
@@ -36,7 +37,9 @@ export default function MobileFrame({
   inboxCount = 0,
   unreadMessagesCount = 0,
   onOpenFriends,
+  hideBars = false,
 }: MobileFrameProps) {
+
 
   // Clean navigation tabs: Rooms, Friends, Games, Chat, [Console], Profile (Me)
   const tabs = [
@@ -144,8 +147,8 @@ export default function MobileFrame({
       {/* ================= CENTRAL APPLICATION SHELL ================= */}
       <div className="w-full h-[100dvh] max-h-[100dvh] flex flex-col bg-white md:w-[400px] md:h-[800px] md:rounded-[36px] md:border-[10px] md:border-zinc-900 md:shadow-2xl relative overflow-hidden transition-all duration-300">
         
-        {/* Dynamic Mobile Header - Firmly Fixed at Top */}
-        {!inRoom && isLoggedIn !== false && (
+        {/* Dynamic Mobile Header - Firmly Fixed at Top (Hidden during full-screen video/splash) */}
+        {!inRoom && isLoggedIn !== false && !hideBars && (
           <header 
             className="h-14 px-4 flex items-center justify-between bg-white border-b border-zinc-200/60 shrink-0 z-30 select-none shadow-[0_1px_3px_rgba(0,0,0,0.03)]"
             style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
@@ -192,12 +195,13 @@ export default function MobileFrame({
           {children}
         </main>
 
-        {/* Bottom Navigation - Firmly Fixed at Bottom */}
-        {!inRoom && isLoggedIn !== false && (
+        {/* Bottom Navigation - Firmly Fixed at Bottom (Hidden during full-screen video/splash) */}
+        {!inRoom && isLoggedIn !== false && !hideBars && (
           <nav 
             className="bg-white/95 backdrop-blur-md border-t border-zinc-200/70 pt-2 px-3 shrink-0 z-40 select-none shadow-[0_-2px_10px_rgba(0,0,0,0.04)]"
             style={{ paddingBottom: 'max(14px, env(safe-area-inset-bottom, 0px))' }}
           >
+
             <div 
               className="grid text-center max-w-md mx-auto"
               style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}

@@ -81,25 +81,6 @@ export default function App() {
   isLoggedInRef.current = isLoggedIn;
   const lastBackPressRef = React.useRef<number>(0);
 
-  // Auto-dismiss intro splash after 3 seconds with smooth exit
-  useEffect(() => {
-    if (!showSplash) return;
-    const timer = setTimeout(() => {
-      try {
-        sessionStorage.setItem('zoyo_intro_seen', 'true');
-      } catch {}
-      setShowSplash(false);
-    }, 3000);
-    return () => clearTimeout(timer);
-  }, [showSplash]);
-
-  const handleDismissSplash = () => {
-    try {
-      sessionStorage.setItem('zoyo_intro_seen', 'true');
-    } catch {}
-    setShowSplash(false);
-  };
-
   // Fetch admin-set custom entry video
   const [entryVideoUrl, setEntryVideoUrl] = React.useState('');
   const [entryVideoEnabled, setEntryVideoEnabled] = React.useState(false);
@@ -111,6 +92,31 @@ export default function App() {
       }
     }).catch(() => {});
   }, []);
+
+  const handleDismissSplash = () => {
+    try {
+      sessionStorage.setItem('zoyo_intro_seen', 'true');
+    } catch {}
+    setShowSplash(false);
+  };
+
+  // Auto-dismiss intro splash after 3 seconds only if custom entry video is NOT active
+  // If custom video is active, video plays fully and finishes on onEnded, or user taps Skip
+  useEffect(() => {
+    if (!showSplash) return;
+    // If custom video is loaded and enabled, let the video play to completion instead of cutting off at 3s
+    if (entryVideoEnabled && entryVideoUrl) return;
+
+    const timer = setTimeout(() => {
+      try {
+        sessionStorage.setItem('zoyo_intro_seen', 'true');
+      } catch {}
+      setShowSplash(false);
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [showSplash, entryVideoEnabled, entryVideoUrl]);
+
+
 
   // Fetch rooms from backend when user logs in — paused when user is inside a room to save 100% CPU/bandwidth
   React.useEffect(() => {
@@ -800,159 +806,176 @@ export default function App() {
             transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
             className="absolute inset-0 z-[99999] overflow-hidden bg-gradient-to-b from-black via-zinc-950 to-black flex flex-col items-center justify-between p-6 select-none"
           >
-            {/* Admin custom entry video background */}
-            {entryVideoEnabled && entryVideoUrl && (
-              <video
-                src={entryVideoUrl}
-                autoPlay muted playsInline loop
-                onEnded={handleDismissSplash}
-                className="absolute inset-0 w-full h-full object-cover z-0 opacity-80"
-              />
-            )}
+            {/* MODE 1: CUSTOM ENTRY VIDEO MODE — Plays fully without any overlays, with only a top Skip button */}
+            {entryVideoEnabled && entryVideoUrl ? (
+              <div className="absolute inset-0 w-full h-full bg-black flex flex-col justify-between">
+                {/* Full-screen direct video */}
+                <video
+                  src={entryVideoUrl}
+                  autoPlay
+                  playsInline
+                  onEnded={handleDismissSplash}
+                  className="absolute inset-0 w-full h-full object-cover z-0"
+                />
 
-            {/* Cinematic Background Light Beam & Ambient Glow */}
-            <motion.div 
-              initial={{ scale: 0.8, opacity: 0 }}
-              animate={{ scale: [0.8, 1.25, 1], opacity: [0.3, 0.75, 0.5] }}
-              transition={{ duration: 2.8, ease: "easeOut" }}
-              className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_45%,rgba(244,63,94,0.35)_0%,rgba(251,146,60,0.2)_35%,transparent_70%)]"
-            />
-
-            {/* Subtle Video Film Scanlines / Vignette */}
-            <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(0,0,0,0.85)_100%)] z-10" />
-
-
-
-            {/* Floating Energy Sparks */}
-            <div className="absolute inset-0 pointer-events-none overflow-hidden z-10">
-              {['top-1/4 left-1/5', 'top-1/3 right-1/4', 'bottom-1/3 left-1/4', 'bottom-1/4 right-1/5', 'top-1/2 left-10', 'top-2/3 right-12'].map((pos, i) => (
-                <motion.div
-                  key={i}
-                  initial={{ opacity: 0, y: 15, scale: 0.5 }}
-                  animate={{ opacity: [0, 0.9, 0], y: [-10, -50], scale: [0.5, 1.2, 0.8] }}
-                  transition={{ duration: 2.2, delay: 0.2 + i * 0.25, ease: 'easeOut' }}
-                  className={`absolute ${pos} text-amber-300 text-sm drop-shadow-[0_0_8px_rgba(251,191,36,0.8)]`}
-                >
-                  ✨
-                </motion.div>
-              ))}
-            </div>
-
-            {/* Top Bar with Intro Tag & Skip Action */}
-            <motion.div 
-              initial={{ y: -20, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              transition={{ duration: 0.5, delay: 0.15 }}
-              className="w-full flex items-center justify-between z-20 pt-4 px-2"
-            >
-              <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 backdrop-blur-md border border-white/15 text-[10px] text-rose-300 font-black tracking-widest uppercase shadow-md">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                <span>WELCOME TO ZOYO</span>
+                {/* Floating Top Bar with only Skip Button */}
+                <div className="w-full flex items-center justify-end z-30 pt-6 px-4">
+                  <button
+                    onClick={handleDismissSplash}
+                    className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-white bg-black/60 hover:bg-black/80 px-3.5 py-1.5 rounded-full border border-white/20 backdrop-blur-md shadow-lg transition-all cursor-pointer active:scale-95"
+                  >
+                    <span>Skip</span>
+                    <span>➔</span>
+                  </button>
+                </div>
               </div>
-              
-              <button
-                onClick={handleDismissSplash}
-                className="text-[10px] font-black uppercase tracking-wider text-white/60 hover:text-white px-3 py-1 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 backdrop-blur-md transition-all cursor-pointer"
-              >
-                Skip ➔
-              </button>
-            </motion.div>
-
-            {/* Center Visual Intro — 3D Video Zoom & Glow */}
-            <div className="flex flex-col items-center gap-6 my-auto z-20">
-              {/* Logo Emblem with Multi-ring Aura */}
-              <motion.div 
-                initial={{ scale: 0.5, opacity: 0, rotate: -6 }}
-                animate={{ scale: 1, opacity: 1, rotate: 0 }}
-                transition={{ duration: 0.9, ease: [0.16, 1, 0.3, 1] }}
-                className="relative"
-              >
-                {/* Rotating Outer Gradient Aura */}
-                <motion.div
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
-                  className="absolute -inset-5 rounded-[44px] bg-gradient-to-tr from-rose-500 via-amber-400 to-pink-500 opacity-60 blur-2xl"
-                />
-
-                {/* Pulsing Core Glow */}
-                <motion.div
-                  animate={{ scale: [1, 1.08, 1], opacity: [0.6, 0.9, 0.6] }}
-                  transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
-                  className="absolute -inset-2 rounded-[38px] bg-gradient-to-r from-pink-500 via-rose-500 to-amber-400 blur-md opacity-80"
-                />
-
-                {/* Logo Image */}
-                <motion.img 
-                  src="/logo.jpg" 
-                  alt="ZOYO Intro Emblem" 
-                  referrerPolicy="no-referrer"
-                  whileHover={{ scale: 1.03 }}
-                  className="w-48 h-48 rounded-[36px] object-cover shadow-[0_20px_50px_rgba(0,0,0,0.8)] border-2 border-white/30 relative z-10" 
-                />
-
-                {/* Lens Flare Accent */}
+            ) : (
+              /* MODE 2: DEFAULT 3-SECOND LOGO ANIMATED INTRO SLIDE (Shown only when NO custom video is active) */
+              <>
+                {/* Cinematic Background Light Beam & Ambient Glow */}
                 <motion.div 
-                  initial={{ x: -120, opacity: 0 }}
-                  animate={{ x: 140, opacity: [0, 0.8, 0] }}
-                  transition={{ duration: 1.6, delay: 0.4, ease: "easeInOut" }}
-                  className="absolute top-0 bottom-0 w-8 bg-gradient-to-r from-transparent via-white/40 to-transparent skew-x-[-25deg] pointer-events-none z-20"
+                  initial={{ scale: 0.8, opacity: 0 }}
+                  animate={{ scale: [0.8, 1.25, 1], opacity: [0.3, 0.75, 0.5] }}
+                  transition={{ duration: 2.8, ease: "easeOut" }}
+                  className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_45%,rgba(244,63,94,0.35)_0%,rgba(251,146,60,0.2)_35%,transparent_70%)]"
                 />
-              </motion.div>
-              
-              {/* Title & Tagline with Reveal Animation */}
-              <motion.div 
-                initial={{ y: 20, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                transition={{ duration: 0.6, delay: 0.35 }}
-                className="flex flex-col items-center gap-1.5 text-center"
-              >
-                <h1 className="text-3xl font-black tracking-[0.25em] text-transparent bg-clip-text bg-gradient-to-r from-white via-rose-100 to-amber-300 drop-shadow-[0_4px_16px_rgba(244,63,94,0.6)]">
-                  ZOYO
-                </h1>
-                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-rose-300/90 drop-shadow">
-                  Play • Connect • Have Fun!
-                </p>
-              </motion.div>
-            </div>
 
-            {/* Bottom Section — Auto-Loading Video Progress Indicator */}
-            <motion.div 
-              initial={{ y: 20, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              transition={{ duration: 0.5, delay: 0.45 }}
-              className="w-full max-w-xs flex flex-col items-center gap-3 z-20 pb-4"
-            >
-              {/* 3-Second Countdown Progress Bar */}
-              <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden backdrop-blur-sm border border-white/10">
-                <motion.div
-                  initial={{ width: '0%' }}
-                  animate={{ width: '100%' }}
-                  transition={{ duration: 3, ease: 'linear' }}
-                  className="h-full bg-gradient-to-r from-rose-500 via-pink-500 to-amber-400 rounded-full shadow-[0_0_12px_rgba(244,63,94,0.8)]"
-                />
-              </div>
+                {/* Subtle Video Film Scanlines / Vignette */}
+                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(0,0,0,0.85)_100%)] z-10" />
 
-              <div className="w-full flex items-center justify-between text-[9px] font-bold text-zinc-400">
-                <span className="flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 inline-block animate-pulse" />
-                  Loading Audio & Voice Rooms...
-                </span>
-                <span className="text-zinc-500 font-mono">3s Auto-Start</span>
-              </div>
+                {/* Floating Energy Sparks */}
+                <div className="absolute inset-0 pointer-events-none overflow-hidden z-10">
+                  {['top-1/4 left-1/5', 'top-1/3 right-1/4', 'bottom-1/3 left-1/4', 'bottom-1/4 right-1/5', 'top-1/2 left-10', 'top-2/3 right-12'].map((pos, i) => (
+                    <motion.div
+                      key={i}
+                      initial={{ opacity: 0, y: 15, scale: 0.5 }}
+                      animate={{ opacity: [0, 0.9, 0], y: [-10, -50], scale: [0.5, 1.2, 0.8] }}
+                      transition={{ duration: 2.2, delay: 0.2 + i * 0.25, ease: 'easeOut' }}
+                      className={`absolute ${pos} text-amber-300 text-sm drop-shadow-[0_0_8px_rgba(251,191,36,0.8)]`}
+                    >
+                      ✨
+                    </motion.div>
+                  ))}
+                </div>
 
-              <button
-                onClick={handleDismissSplash}
-                className="w-full bg-gradient-to-r from-rose-500 via-pink-600 to-amber-500 text-white text-[11px] font-black py-3 rounded-2xl shadow-xl shadow-rose-500/25 active:scale-95 transition-all uppercase tracking-widest cursor-pointer border border-white/20 hover:brightness-110 flex items-center justify-center gap-1.5"
-              >
-                <span>Enter Experience</span>
-                <span className="text-amber-200">⚡</span>
-              </button>
-              
-              <p className="text-[8.5px] text-zinc-500 font-bold uppercase tracking-wider">
-                🎙️ ZOYO Voice & Games Platform
-              </p>
-            </motion.div>
+                {/* Top Bar with Intro Tag & Skip Action */}
+                <motion.div 
+                  initial={{ y: -20, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  transition={{ duration: 0.5, delay: 0.15 }}
+                  className="w-full flex items-center justify-between z-20 pt-4 px-2"
+                >
+                  <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 backdrop-blur-md border border-white/15 text-[10px] text-rose-300 font-black tracking-widest uppercase shadow-md">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                    <span>WELCOME TO ZOYO</span>
+                  </div>
+                  
+                  <button
+                    onClick={handleDismissSplash}
+                    className="text-[10px] font-black uppercase tracking-wider text-white/60 hover:text-white px-3 py-1 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 backdrop-blur-md transition-all cursor-pointer"
+                  >
+                    Skip ➔
+                  </button>
+                </motion.div>
+
+                {/* Center Visual Intro — 3D Video Zoom & Glow */}
+                <div className="flex flex-col items-center gap-6 my-auto z-20">
+                  {/* Logo Emblem with Multi-ring Aura */}
+                  <motion.div 
+                    initial={{ scale: 0.5, opacity: 0, rotate: -6 }}
+                    animate={{ scale: 1, opacity: 1, rotate: 0 }}
+                    transition={{ duration: 0.9, ease: [0.16, 1, 0.3, 1] }}
+                    className="relative"
+                  >
+                    {/* Rotating Outer Gradient Aura */}
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
+                      className="absolute -inset-5 rounded-[44px] bg-gradient-to-tr from-rose-500 via-amber-400 to-pink-500 opacity-60 blur-2xl"
+                    />
+
+                    {/* Pulsing Core Glow */}
+                    <motion.div
+                      animate={{ scale: [1, 1.08, 1], opacity: [0.6, 0.9, 0.6] }}
+                      transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
+                      className="absolute -inset-2 rounded-[38px] bg-gradient-to-r from-pink-500 via-rose-500 to-amber-400 blur-md opacity-80"
+                    />
+
+                    {/* Logo Image */}
+                    <motion.img 
+                      src="/logo.jpg" 
+                      alt="ZOYO Intro Emblem" 
+                      referrerPolicy="no-referrer"
+                      whileHover={{ scale: 1.03 }}
+                      className="w-48 h-48 rounded-[36px] object-cover shadow-[0_20px_50px_rgba(0,0,0,0.8)] border-2 border-white/30 relative z-10" 
+                    />
+
+                    {/* Lens Flare Accent */}
+                    <motion.div 
+                      initial={{ x: -120, opacity: 0 }}
+                      animate={{ x: 140, opacity: [0, 0.8, 0] }}
+                      transition={{ duration: 1.6, delay: 0.4, ease: "easeInOut" }}
+                      className="absolute top-0 bottom-0 w-8 bg-gradient-to-r from-transparent via-white/40 to-transparent skew-x-[-25deg] pointer-events-none z-20"
+                    />
+                  </motion.div>
+                  
+                  {/* Title & Tagline with Reveal Animation */}
+                  <motion.div 
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ duration: 0.6, delay: 0.35 }}
+                    className="flex flex-col items-center gap-1.5 text-center"
+                  >
+                    <h1 className="text-3xl font-black tracking-[0.25em] text-transparent bg-clip-text bg-gradient-to-r from-white via-rose-100 to-amber-300 drop-shadow-[0_4px_16px_rgba(244,63,94,0.6)]">
+                      ZOYO
+                    </h1>
+                    <p className="text-[11px] font-black uppercase tracking-[0.22em] text-rose-300/90 drop-shadow">
+                      Play • Connect • Have Fun!
+                    </p>
+                  </motion.div>
+                </div>
+
+                {/* Bottom Section — Auto-Loading Video Progress Indicator */}
+                <motion.div 
+                  initial={{ y: 20, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  transition={{ duration: 0.5, delay: 0.45 }}
+                  className="w-full max-w-xs flex flex-col items-center gap-3 z-20 pb-4"
+                >
+                  {/* 3-Second Countdown Progress Bar */}
+                  <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden backdrop-blur-sm border border-white/10">
+                    <motion.div
+                      initial={{ width: '0%' }}
+                      animate={{ width: '100%' }}
+                      transition={{ duration: 3, ease: 'linear' }}
+                      className="h-full bg-gradient-to-r from-rose-500 via-pink-500 to-amber-400 rounded-full shadow-[0_0_12px_rgba(244,63,94,0.8)]"
+                    />
+                  </div>
+
+                  <div className="w-full flex items-center justify-between text-[9px] font-bold text-zinc-400">
+                    <span className="flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500 inline-block animate-pulse" />
+                      Loading Audio & Voice Rooms...
+                    </span>
+                    <span className="text-zinc-500 font-mono">3s Auto-Start</span>
+                  </div>
+
+                  <button
+                    onClick={handleDismissSplash}
+                    className="w-full bg-gradient-to-r from-rose-500 via-pink-600 to-amber-500 text-white text-[11px] font-black py-3 rounded-2xl shadow-xl shadow-rose-500/25 active:scale-95 transition-all uppercase tracking-widest cursor-pointer border border-white/20 hover:brightness-110 flex items-center justify-center gap-1.5"
+                  >
+                    <span>Enter Experience</span>
+                    <span className="text-amber-200">⚡</span>
+                  </button>
+                  
+                  <p className="text-[8.5px] text-zinc-500 font-bold uppercase tracking-wider">
+                    🎙️ ZOYO Voice & Games Platform
+                  </p>
+                </motion.div>
+              </>
+            )}
           </motion.div>
+
         )}
       </AnimatePresence>
 
